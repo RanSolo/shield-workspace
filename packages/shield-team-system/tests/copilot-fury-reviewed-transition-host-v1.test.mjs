@@ -811,7 +811,7 @@ test("permissive-mode durable seeds are rejected on direct and converged replay 
   }
 });
 
-test("a newly committed revised plan digest creates a distinct logical review operation", async () => {
+test("a newly committed revised plan digest cannot bypass a broad mission claim without its exact seed", async () => {
   const current = await fixture();
   const reviseExecutor = executor(current.plan, "REVISE");
   const first = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: reviseExecutor.value } });
@@ -833,11 +833,12 @@ test("a newly committed revised plan digest creates a distinct logical review op
 
   const passExecutor = executor(rebuilt.plan);
   const second = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: passExecutor.value } });
-  assert.equal(second.state, "materialized", JSON.stringify(second));
-  assert.equal(passExecutor.calls.execute, 1);
+  assert.deepEqual({ state: second.state, code: second.code }, { state: "recovery_required", code: "REQUEST_SEED_MISSING_AFTER_CLAIM" });
+  assert.equal(passExecutor.calls.preflight, 0);
+  assert.equal(passExecutor.calls.execute, 0);
   const seeds = execFileSync("find", [join(current.root, COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT), "-name", "request-seed.json"], { encoding: "utf8" })
     .trim().split("\n").filter(Boolean);
-  assert.equal(seeds.length, 2);
+  assert.equal(seeds.length, 1);
 });
 
 test("workspace identity is stable across canonical roots for the same repository lane", async () => {

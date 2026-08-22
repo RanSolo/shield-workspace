@@ -23,6 +23,10 @@ import {
   type CopilotFuryPlanDispatchRequestV1,
   type CopilotFuryPlanDispatchResultV1,
 } from "./copilot-fury-plan-dispatch-v1.mjs";
+import {
+  dispatchCopilotFuryPlanReviewCoreV1,
+  type InternalDerivedTransitionPlanSourceV1,
+} from "./copilot-fury-plan-dispatch-core-v1.mjs";
 import { parseShieldConfig } from "./config.mjs";
 import {
   materializeReviewedMissionTransitionV1,
@@ -43,12 +47,16 @@ import {
 
 export const COPILOT_FURY_REVIEWED_TRANSITION_HOST_CONTRACT_VERSION = "shield.copilot-fury-reviewed-transition-host.v1" as const;
 export const COPILOT_FURY_REVIEWED_TRANSITION_SEED_CONTRACT_VERSION = "shield.copilot-fury-reviewed-transition-seed.v1" as const;
+export const COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_SEED_CONTRACT_VERSION = "shield.copilot-fury-reviewed-transition-seed.v2" as const;
 export const COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT = ".shield/audit/copilot-fury-reviewed-transition" as const;
 export const COPILOT_FURY_REVIEWED_TRANSITION_REPAIR_LIMIT = 1 as const;
 
 const INPUT_FIELDS = ["missionId", "repositoryRoot", "transitionPlanPath", "furyModel"] as const;
-const SEED_FIELDS = [
+const SEED_V1_FIELDS = [
   "schemaVersion", "contractVersion", "authority", "logicalOperation", "preparedWorktree", "furyCard", "missionJournal", "request",
+] as const;
+const SEED_V2_FIELDS = [
+  "schemaVersion", "contractVersion", "authority", "logicalOperation", "preparedWorktree", "furyCard", "missionJournal", "transitionPlanSource", "request",
 ] as const;
 const LOGICAL_OPERATION_FIELDS = [
   "repositoryId", "repositoryWorkspaceId", "missionId", "missionRevision", "parentSessionId", "transitionPlanId", "transitionPlanDigest",
@@ -130,6 +138,14 @@ export interface CopilotFuryReviewedTransitionSeedV1 {
   readonly request: CopilotFuryPlanDispatchRequestV1;
 }
 
+export interface CopilotFuryReviewedTransitionSeedV2 extends Omit<CopilotFuryReviewedTransitionSeedV1, "schemaVersion" | "contractVersion"> {
+  readonly schemaVersion: 2;
+  readonly contractVersion: typeof COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_SEED_CONTRACT_VERSION;
+  readonly transitionPlanSource: InternalDerivedTransitionPlanSourceV1;
+}
+
+export type CopilotFuryReviewedTransitionSeedV1OrV2 = CopilotFuryReviewedTransitionSeedV1 | CopilotFuryReviewedTransitionSeedV2;
+
 export type PrepareReviewedMissionTransitionClosedResultV1 = Readonly<{
   contractVersion: typeof COPILOT_FURY_REVIEWED_TRANSITION_HOST_CONTRACT_VERSION;
   authority: "none";
@@ -145,6 +161,7 @@ export type PrepareReviewedMissionTransitionResultV1 =
 
 export interface CopilotFuryReviewedTransitionHostDependenciesV1 {
   readonly dispatchPlanReview?: typeof dispatchCopilotFuryPlanReviewV1;
+  readonly dispatchDerivedPlanReview?: typeof dispatchCopilotFuryPlanReviewCoreV1;
   readonly dispatchDependencies?: CopilotFuryPlanDispatchDependenciesV1;
   readonly resolveDispatchIdentity?: typeof resolveSeatDispatchIdentityByReceiptIdV1;
   readonly readDispatchLedgerSnapshot?: typeof readSeatDispatchReceiptLedgerSnapshotV1;
@@ -156,7 +173,10 @@ export interface CopilotFuryReviewedTransitionHostDependenciesV1 {
   readonly beforeMaterialization?: () => void | Promise<void>;
 }
 
+export type InternalDerivedTransitionPlanRederiverV1 = () => Promise<InternalDerivedTransitionPlanSourceV1>;
+
 type HostObservation = Readonly<{
+  transitionPlanSource: Readonly<{ kind: "committed_file"; transitionPlanPath: string; transitionPlanRawSha256: string }> | InternalDerivedTransitionPlanSourceV1;
   repositoryRoot: string;
   rootIdentity: string;
   repositoryId: string;
@@ -179,7 +199,7 @@ type HostObservation = Readonly<{
 }>;
 
 type SeedResolution = Readonly<{
-  seed: CopilotFuryReviewedTransitionSeedV1;
+  seed: CopilotFuryReviewedTransitionSeedV1OrV2;
   file: StableFile;
   completionFile: StableFile;
   relativePath: string;
@@ -214,6 +234,16 @@ function sha256(bytes: string | Uint8Array): string {
 
 function digestId(domain: string, value: unknown): string {
   return createHash("sha256").update(`${domain}\0${canonicalJson(value)}`).digest("base64url");
+}
+
+function assertDerivedSourceProvenanceDigest(source: InternalDerivedTransitionPlanSourceV1): void {
+  const expectedDigest = `sha256:${digestId("shield-legacy-derived-transition-plan-provenance-v1", source.provenance)}`;
+  const expectedPath = `.shield/audit/legacy-reviewed-transition/${expectedDigest}/transition-plan.json`;
+  if (source.provenanceDigest !== expectedDigest || source.virtualPath !== expectedPath ||
+      source.canonicalPlanBytes !== `${canonicalJson(source.transitionPlan)}\n` ||
+      source.transitionPlanRawSha256 !== sha256(source.canonicalPlanBytes)) {
+    throw new Error("legacy_derived_provenance_digest_mismatch");
+  }
 }
 
 function closed(state: PrepareReviewedMissionTransitionClosedResultV1["state"], code: string, ...errors: readonly string[]): PrepareReviewedMissionTransitionClosedResultV1 {
@@ -380,13 +410,25 @@ async function committedFile(root: string, revision: string, relativePath: strin
   return { file, objectId: match[2] as string };
 }
 
+async function exactGitBlobIdentity(root: string, revision: string, relativePath: string, label: string): Promise<Readonly<{
+  mode: "100644" | "100755";
+  objectId: string;
+}>> {
+  const listing = await gitBytes(root, ["ls-tree", "-z", "--full-tree", revision, "--", relativePath]);
+  const records = listing.toString("utf8").split("\0").filter(Boolean);
+  if (records.length !== 1) throw new Error(`${label}_entry_missing_or_ambiguous`);
+  const match = /^(100644|100755) blob ([0-9a-f]{40,64})\t(.+)$/u.exec(records[0] as string);
+  if (match === null || match[3] !== relativePath) throw new Error(`${label}_entry_not_regular`);
+  return Object.freeze({ mode: match[1] as "100644" | "100755", objectId: match[2] as string });
+}
+
 function repositoryIdFromRemote(remote: string): string | null {
   const value = remote.trim().replace(/\.git$/u, "");
   const match = /^(?:https?:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([^/\s]+\/[^/\s]+)$/iu.exec(value);
   return match?.[1] ?? null;
 }
 
-async function observeHost(input: PrepareReviewedMissionTransitionInputV1): Promise<HostObservation> {
+async function observeHost(input: PrepareReviewedMissionTransitionInputV1, derivedSource?: InternalDerivedTransitionPlanSourceV1): Promise<HostObservation> {
   const canonicalRoot = await realpath(input.repositoryRoot);
   if (canonicalRoot !== input.repositoryRoot) throw new Error("repository_root_not_canonical");
   const rootStats = await lstat(canonicalRoot);
@@ -426,13 +468,36 @@ async function observeHost(input: PrepareReviewedMissionTransitionInputV1): Prom
     .filter((line) => line.startsWith("worktree ")).map((line) => resolve(line.slice("worktree ".length)));
   if (!registeredRoots.includes(canonicalRoot)) throw new Error("prepared_worktree_unregistered");
 
-  const planEntry = await committedFile(canonicalRoot, headRevision, input.transitionPlanPath, "transition_plan");
+  let transitionPlanFile: StableFile;
+  let transitionPlanSource: HostObservation["transitionPlanSource"];
   let rawPlan: unknown;
-  try { rawPlan = JSON.parse(planEntry.file.bytes); } catch { throw new Error("transition_plan_malformed_json"); }
+  if (derivedSource === undefined) {
+    const planEntry = await committedFile(canonicalRoot, headRevision, input.transitionPlanPath, "transition_plan");
+    transitionPlanFile = planEntry.file;
+    transitionPlanSource = Object.freeze({
+      kind: "committed_file",
+      transitionPlanPath: input.transitionPlanPath,
+      transitionPlanRawSha256: planEntry.file.rawSha256,
+    });
+    try { rawPlan = JSON.parse(planEntry.file.bytes); } catch { throw new Error("transition_plan_malformed_json"); }
+  } else {
+    if (input.transitionPlanPath !== derivedSource.virtualPath || derivedSource.kind !== "legacy_derived" ||
+        derivedSource.canonicalPlanBytes !== `${canonicalJson(derivedSource.transitionPlan)}\n` ||
+        sha256(derivedSource.canonicalPlanBytes) !== derivedSource.transitionPlanRawSha256) throw new Error("legacy_derived_source_binding_mismatch");
+    transitionPlanSource = derivedSource;
+    transitionPlanFile = Object.freeze({
+      path: derivedSource.virtualPath,
+      bytes: derivedSource.canonicalPlanBytes,
+      rawSha256: derivedSource.transitionPlanRawSha256,
+      identity: `legacy-derived:${derivedSource.provenanceDigest}:${derivedSource.transitionPlanRawSha256}`,
+    });
+    try { rawPlan = JSON.parse(derivedSource.canonicalPlanBytes); } catch { throw new Error("transition_plan_malformed_json"); }
+  }
   const validatedPlan = validateTransitionPlanV1OrV2({ artifact: rawPlan });
   if (validatedPlan.state === "invalid") throw new Error(`transition_plan_invalid:${validatedPlan.errors.join(" ")}`);
   const transitionPlan = validatedPlan.value;
-  if (transitionPlan.missionId !== input.missionId || transitionPlan.repositoryId !== parsedConfig.value.repositoryId) throw new Error("transition_plan_binding_mismatch");
+  if (transitionPlan.missionId !== input.missionId || transitionPlan.repositoryId !== parsedConfig.value.repositoryId ||
+      (derivedSource !== undefined && canonicalJson(transitionPlan) !== canonicalJson(derivedSource.transitionPlan))) throw new Error("transition_plan_binding_mismatch");
   await git(canonicalRoot, ["merge-base", "--is-ancestor", transitionPlan.planningBaseRevision, headRevision]);
   await git(canonicalRoot, ["merge-base", "--is-ancestor", transitionPlan.parentPlanCommit, headRevision]);
   const parentPlanBytes = await gitBytes(canonicalRoot, ["show", `${transitionPlan.parentPlanCommit}:${transitionPlan.parentPlanPath}`]);
@@ -459,8 +524,25 @@ async function observeHost(input: PrepareReviewedMissionTransitionInputV1): Prom
     repositoryId: parsedConfig.value.repositoryId,
     laneBranch: preparedWorktreeReceipt.destination.branch,
   }).slice(0, 32)}`;
+  if (derivedSource !== undefined) {
+    const provenance = derivedSource.provenance;
+    const artifactPlan = await exactGitBlobIdentity(canonicalRoot, provenance.artifactCommit, provenance.legacyPlanPath, "legacy_artifact_plan");
+    const currentPlan = await exactGitBlobIdentity(canonicalRoot, headRevision, provenance.legacyPlanPath, "legacy_current_plan");
+    if (provenance.repositoryId !== parsedConfig.value.repositoryId || provenance.repositoryRoot !== canonicalRoot ||
+        provenance.repositoryWorkspaceId !== repositoryWorkspaceId || provenance.missionId !== input.missionId ||
+        provenance.missionRevision !== projection.brief.revisionId || provenance.journalSequence !== projection.lastSequence ||
+        provenance.journalDigest !== journalByteSha256(journalFile.bytes) || provenance.branch !== branch || provenance.headRevision !== headRevision ||
+        provenance.derivedCandidateDigest !== transitionPlan.digest || provenance.artifactCommit !== transitionPlan.parentPlanCommit ||
+        provenance.legacyPlanPath !== transitionPlan.parentPlanPath || provenance.legacyPlanBlobSha256 !== transitionPlan.parentPlanRawSha256 ||
+        provenance.artifactPlanMode !== artifactPlan.mode || provenance.artifactPlanObjectId !== artifactPlan.objectId ||
+        provenance.currentPlanMode !== currentPlan.mode || provenance.currentPlanObjectId !== currentPlan.objectId ||
+        artifactPlan.mode !== currentPlan.mode || artifactPlan.objectId !== currentPlan.objectId) {
+      throw new Error("legacy_derived_provenance_host_mismatch");
+    }
+  }
 
   return Object.freeze({
+    transitionPlanSource,
     repositoryRoot: canonicalRoot,
     rootIdentity: `${rootStats.dev}:${rootStats.ino}`,
     repositoryId: parsedConfig.value.repositoryId,
@@ -477,7 +559,7 @@ async function observeHost(input: PrepareReviewedMissionTransitionInputV1): Prom
     journalDigest: journalByteSha256(journalFile.bytes),
     journalFile,
     transitionPlan,
-    transitionPlanFile: planEntry.file,
+    transitionPlanFile,
     parentPlanRawSha256: sha256(parentPlanBytes),
     furyCardFile: cardEntry.file,
   });
@@ -566,11 +648,9 @@ function requestFor(observation: HostObservation, input: PrepareReviewedMissionT
   return checked.value;
 }
 
-function seedFor(observation: HostObservation, request: CopilotFuryPlanDispatchRequestV1): CopilotFuryReviewedTransitionSeedV1 {
-  return Object.freeze({
-    schemaVersion: 1,
-    contractVersion: COPILOT_FURY_REVIEWED_TRANSITION_SEED_CONTRACT_VERSION,
-    authority: "none",
+function seedFor(observation: HostObservation, request: CopilotFuryPlanDispatchRequestV1): CopilotFuryReviewedTransitionSeedV1OrV2 {
+  const bindings = {
+    authority: "none" as const,
     logicalOperation: logicalOperation(observation),
     preparedWorktree: Object.freeze({
       receiptDigest: observation.preparedWorktreeReceipt.receiptDigest,
@@ -583,15 +663,37 @@ function seedFor(observation: HostObservation, request: CopilotFuryPlanDispatchR
       repositoryRevision: observation.headRevision,
     }),
     missionJournal: Object.freeze({ sequence: observation.journalSequence, digest: observation.journalDigest }),
+  };
+  if (observation.transitionPlanSource.kind === "committed_file") {
+    return Object.freeze({
+      schemaVersion: 1,
+      contractVersion: COPILOT_FURY_REVIEWED_TRANSITION_SEED_CONTRACT_VERSION,
+      ...bindings,
+      request,
+    });
+  }
+  return Object.freeze({
+    schemaVersion: 2,
+    contractVersion: COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_SEED_CONTRACT_VERSION,
+    ...bindings,
+    transitionPlanSource: observation.transitionPlanSource,
     request,
   });
 }
 
-function validSeedShape(value: unknown): value is CopilotFuryReviewedTransitionSeedV1 {
-  if (!exact(value, SEED_FIELDS) || value.schemaVersion !== 1 || value.contractVersion !== COPILOT_FURY_REVIEWED_TRANSITION_SEED_CONTRACT_VERSION || value.authority !== "none" ||
-      !exact(value.logicalOperation, LOGICAL_OPERATION_FIELDS) || !exact(value.preparedWorktree, PREPARED_WORKTREE_FIELDS) ||
-      !exact(value.furyCard, FURY_CARD_FIELDS) || !exact(value.missionJournal, MISSION_JOURNAL_FIELDS)) return false;
-  return validateCopilotFuryPlanDispatchRequestV1(value.request).state === "valid";
+function validSeedBindings(value: Plain): boolean {
+  return value.authority === "none" &&
+    exact(value.logicalOperation, LOGICAL_OPERATION_FIELDS) && exact(value.preparedWorktree, PREPARED_WORKTREE_FIELDS) &&
+    exact(value.furyCard, FURY_CARD_FIELDS) && exact(value.missionJournal, MISSION_JOURNAL_FIELDS);
+}
+
+function validSeedShape(value: unknown): value is CopilotFuryReviewedTransitionSeedV1OrV2 {
+  if (!plain(value) || !validSeedBindings(value) || validateCopilotFuryPlanDispatchRequestV1(value.request).state !== "valid") return false;
+  if (value.schemaVersion === 1 && value.contractVersion === COPILOT_FURY_REVIEWED_TRANSITION_SEED_CONTRACT_VERSION) {
+    return exact(value, SEED_V1_FIELDS);
+  }
+  return value.schemaVersion === 2 && value.contractVersion === COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_SEED_CONTRACT_VERSION &&
+    exact(value, SEED_V2_FIELDS) && plain(value.transitionPlanSource) && value.transitionPlanSource.kind === "legacy_derived";
 }
 
 async function ensureSeedDirectory(
@@ -782,11 +884,9 @@ async function acceptExistingSeed(
   }
 }
 
-function matchingLogicalClaim(projection: SeatDispatchReceiptProjectionV1, operation: ReturnType<typeof logicalOperation>): boolean {
+function matchingMissionClaim(projection: SeatDispatchReceiptProjectionV1, operation: ReturnType<typeof logicalOperation>): boolean {
   return projection.parentMissionId === operation.missionId && projection.parentMissionRevision === operation.missionRevision &&
-    projection.parentSessionId === operation.parentSessionId && projection.repositoryId === operation.repositoryId &&
-    projection.repositoryWorkspaceId === operation.repositoryWorkspaceId && projection.artifactId === operation.transitionPlanId &&
-    projection.artifactRevision === operation.transitionPlanDigest;
+    projection.repositoryWorkspaceId === operation.repositoryWorkspaceId;
 }
 
 async function missingSeedHasClaim(
@@ -803,7 +903,7 @@ async function missingSeedHasClaim(
     if (ledger.code === "dispatch_receipt_missing") return false;
     throw new Error(`dispatch_receipt_scan_failed:${ledger.code}:${ledger.errors.join(" ")}`);
   }
-  return ledger.value.projections.some((projection) => matchingLogicalClaim(projection, operation));
+  return ledger.value.projections.some((projection) => matchingMissionClaim(projection, operation));
 }
 
 async function installSeed(
@@ -904,7 +1004,7 @@ async function resolveSeed(
     return await acceptExistingSeed(observation, input, relativePath, operations);
   }
   try {
-    if (await missingSeedHasClaim(observation, readLedger)) return closed("recovery_required", "REQUEST_SEED_MISSING_AFTER_CLAIM", "A dispatch claim exists for this logical operation but its request seed is missing.");
+    if (await missingSeedHasClaim(observation, readLedger)) return closed("recovery_required", "REQUEST_SEED_MISSING_AFTER_CLAIM", "A dispatch claim exists for this repository workspace, mission, and mission revision without the exact request seed.");
     const date = now();
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) return closed("invalid", "HOST_TIMESTAMP_INVALID", "The host-trusted clock did not return a valid Date.");
     const seed = seedFor(observation, requestFor(observation, input, date.toISOString()));
@@ -935,8 +1035,9 @@ async function reobserveExact(
   expected: HostObservation,
   seed: SeedResolution,
   operations: CopilotFuryReviewedTransitionSeedPersistenceV1,
+  derivedSource?: InternalDerivedTransitionPlanSourceV1,
 ): Promise<HostObservation> {
-  const observed = await observeHost(input);
+  const observed = await observeHost(input, derivedSource);
   if (canonicalJson(immutableObservation(observed)) !== canonicalJson(immutableObservation(expected))) throw new Error("host_binding_drift");
   const currentChain = await directoryChain(expected.repositoryRoot, dirname(join(expected.repositoryRoot, ...seed.relativePath.split("/"))), "seed_ancestor", operations);
   if (!sameDirectoryChain(currentChain, seed.directoryChain)) throw new Error("request_seed_ancestor_replaced_or_changed");
@@ -1075,14 +1176,22 @@ function boundedDispatchPending(): CopilotFuryPlanDispatchResultV1 {
   });
 }
 
-export async function prepareReviewedMissionTransitionV1(
+async function prepareReviewedMissionTransitionInternal(
   input: unknown,
   dependencies: CopilotFuryReviewedTransitionHostDependenciesV1 = {},
+  derivedSource?: InternalDerivedTransitionPlanSourceV1,
+  rederiveDerivedSource?: InternalDerivedTransitionPlanRederiverV1,
 ): Promise<PrepareReviewedMissionTransitionResultV1> {
   const checkedInput = validateInput(input);
   if (checkedInput === null) return closed("invalid", "MALFORMED_HOST_REQUEST", "Reviewed-transition host input fields are not closed or valid.");
+  if (derivedSource !== undefined && rederiveDerivedSource === undefined) {
+    return closed("invalid", "MALFORMED_DERIVED_SOURCE_CAPABILITY", "Derived transition sources require a fresh repository-backed rederivation capability.");
+  }
+  try { if (derivedSource !== undefined) assertDerivedSourceProvenanceDigest(derivedSource); } catch (error) {
+    return closed("invalid", "HOST_PRECONDITION_FAILED", error instanceof Error ? error.message : String(error));
+  }
   let initial: HostObservation;
-  try { initial = await observeHost(checkedInput); } catch (error) {
+  try { initial = await observeHost(checkedInput, derivedSource); } catch (error) {
     return closed("invalid", "HOST_PRECONDITION_FAILED", error instanceof Error ? error.message : String(error));
   }
   const persistence = seedPersistence(dependencies.seedPersistence);
@@ -1095,12 +1204,15 @@ export async function prepareReviewedMissionTransitionV1(
   const pending = (async (): Promise<PrepareReviewedMissionTransitionResultV1> => {
     try {
       await dependencies.beforeDispatch?.();
-      await reobserveExact(checkedInput, initial, seed, persistence);
+      await reobserveExact(checkedInput, initial, seed, persistence, derivedSource);
     } catch (error) {
       return closed("recovery_required", "PRE_DISPATCH_REOBSERVATION_FAILED", error instanceof Error ? error.message : String(error));
     }
 
-    const dispatch = dependencies.dispatchPlanReview ?? dispatchCopilotFuryPlanReviewV1;
+    const dispatch = derivedSource === undefined
+      ? dependencies.dispatchPlanReview ?? dispatchCopilotFuryPlanReviewV1
+      : (request: CopilotFuryPlanDispatchRequestV1, dispatchDependencies?: CopilotFuryPlanDispatchDependenciesV1) =>
+          (dependencies.dispatchDerivedPlanReview ?? dispatchCopilotFuryPlanReviewCoreV1)(request, derivedSource, dispatchDependencies);
     let dispatchResult = await dispatch(seed.seed.request, dependencies.dispatchDependencies);
     let pendingReceiptId: string | null = null;
     const dispatchWaitDeadline = Date.now() + DISPATCH_LOCK_WAIT_MS;
@@ -1133,7 +1245,7 @@ export async function prepareReviewedMissionTransitionV1(
       const returnedReceipt = await receiptSnapshot(initial, seed.seed.request, dispatchResult.handoff.dispatchReceiptId, transition.value, readLedger);
 
       await dependencies.afterDispatch?.(dispatchResult);
-      const afterDispatchObservation = await reobserveExact(checkedInput, initial, seed, persistence);
+      const afterDispatchObservation = await reobserveExact(checkedInput, initial, seed, persistence, derivedSource);
       const transitionArtifact = await secureHandoffFile(initial.repositoryRoot, dispatchResult.handoff.transitionPlanPath, "dispatch_transition_plan", returnedTransitionArtifact.directoryChain);
       const reviewArtifact = await secureHandoffFile(initial.repositoryRoot, dispatchResult.handoff.reviewArtifactPath, "dispatch_review_artifact", returnedReviewArtifact.directoryChain);
       if (transitionArtifact.file.bytes !== returnedTransitionArtifact.file.bytes || transitionArtifact.file.identity !== returnedTransitionArtifact.file.identity ||
@@ -1150,14 +1262,49 @@ export async function prepareReviewedMissionTransitionV1(
       if (!identityEquals(resolved.identity, receipt.identity)) throw new Error("dispatch_resolver_identity_mismatch");
 
       await dependencies.beforeMaterialization?.();
-      const beforeMaterializationObservation = await reobserveExact(checkedInput, initial, seed, persistence);
+      let exactMaterializationSource = derivedSource;
+      if (derivedSource !== undefined) {
+        const freshlyDerivedSource = await (rederiveDerivedSource as InternalDerivedTransitionPlanRederiverV1)();
+        assertDerivedSourceProvenanceDigest(freshlyDerivedSource);
+        if (seed.seed.schemaVersion !== 2 ||
+            canonicalJson(freshlyDerivedSource) !== canonicalJson(derivedSource) ||
+            canonicalJson(freshlyDerivedSource) !== canonicalJson(seed.seed.transitionPlanSource)) {
+          throw new Error("legacy_derived_source_pre_materialization_drift");
+        }
+        exactMaterializationSource = freshlyDerivedSource;
+      }
+      const exactMaterializationObservation = await reobserveExact(
+        checkedInput,
+        initial,
+        seed,
+        persistence,
+        exactMaterializationSource,
+      );
+      if (exactMaterializationSource !== undefined) {
+        const freshlyDerivedRequest = requestFor(exactMaterializationObservation, checkedInput, seed.seed.request.timestamp.value);
+        if (canonicalJson(freshlyDerivedRequest) !== canonicalJson(seed.seed.request) ||
+            canonicalJson(transition.value) !== canonicalJson(exactMaterializationSource.transitionPlan)) {
+          throw new Error("legacy_derived_request_pre_materialization_drift");
+        }
+      }
       const transitionReadback = await secureHandoffFile(initial.repositoryRoot, dispatchResult.handoff.transitionPlanPath, "dispatch_transition_plan", transitionArtifact.directoryChain);
       const reviewReadback = await secureHandoffFile(initial.repositoryRoot, dispatchResult.handoff.reviewArtifactPath, "dispatch_review_artifact", reviewArtifact.directoryChain);
       if (transitionReadback.file.bytes !== transitionArtifact.file.bytes || transitionReadback.file.identity !== transitionArtifact.file.identity ||
           reviewReadback.file.bytes !== reviewArtifact.file.bytes || reviewReadback.file.identity !== reviewArtifact.file.identity) throw new Error("dispatch_handoff_artifact_replaced_or_changed");
-      const receiptReadback = await receiptSnapshot(beforeMaterializationObservation, seed.seed.request, dispatchResult.handoff.dispatchReceiptId, transition.value, readLedger);
+      const receiptReadback = await receiptSnapshot(exactMaterializationObservation, seed.seed.request, dispatchResult.handoff.dispatchReceiptId, transition.value, readLedger);
       if (!identityEquals(receipt.identity, receiptReadback.identity) || receipt.rawReceiptDigest !== receiptReadback.rawReceiptDigest ||
           receipt.ledgerFile.identity !== receiptReadback.ledgerFile.identity) throw new Error("dispatch_receipt_replaced_or_changed");
+      if (exactMaterializationSource !== undefined &&
+          (dispatchResult.handoff.dispatchReceiptId !== receiptReadback.projection.receiptId ||
+           receiptReadback.projection.artifactId !== exactMaterializationSource.transitionPlan.id ||
+           receiptReadback.projection.artifactRevision !== exactMaterializationSource.transitionPlan.digest ||
+           receiptReadback.projection.subjectRevision !== exactMaterializationSource.transitionPlan.digest)) {
+        throw new Error("legacy_derived_pass_handoff_pre_materialization_drift");
+      }
+
+      const finalResolved = await resolver({ repositoryRoot: initial.repositoryRoot, repositoryId: initial.repositoryId, receiptId: dispatchResult.handoff.dispatchReceiptId });
+      if (finalResolved.state === "invalid" || !identityEquals(finalResolved.identity, receiptReadback.identity) ||
+          !identityEquals(finalResolved.identity, resolved.identity)) throw new Error("dispatch_resolver_identity_mismatch");
 
       const materialize = dependencies.materializeReviewedTransition ?? materializeReviewedMissionTransitionV1;
       return await materialize({
@@ -1166,7 +1313,7 @@ export async function prepareReviewedMissionTransitionV1(
         transitionPlan: transition.value,
         reviewArtifact: review.value as MissionTransitionPlanReviewV1,
         expectedBinding: expectedBinding(transition.value),
-        dispatchIdentity: resolved.identity,
+        dispatchIdentity: finalResolved.identity,
       });
     } catch (error) {
       return closed("recovery_required", "POST_PASS_REOBSERVATION_FAILED", error instanceof Error ? error.message : String(error));
@@ -1178,4 +1325,25 @@ export async function prepareReviewedMissionTransitionV1(
   } finally {
     if (inFlightReviewedTransitions.get(inFlightKey) === pending) inFlightReviewedTransitions.delete(inFlightKey);
   }
+}
+
+export async function prepareReviewedMissionTransitionV1(
+  input: unknown,
+  dependencies: CopilotFuryReviewedTransitionHostDependenciesV1 = {},
+): Promise<PrepareReviewedMissionTransitionResultV1> {
+  return prepareReviewedMissionTransitionInternal(input, dependencies);
+}
+
+export async function prepareReviewedMissionTransitionFromDerivedSourceV1(
+  input: Readonly<{ missionId: string; repositoryRoot: string; furyModel: string }>,
+  source: InternalDerivedTransitionPlanSourceV1,
+  dependencies: CopilotFuryReviewedTransitionHostDependenciesV1 = {},
+  rederiveSource?: InternalDerivedTransitionPlanRederiverV1,
+): Promise<PrepareReviewedMissionTransitionResultV1> {
+  return prepareReviewedMissionTransitionInternal({
+    missionId: input.missionId,
+    repositoryRoot: input.repositoryRoot,
+    transitionPlanPath: source.virtualPath,
+    furyModel: input.furyModel,
+  }, dependencies, source, rederiveSource);
 }
