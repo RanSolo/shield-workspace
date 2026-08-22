@@ -69,6 +69,16 @@ type Plain = Record<string, unknown>;
 type StableFile = Readonly<{ path: string; bytes: string; rawSha256: string; identity: string; mode: number }>;
 type DirectoryIdentity = Readonly<{ path: string; dev: number; ino: number }>;
 type DirectoryChain = readonly DirectoryIdentity[];
+type ProtectedDirectoryIdentity = Readonly<{
+  path: string;
+  handle: FileHandle;
+  dev: number;
+  ino: number;
+  mode: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}>;
 
 export interface ContinueLegacyReviewedTransitionInputV1 {
   readonly missionId: string;
@@ -99,6 +109,13 @@ export interface LegacyReviewedTransitionSeedPersistenceV1 {
   readonly writeFileHandle: (handle: FileHandle, bytes: Uint8Array) => Promise<number>;
   readonly syncFileHandle: (handle: FileHandle) => Promise<void>;
   readonly syncDirectoryHandle: (handle: FileHandle) => Promise<void>;
+}
+
+export interface LegacyProtectedGraphPreflightDependenciesV1 {
+  readonly lstatPath?: typeof lstat;
+  readonly realpathPath?: typeof realpath;
+  readonly openPath?: typeof open;
+  readonly beforeFinalRevalidation?: () => void | Promise<void>;
 }
 
 export type ContinueLegacyReviewedTransitionClosedResultV1 = Readonly<{
@@ -866,67 +883,140 @@ function protectedGraphNotAbsent(...errors: readonly string[]): PreflightLegacyP
   });
 }
 
-export async function preflightLegacyProtectedGraphAbsenceV1(input: unknown): Promise<PreflightLegacyProtectedGraphAbsenceResultV1> {
+export async function preflightLegacyProtectedGraphAbsenceV1(
+  input: unknown,
+  dependencies: LegacyProtectedGraphPreflightDependenciesV1 = {},
+): Promise<PreflightLegacyProtectedGraphAbsenceResultV1> {
   const checked = validateGraphPreflightInput(input);
   if (checked === null) return protectedGraphNotAbsent("Malformed protected graph absence preflight request.");
+  const lstatPath = dependencies.lstatPath ?? lstat;
+  const realpathPath = dependencies.realpathPath ?? realpath;
+  const openPath = dependencies.openPath ?? open;
   let graphRoot: string;
   let protectedDirectories: readonly string[];
   try {
-    const canonicalRoot = await realpath(checked.repositoryRoot);
+    const canonicalRoot = await realpathPath(checked.repositoryRoot);
     if (canonicalRoot !== checked.repositoryRoot) return protectedGraphNotAbsent("Repository root is not canonical.");
-    const rootStats = await lstat(canonicalRoot);
+    const rootStats = await lstatPath(canonicalRoot);
     if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) return protectedGraphNotAbsent("Repository root is not a safe directory.");
     const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(canonicalRoot, checked.missionId);
     graphRoot = paths.missionDirectory;
-    protectedDirectories = [paths.shieldDirectory, paths.auditDirectory, paths.missionPreparationDirectory];
+    protectedDirectories = [canonicalRoot, paths.shieldDirectory, paths.auditDirectory, paths.missionPreparationDirectory];
   } catch (error) {
     return protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
   }
 
-  for (const directory of protectedDirectories) {
-    let firstDirectory: Awaited<ReturnType<typeof lstat>>;
-    try {
-      firstDirectory = await lstat(directory);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return Object.freeze({ authority: "none", state: "absent" });
-      return protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
-    }
-    if (firstDirectory.isSymbolicLink() || !firstDirectory.isDirectory()) return protectedGraphNotAbsent("Protected mission-preparation graph parent is unsafe.");
-    try {
-      const secondDirectory = await lstat(directory);
-      if (secondDirectory.dev !== firstDirectory.dev || secondDirectory.ino !== firstDirectory.ino || secondDirectory.mode !== firstDirectory.mode ||
-          secondDirectory.mtimeMs !== firstDirectory.mtimeMs || secondDirectory.ctimeMs !== firstDirectory.ctimeMs) {
-        return protectedGraphNotAbsent("Protected mission-preparation graph parent changed during absence verification.");
+  const retained: ProtectedDirectoryIdentity[] = [];
+  let missingDirectory: string | null = null;
+  let result: PreflightLegacyProtectedGraphAbsenceResultV1 | null = null;
+  const sameIdentity = (left: Awaited<ReturnType<typeof lstat>>, right: ProtectedDirectoryIdentity): boolean =>
+    left.dev === right.dev && left.ino === right.ino && left.mode === right.mode && left.size === right.size &&
+    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+  const revalidateRetained = async (): Promise<string | null> => {
+    for (const identity of retained) {
+      try {
+        const held = await identity.handle.stat();
+        const current = await lstatPath(identity.path);
+        if (!held.isDirectory() || current.isSymbolicLink() || !current.isDirectory() || !sameIdentity(current, identity) ||
+            held.dev !== identity.dev || held.ino !== identity.ino || held.mode !== identity.mode || held.size !== identity.size ||
+            held.mtimeMs !== identity.mtimeMs || held.ctimeMs !== identity.ctimeMs || await realpathPath(identity.path) !== identity.path) {
+          return "Protected mission-preparation graph ancestor changed during absence verification.";
+        }
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
       }
-    } catch (error) {
-      return protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
     }
-  }
-
-  let first: Awaited<ReturnType<typeof lstat>>;
-  try {
-    first = await lstat(graphRoot);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+    return null;
+  };
+  const requireAbsent = async (path: string): Promise<string | null> => {
     try {
-      await lstat(graphRoot);
-      return protectedGraphNotAbsent("Protected mission-preparation graph root appeared during absence verification.");
-    } catch (secondError) {
-      if ((secondError as NodeJS.ErrnoException).code === "ENOENT") return Object.freeze({ authority: "none", state: "absent" });
-      return protectedGraphNotAbsent(secondError instanceof Error ? secondError.message : String(secondError));
+      await lstatPath(path);
+      return "Protected mission-preparation graph state appeared during absence verification.";
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? null : error instanceof Error ? error.message : String(error);
     }
-  }
+  };
 
   try {
-    const second = await lstat(graphRoot);
-    if (second.dev !== first.dev || second.ino !== first.ino || second.mode !== first.mode || second.size !== first.size ||
-        second.mtimeMs !== first.mtimeMs || second.ctimeMs !== first.ctimeMs) {
-      return protectedGraphNotAbsent("Protected mission-preparation graph root changed during absence verification.");
+    for (const directory of protectedDirectories) {
+      let firstDirectory: Awaited<ReturnType<typeof lstat>>;
+      try {
+        firstDirectory = await lstatPath(directory);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          missingDirectory = directory;
+          break;
+        }
+        result = protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+        break;
+      }
+      if (firstDirectory.isSymbolicLink() || !firstDirectory.isDirectory()) {
+        result = protectedGraphNotAbsent("Protected mission-preparation graph parent is unsafe.");
+        break;
+      }
+      let handle: FileHandle | null = null;
+      try {
+        handle = await openPath(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        const held = await handle.stat();
+        if (!held.isDirectory() || held.dev !== firstDirectory.dev || held.ino !== firstDirectory.ino || held.mode !== firstDirectory.mode ||
+            held.size !== firstDirectory.size || held.mtimeMs !== firstDirectory.mtimeMs || held.ctimeMs !== firstDirectory.ctimeMs ||
+            await realpathPath(directory) !== directory) {
+          result = protectedGraphNotAbsent("Protected mission-preparation graph parent changed during absence verification.");
+          await handle.close();
+          break;
+        }
+        retained.push({
+          path: directory,
+          handle,
+          dev: held.dev,
+          ino: held.ino,
+          mode: held.mode,
+          size: held.size,
+          mtimeMs: held.mtimeMs,
+          ctimeMs: held.ctimeMs,
+        });
+        handle = null;
+      } catch (error) {
+        if (handle !== null) await handle.close().catch(() => undefined);
+        result = protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+        break;
+      }
     }
-  } catch (error) {
-    return protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+
+    if (result === null) {
+      const absentPath = missingDirectory ?? graphRoot;
+      const initialAbsenceError = await requireAbsent(absentPath);
+      if (initialAbsenceError !== null) result = protectedGraphNotAbsent(initialAbsenceError);
+    }
+    if (result === null) {
+      try {
+        await dependencies.beforeFinalRevalidation?.();
+      } catch (error) {
+        result = protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (result === null) {
+      const retainedError = await revalidateRetained();
+      if (retainedError !== null) result = protectedGraphNotAbsent(retainedError);
+    }
+    if (result === null) {
+      const finalAbsenceError = await requireAbsent(missingDirectory ?? graphRoot);
+      if (finalAbsenceError !== null) result = protectedGraphNotAbsent(finalAbsenceError);
+    }
+    if (result === null) {
+      const retainedError = await revalidateRetained();
+      result = retainedError === null
+        ? Object.freeze({ authority: "none" as const, state: "absent" as const })
+        : protectedGraphNotAbsent(retainedError);
+    }
+  } finally {
+    let closeError: unknown = null;
+    for (const identity of retained.reverse()) {
+      try { await identity.handle.close(); } catch (error) { closeError ??= error; }
+    }
+    if (closeError !== null) result = protectedGraphNotAbsent(closeError instanceof Error ? closeError.message : String(closeError));
   }
-  return protectedGraphNotAbsent();
+  return result ?? protectedGraphNotAbsent("Protected graph absence verification did not complete.");
 }
 
 export async function continueLegacyReviewedTransitionV1(

@@ -342,6 +342,89 @@ test("protected graph absence preflight is authority-none and gates legacy effec
   assert.equal(existsSync(join(current.root, LEGACY_REVIEWED_TRANSITION_SEED_ROOT)), false);
 });
 
+test("protected graph absence retains and revalidates every safe ancestor against adversarial state", async (t) => {
+  const missionId = "mission:issue-362-protected-preflight";
+  const createRoot = async (suffix) => await realpath(await mkdtemp(join(tmpdir(), `shield-protected-${suffix}-`)));
+  const graphPaths = (root) => {
+    const mission = createHash("sha256").update(missionId).digest("hex");
+    const preparation = join(root, ".shield", "audit", "mission-preparation");
+    return { preparation, graph: join(preparation, mission) };
+  };
+  const assertBlocked = (result) => {
+    assert.equal(result.authority, "none");
+    assert.equal(result.state, "blocked");
+    assert.equal(result.code, "PROTECTED_GRAPH_NOT_ABSENT");
+    assert.ok(result.errors.length > 0);
+  };
+
+  await t.test("linked", async () => {
+    const root = await createRoot("linked");
+    const outside = await createRoot("linked-target");
+    await symlink(outside, join(root, ".shield"));
+    assertBlocked(await preflightLegacyProtectedGraphAbsenceV1({ missionId, repositoryRoot: root }));
+  });
+
+  await t.test("replaced", async () => {
+    const root = await createRoot("replaced");
+    const { preparation } = graphPaths(root);
+    await mkdir(preparation, { recursive: true });
+    assertBlocked(await preflightLegacyProtectedGraphAbsenceV1({ missionId, repositoryRoot: root }, {
+      beforeFinalRevalidation: async () => {
+        await rename(preparation, `${preparation}.replaced`);
+        await mkdir(preparation);
+      },
+    }));
+  });
+
+  await t.test("disappeared", async () => {
+    const root = await createRoot("disappeared");
+    const { preparation } = graphPaths(root);
+    await mkdir(preparation, { recursive: true });
+    assertBlocked(await preflightLegacyProtectedGraphAbsenceV1({ missionId, repositoryRoot: root }, {
+      beforeFinalRevalidation: async () => { await rename(preparation, `${preparation}.disappeared`); },
+    }));
+  });
+
+  await t.test("unreadable", async () => {
+    const root = await createRoot("unreadable");
+    const { preparation } = graphPaths(root);
+    await mkdir(preparation, { recursive: true });
+    assertBlocked(await preflightLegacyProtectedGraphAbsenceV1({ missionId, repositoryRoot: root }, {
+      openPath: async (path, flags, mode) => {
+        if (path === preparation) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        return open(path, flags, mode);
+      },
+    }));
+  });
+
+  await t.test("file or malformed", async () => {
+    const root = await createRoot("malformed");
+    await mkdir(join(root, ".shield"));
+    await writeFile(join(root, ".shield", "audit"), "not a directory\n");
+    assertBlocked(await preflightLegacyProtectedGraphAbsenceV1({ missionId, repositoryRoot: root }));
+  });
+
+  await t.test("stale or existing", async () => {
+    const root = await createRoot("existing");
+    const { graph } = graphPaths(root);
+    await mkdir(graph, { recursive: true });
+    await writeFile(join(graph, "reviewed-transition.json"), "{}\n");
+    assertBlocked(await preflightLegacyProtectedGraphAbsenceV1({ missionId, repositoryRoot: root }));
+  });
+
+  await t.test("concurrent substitution", async () => {
+    const root = await createRoot("concurrent");
+    const { preparation, graph } = graphPaths(root);
+    await mkdir(preparation, { recursive: true });
+    assertBlocked(await preflightLegacyProtectedGraphAbsenceV1({ missionId, repositoryRoot: root }, {
+      beforeFinalRevalidation: async () => {
+        await mkdir(graph);
+        await rename(graph, `${graph}.transient-substitution`);
+      },
+    }));
+  });
+});
+
 test("exact #341 legacy lineage derives one closed fresh_authorize_wheels_up carrier without parsing Markdown or writing a virtual file", async () => {
   const current = await fixture();
   const calls = [];

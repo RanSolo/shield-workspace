@@ -1682,6 +1682,10 @@ function renderLegacyContinuationResult(result: Awaited<ReturnType<typeof contin
       ].join("\n");
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
 function outputPreparationBlocked(
   result: Readonly<{ readonly state: string; readonly code?: string; readonly reasonCode?: string; readonly errors?: readonly string[] }>,
   json: boolean,
@@ -1708,7 +1712,8 @@ async function prepareNext(args: string[], behavior: Readonly<{
   if (result.state === "blocked" && result.reasonCode === "protected_evidence_mismatch") {
     const preflight = await preflightLegacyProtectedGraphAbsenceV1({ missionId, repositoryRoot: root });
     if (preflight.state !== "absent") {
-      outputPreparationBlocked(preflight, options.flags.has("--json"));
+      if (options.flags.has("--json")) output(preflight, true, renderLegacyContinuationResult(preflight));
+      else process.stderr.write(`${renderLegacyContinuationResult(preflight)}\n`);
       return 1;
     }
     const furyModel = options.values.get("--fury-model");
@@ -1723,7 +1728,7 @@ async function prepareNext(args: string[], behavior: Readonly<{
       const missingModel = { schemaVersion: 1 as const, state: "blocked" as const, reasonCode: "legacy_fury_model_required" as const, missionId, nextAction };
       const missingModelHuman = [
         `Preparation blocked — ${result.reasonCode}: ${result.errors.join(" ")}`,
-        `Next action: shield mission prepare-next --mission-id ${missionId} --root ${root} --fury-model <model-id>`,
+        `Next action: shield mission prepare-next --mission-id ${shellQuote(missionId)} --root ${shellQuote(root)} --fury-model ${shellQuote("<model-id>")}`,
       ].join("\n");
       if (options.flags.has("--json")) output(missingModel, true, missingModelHuman);
       else process.stderr.write(`${missingModelHuman}\n`);
@@ -1751,7 +1756,7 @@ async function prepareNext(args: string[], behavior: Readonly<{
     if (legacyResult.state !== "materialized" && legacyResult.state !== "already_materialized") {
       if (options.flags.has("--json")) output(legacyResult, true, renderLegacyContinuationResult(legacyResult));
       else process.stderr.write(`${renderLegacyContinuationResult(legacyResult)}\n`);
-      return legacyResult.state === "completed" && legacyResult.disposition === "PASS" ? 0 : 1;
+      return 1;
     }
     result = await prepareSession(
       { missionId, repositoryRoot: root },
@@ -2114,8 +2119,8 @@ export function emitFinalPublicationClassificationV1ForTest(
   destination.write(`classification: ${classification}\n`);
 }
 
-async function publishReviewed(args: string[], dependencies: PrepareNextDependenciesV1 = {}): Promise<number> {
-  const valueOptions = ["--root", "--mission-id", "--base-branch", "--fury-model", "--guided-review-choice", "--guided-review-context", "--guided-review-playbook", "--guided-review-session",
+async function publishReviewed(args: string[]): Promise<number> {
+  const valueOptions = ["--root", "--mission-id", "--base-branch", "--guided-review-choice", "--guided-review-context", "--guided-review-playbook", "--guided-review-session",
     "--guided-review-response", "--guided-review-question-digest", "--guided-review-answer", "--guided-review-finding", "--guided-review-disposition",
     "--guided-review-observation", "--guided-review-condition"] as const;
   const options = parseOptions(args, valueOptions, ["--json", "--human", "--passcode-stdin"]);
@@ -2145,7 +2150,7 @@ async function publishReviewed(args: string[], dependencies: PrepareNextDependen
       authorizationExitCode = await prepareNext(prepareArgs, {
         suppressPublicationSuccessOutput: true,
         finalPublicationDecisionOutput: true,
-      }, dependencies);
+      });
       if (authorizationExitCode !== 0) return "paused";
       const replay = await resolvePreparedMissionTransitionV1({ missionId, repositoryRoot: root });
       return replay.state === "publication_already_authorized" ? "authorized" : "paused";
@@ -2713,10 +2718,7 @@ export async function runMissionCli(
       ...(dependencies.prepareSession === undefined ? {} : { prepareSession: dependencies.prepareSession }),
       ...(dependencies.continueLegacyReviewedTransition === undefined ? {} : { continueLegacy: dependencies.continueLegacyReviewedTransition }),
     });
-    if (action === "publish-reviewed") return publishReviewed(rest, {
-      ...(dependencies.prepareSession === undefined ? {} : { prepareSession: dependencies.prepareSession }),
-      ...(dependencies.continueLegacyReviewedTransition === undefined ? {} : { continueLegacy: dependencies.continueLegacyReviewedTransition }),
-    });
+    if (action === "publish-reviewed") return publishReviewed(rest);
     if (action === "authorize-daisy-coordination") return authorizeDaisyCoordination(rest);
     if (action === "publication-authorize") return publicationAuthorize(rest);
     if (action === "publication-request") return publicationRequest(rest);

@@ -81,6 +81,15 @@ test("publish-reviewed final publication command has a closed base assertion and
     runMissionCli(["mission", "publish-reviewed", "--mission-id", "mission:closed", "--base-branch", "main", "--authority", "caller", "--root", packageRoot]),
     /Unknown option: --authority/u,
   );
+  await assert.rejects(
+    runMissionCli(["mission", "publish-reviewed", "--mission-id", "mission:closed", "--base-branch", "main", "--fury-model", "model:fury", "--root", packageRoot]),
+    /Unknown option: --fury-model/u,
+  );
+  const source = await readFile(new URL("../src/mission-cli.mts", import.meta.url), "utf8");
+  const start = source.indexOf("async function publishReviewed");
+  const end = source.indexOf("\nfunction canonicalDigest", start);
+  const consumer = source.slice(start, end);
+  assert.doesNotMatch(consumer, /PrepareNextDependenciesV1|--fury-model|continueLegacy/u);
 });
 
 test("publish-reviewed decision rendering excludes Packet C internals in human and machine modes", () => {
@@ -2063,6 +2072,25 @@ test("prepare-next composes the guarded legacy continuation with one preparation
     assert.equal(preparationCalls, 2);
     assert.deepEqual(JSON.parse(stdout.join("")), second);
 
+    stdout.length = 0;
+    stderr.length = 0;
+    let passPreparationCalls = 0;
+    const passStatus = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--fury-model", "model:fury", "--json",
+    ], {
+      prepareSession: async () => { passPreparationCalls += 1; return first; },
+      continueLegacyReviewedTransition: async () => ({
+        authority: "none", missionId, state: "completed", disposition: "PASS", receiptId: "receipt:fury:pass",
+      }),
+    });
+    assert.equal(passStatus, 1);
+    assert.equal(passPreparationCalls, 1);
+    assert.equal(stderr.join(""), "");
+    assert.deepEqual(JSON.parse(stdout.join("")), {
+      authority: "none", missionId, state: "completed", disposition: "PASS", receiptId: "receipt:fury:pass",
+    });
+    assert.equal((stdout.join("").match(/"state"/gu) ?? []).length, 1);
+
     for (const closed of [
       { state: "invalid", code: "LEGACY_STATE_INELIGIBLE", errors: ["invalid legacy lineage", "no effects performed"] },
       { state: "conflict", code: "LEGACY_STATE_CHANGED", errors: ["legacy evidence changed"] },
@@ -2095,6 +2123,56 @@ test("prepare-next composes the guarded legacy continuation with one preparation
     assert.equal(reviseStatus, 1);
     assert.equal(stdout.join(""), "");
     assert.equal(stderr.join(""), "state: completed\ndisposition: REVISE\nreceiptId: receipt:fury:revise\n");
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+  }
+});
+
+test("prepare-next renders protected evidence exactly and shell-quotes missing-model roots", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "shield prepare '$;()-")));
+  const missionId = "mission:issue-362-shell-path";
+  const first = { state: "blocked", missionId, reasonCode: "protected_evidence_mismatch", errors: ["graph missing"] };
+  const stdout = [];
+  const stderr = [];
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  process.stdout.write = (chunk) => { stdout.push(String(chunk)); return true; };
+  process.stderr.write = (chunk) => { stderr.push(String(chunk)); return true; };
+  try {
+    const missingStatus = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root,
+    ], {
+      prepareSession: async () => first,
+      continueLegacyReviewedTransition: async () => { throw new Error("must not run without a model"); },
+    });
+    assert.equal(missingStatus, 1);
+    assert.equal(stdout.join(""), "");
+    const quotedRoot = `'${root.replaceAll("'", `'"'"'`)}'`;
+    assert.equal(stderr.join(""), [
+      "Preparation blocked — protected_evidence_mismatch: graph missing",
+      `Next action: shield mission prepare-next --mission-id '${missionId}' --root ${quotedRoot} --fury-model '<model-id>'`,
+      "",
+    ].join("\n"));
+
+    stdout.length = 0;
+    stderr.length = 0;
+    const graphRoot = join(root, ".shield", "audit", "mission-preparation", createHash("sha256").update(missionId).digest("hex"));
+    await mkdir(graphRoot, { recursive: true });
+    const protectedStatus = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--fury-model", "model:fury",
+    ], {
+      prepareSession: async () => first,
+      continueLegacyReviewedTransition: async () => { throw new Error("must not run with protected evidence"); },
+    });
+    assert.equal(protectedStatus, 1);
+    assert.equal(stdout.join(""), "");
+    assert.equal(stderr.join(""), [
+      "state: blocked",
+      "code: PROTECTED_GRAPH_NOT_ABSENT",
+      "errors: Protected mission-preparation graph state appeared during absence verification.",
+      "",
+    ].join("\n"));
   } finally {
     process.stdout.write = originalStdoutWrite;
     process.stderr.write = originalStderrWrite;
