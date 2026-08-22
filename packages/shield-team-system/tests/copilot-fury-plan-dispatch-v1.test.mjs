@@ -36,6 +36,7 @@ import {
   validateCopilotFuryPlanDispatchRequestV2,
   validateCopilotFuryPlanResultV2,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
+import { buildCopilotFuryReviewArtifactMapV1, createCopilotFuryExecutionToolBindingV1 } from "../dist/copilot-fury-plan-dispatch-core-v1.mjs";
 import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptLedgerV1 } from "../dist/seat-dispatch-store.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
@@ -217,10 +218,13 @@ async function fixture({ repositoryCard = true } = {}) {
   await writeFile(join(root, ".shield", ".gitignore"), "/journals/\n/audit/\n/dispatch-receipts.jsonl\n");
   if (repositoryCard) await writeFile(join(root, ".github", "agents", "fury.agent.md"), FURY_CARD);
   await writeFile(join(root, "package.json"), "{\"private\":true}\n");
+  const parentPlanPath = "docs/missions/issue-319-plan.md";
+  const parentPlanBytes = "# Parent plan for the exact review fixture.\n";
+  await writeFile(join(root, parentPlanPath), parentPlanBytes);
   git(root, ["init", "-q", "-b", "main"]);
   git(root, ["config", "user.email", "shield@example.invalid"]);
   git(root, ["config", "user.name", "SHIELD Fixture"]);
-  const basePaths = [".shield/config.json", ".shield/.gitignore", "package.json"];
+  const basePaths = [".shield/config.json", ".shield/.gitignore", "package.json", parentPlanPath];
   if (repositoryCard) basePaths.push(".github/agents/fury.agent.md");
   git(root, ["add", ...basePaths]);
   git(root, ["commit", "-qm", "dispatch base"]);
@@ -254,8 +258,8 @@ async function fixture({ repositoryCard = true } = {}) {
     repositoryId: "RanSolo/fixture",
     planningBaseRevision: baseRevision,
     parentPlanCommit: baseRevision,
-    parentPlanPath: "docs/missions/issue-319-plan.md",
-    parentPlanRawSha256: "a".repeat(64),
+    parentPlanPath,
+    parentPlanRawSha256: sha256(parentPlanBytes),
     transitionKind: "fresh_authorize_wheels_up",
     boundedOutcome: "Prepare one bounded next mission.",
     approvedRelativePaths: ["implementation.md"],
@@ -421,7 +425,7 @@ function productionPassOutput(current) {
 }
 
 function productionSdkHarness(options = {}) {
-  const calls = { clientOptions: null, sessionConfig: null, prompts: [], construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0 };
+  const calls = { clientOptions: null, sessionConfig: null, prompts: [], construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0, initializeAndValidate: 0, getCurrentMetadata: 0 };
   const event = (type, data) => ({ id: randomUUID(), parentId: null, timestamp: new Date().toISOString(), type, data });
   class CopilotClient {
     constructor(clientOptions) { calls.clientOptions = clientOptions; calls.construct += 1; options.onConstruct?.(clientOptions); }
@@ -441,6 +445,10 @@ function productionSdkHarness(options = {}) {
         rpc: {
           agent: { async getCurrent() { return { agent: { name: "fury" } }; } },
           model: { async getCurrent() { return { modelId: config.model }; } },
+          tools: {
+            async initializeAndValidate() { calls.initializeAndValidate += 1; if (options.initializeFault) throw new Error("tool initialization fault"); return {}; },
+            async getCurrentMetadata() { calls.getCurrentMetadata += 1; return options.metadata ?? { tools: [{ name: "read", description: "read" }, { name: "search", description: "search" }] }; },
+          },
         },
         async sendAndWait(request) {
           calls.prompts.push(request.prompt);
@@ -475,12 +483,20 @@ async function runProductionExecutor(current, harness) {
     async loadSdk() { return harness.module; },
     async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
   });
+  const transitionBytes = await readFile(join(current.root, current.request.transitionPlanPath), "utf8");
+  const reviewArtifactMap = await buildCopilotFuryReviewArtifactMapV1(current.request, {
+    kind: "committed_file",
+    file: { path: join(current.root, current.request.transitionPlanPath), bytes: transitionBytes, identity: "test-source", rawSha256: sha256(transitionBytes) },
+  }, current.plan);
+  const toolBinding = createCopilotFuryExecutionToolBindingV1(reviewArtifactMap.digest);
   const preflight = await value.preflight({
     repositoryRoot: current.root,
     requestedModel: current.request.requestedModel,
     requestedRuntime: current.request.requestedRuntime,
     requestedExecutor: current.request.requestedExecutor,
     executionIdentity: identity,
+    reviewArtifactMap,
+    toolBinding,
   });
   assert.equal(preflight.state, "ready", JSON.stringify(preflight));
   assert.equal(harness.calls.construct, 0);
@@ -497,6 +513,8 @@ async function runProductionExecutor(current, harness) {
     repairPrompt: "Return repaired closed result.",
     repairLimit: 0,
     validateOutput: () => true,
+    reviewArtifactMap,
+    toolBinding,
   });
   await value.close();
   return result;
@@ -1717,13 +1735,17 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.deepEqual(harness.calls.clientOptions.connection, { kind: "stdio", path: undefined, args: undefined, env: undefined });
   assert.notEqual(harness.calls.clientOptions.connection, harness.connection);
   assert.equal(Object.isFrozen(harness.calls.clientOptions.connection), true);
-  assert.deepEqual(harness.calls.sessionConfig.availableTools, ["read", "search"]);
+  assert.deepEqual(harness.calls.sessionConfig.availableTools, ["custom:read", "custom:search"]);
+  assert.deepEqual(harness.calls.sessionConfig.excludedTools, ["builtin:*", "mcp:*", "write", "edit", "apply_patch", "bash", "shell", "execute", "web", "custom:write", "custom:edit", "custom:apply_patch", "custom:bash", "custom:shell", "custom:execute", "custom:web"]);
+  assert.deepEqual(harness.calls.sessionConfig.customAgents[0].tools, ["read", "search"]);
   assert.deepEqual(harness.calls.sessionConfig.tools.map((tool) => tool.name), ["read", "search"]);
   assert.ok(harness.calls.sessionConfig.tools.every((tool) => tool.overridesBuiltInTool === true && tool.skipPermission === true && tool.defer === "never"));
   assert.deepEqual(harness.calls.sessionConfig.mcpServers, {});
   assert.equal(harness.calls.sessionConfig.enableConfigDiscovery, false);
   assert.equal(harness.calls.sessionConfig.enableFileHooks, false);
   assert.equal(harness.calls.sessionConfig.enableHostGitOperations, false);
+  assert.equal(harness.calls.initializeAndValidate, 1);
+  assert.equal(harness.calls.getCurrentMetadata, 1);
   const exactPath = join(current.root, "package.json");
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review" })).kind, "reject");
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review", managedApprovalRequired: true })).kind, "reject");
@@ -1747,6 +1769,13 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal(immutableRead.repositoryRevision, current.request.headRevision);
   assert.equal(immutableRead.path, "package.json");
   assert.equal(immutableRead.content, "{\"private\":true}\n");
+  const readTool = harness.calls.sessionConfig.tools.find((tool) => tool.name === "read");
+  const virtualTransition = JSON.parse(await readTool.handler({ path: current.request.transitionPlanPath }));
+  assert.equal(virtualTransition.content, await readFile(join(current.root, current.request.transitionPlanPath), "utf8"));
+  const pinnedParent = JSON.parse(await readTool.handler({ path: "docs/missions/issue-319-plan.md" }));
+  assert.equal(pinnedParent.content, await readFile(join(current.root, "docs/missions/issue-319-plan.md"), "utf8"));
+  const deterministicSearch = JSON.parse(await harness.calls.sessionConfig.tools.find((tool) => tool.name === "search").handler({ query: "Parent", path: "docs" }));
+  assert.deepEqual(deterministicSearch.matches.map(({ path, line }) => ({ path, line })), [{ path: "docs/missions/issue-319-plan.md", line: 1 }]);
   for (const query of ["replacement object one", '"replacement":"one"', '"replacement":"two"']) {
     const immutableSearch = JSON.parse(await harness.calls.sessionConfig.tools.find((tool) => tool.name === "search").handler({ query }));
     assert.deepEqual(immutableSearch.matches, []);
@@ -1756,6 +1785,47 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: aliasPath, intention: "alias" })).kind, "reject");
   assert.equal(harness.calls.disconnect, 1);
   assert.equal(harness.calls.stop, 1);
+});
+
+test("production tool initialization gates the model on the exact runtime metadata set", async () => {
+  const current = await fixture();
+  const harness = productionSdkHarness({ metadata: { tools: [{ name: "read", description: "read" }, { name: "unexpected", description: "unexpected" }] } });
+  const result = await runProductionExecutor(current, harness);
+  assert.equal(result.state, "failed", JSON.stringify(result));
+  assert.equal(result.code, "FURY_TOOL_BINDING_DRIFT");
+  assert.equal(harness.calls.initializeAndValidate, 1);
+  assert.equal(harness.calls.getCurrentMetadata, 1);
+  assert.equal(harness.calls.prompts.length, 0);
+  assert.equal(harness.calls.createSession, 1);
+});
+
+test("invalid execution descriptor registration fails before any SDK effect", async () => {
+  const current = await fixture();
+  const harness = productionSdkHarness();
+  const identity = productionExecutionIdentity(current);
+  const transitionBytes = await readFile(join(current.root, current.request.transitionPlanPath), "utf8");
+  const reviewArtifactMap = await buildCopilotFuryReviewArtifactMapV1(current.request, {
+    kind: "committed_file",
+    file: { path: join(current.root, current.request.transitionPlanPath), bytes: transitionBytes, identity: "test-source", rawSha256: sha256(transitionBytes) },
+  }, current.plan);
+  const validBinding = createCopilotFuryExecutionToolBindingV1(reviewArtifactMap.digest);
+  const invalidBinding = { ...validBinding, registeredDescriptors: [validBinding.registeredDescriptors[0], validBinding.registeredDescriptors[0]] };
+  const value = createCopilotFuryPlanExecutorV1({
+    async loadSdk() { return harness.module; },
+    async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+  });
+  const result = await value.preflight({
+    repositoryRoot: current.root,
+    requestedModel: current.request.requestedModel,
+    requestedRuntime: current.request.requestedRuntime,
+    requestedExecutor: current.request.requestedExecutor,
+    executionIdentity: identity,
+    reviewArtifactMap,
+    toolBinding: invalidBinding,
+  });
+  assert.equal(result.state, "blocked");
+  assert.equal(result.code, "FURY_TOOL_BINDING_INVALID");
+  assert.deepEqual(harness.calls, { clientOptions: null, sessionConfig: null, prompts: [], construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0, initializeAndValidate: 0, getCurrentMetadata: 0 });
 });
 
 test("production executor denies malformed, aliased, escaping, and Git-metadata tool arguments before execution", async () => {
