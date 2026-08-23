@@ -1,4 +1,5 @@
 import { types as utilTypes } from "node:util";
+import { createHash } from "node:crypto";
 import {
   SUPPORTED_MODE_IDS,
   validateShieldConfig,
@@ -13,16 +14,29 @@ import {
   createEvidenceRequirements,
   createSupervisedMissionBrief,
   validateSupervisedMissionBrief,
+  canonicalJson,
   type EvidenceRequirement,
   type EvidenceTimestamp,
   type MissionRiskFlags,
   type SupervisedMissionBrief,
 } from "./mission-v2.mjs";
+import { getMissionProfileV1, type MissionProfileId } from "./mission-profile-v1.mjs";
 import {
   classifyMissionRisk,
   type RiskAssessment,
 } from "../public/mission.mjs";
+import {
+  createIssueIntakeMissionBegunEntryV1,
+  createProfileAwareMissionBrief,
+  profileAwareMissionIntakeV1,
+  validateIssueIntakeSourceBindingV1,
+  type IssueIntakeSourceBindingV1,
+  type ProfileAwareMissionBriefContentV1,
+  type ProfileAwareMissionBriefV1,
+  type ProfileAwareMissionEntryV1,
+} from "./profile-aware-mission-v1.mjs";
 export { profileAwareMissionIntakeV1 } from "./profile-aware-mission-v1.mjs";
+export * from "./profile-aware-mission-v1.mjs";
 
 export const MISSION_INTAKE_SCHEMA_VERSION = 1 as const;
 export const MISSION_INTAKE_CONTRACT_VERSION = "mission.intake.v1" as const;
@@ -846,3 +860,188 @@ export function missionIntakeV1(input: unknown): MissionIntakeResultV1 {
     nextAction: bootstrap ? "provision_repository" : "initialize_journal",
   };
 }
+
+export const ISSUE_INTAKE_COMPILER_SCHEMA_VERSION = 1 as const;
+export const ISSUE_INTAKE_COMPILER_CONTRACT_VERSION = "mission.issue-intake-compiler.v1" as const;
+export const ISSUE_INTAKE_MISSION_ID_DOMAIN = "shield.mission.issue-intake.v1" as const;
+export const ISSUE_INTAKE_MAX_CRITERIA_ITEMS = 64 as const;
+export const ISSUE_INTAKE_MAX_CRITERION_LENGTH = 512 as const;
+
+export interface IssueIntakeAcceptanceCriteriaV1 {
+  readonly items: readonly string[];
+  readonly digest?: string;
+}
+
+export interface IssueIntakeObservationV1 {
+  readonly hostRepositoryId: string;
+  readonly repositoryNameWithOwner: string;
+  readonly hostIssueId: string;
+  readonly issueNumber: number;
+  readonly issueUrl: string;
+  readonly title: string;
+  readonly body: string;
+  readonly state: "OPEN";
+  readonly labels: readonly string[];
+  readonly updatedAt: string;
+  readonly issueRevisionId: string;
+  readonly acceptanceCriteria?: IssueIntakeAcceptanceCriteriaV1;
+}
+
+export interface IssueIntakeCompilerInputV1 {
+  readonly repositoryId: string;
+  readonly issueObservation: IssueIntakeObservationV1;
+  readonly acceptanceCriteria?: IssueIntakeAcceptanceCriteriaV1;
+  readonly profileId: MissionProfileId;
+  readonly branch: string;
+  readonly headRevision: string;
+  readonly preparedWorktreeReceipt?: { readonly receiptDigest: string };
+  readonly preparedWorktreeReceiptDigest?: string;
+  readonly configBytes: string | Uint8Array;
+  readonly trustedBindingRegistryBytes: string | Uint8Array;
+  readonly trustedBindings: import("./mission-v2.mjs").TrustedHumanBinding[];
+}
+
+export interface IssueIntakeCompiledMissionV1 {
+  readonly schemaVersion: 1;
+  readonly contractVersion: typeof ISSUE_INTAKE_COMPILER_CONTRACT_VERSION;
+  readonly brief: ProfileAwareMissionBriefV1;
+  readonly sourceBinding: IssueIntakeSourceBindingV1;
+  readonly entry: ProfileAwareMissionEntryV1;
+}
+
+export type IssueIntakeCompilerResultV1 =
+  | { readonly state: "valid"; readonly value: IssueIntakeCompiledMissionV1 }
+  | { readonly state: "invalid"; readonly code: string; readonly errors: readonly string[] };
+
+const ISSUE_HOST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
+const ISSUE_REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u;
+const ISSUE_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/[1-9][0-9]*$/u;
+const ISSUE_REVISION = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
+const GIT_HEAD = /^[0-9a-f]{40,64}$/u;
+const BYTE_DIGEST = /^(?:sha256:)?[a-f0-9]{64}$/u;
+
+function issueCompilerInvalid(code: string, message: string): IssueIntakeCompilerResultV1 {
+  return { state: "invalid", code, errors: [message] };
+}
+
+function issueBytes(value: unknown): Uint8Array | null {
+  if (typeof value === "string") return new TextEncoder().encode(value);
+  if (value instanceof Uint8Array && Object.getPrototypeOf(value) === Uint8Array.prototype) return new Uint8Array(value);
+  return null;
+}
+
+function byteDigest(value: string | Uint8Array): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+export function computeIssueIntakeMissionIdV1(repositoryHostId: string, issueHostId: string): string {
+  return `mission:issue-intake:${createHash("sha256").update(canonicalJson([ISSUE_INTAKE_MISSION_ID_DOMAIN, repositoryHostId, issueHostId])).digest("base64url")}`;
+}
+
+export function computeIssueAcceptanceCriteriaDigestV1(items: readonly string[]): string {
+  return `sha256:${createHash("sha256").update(canonicalJson({ schemaVersion: 1, items })).digest("hex")}`;
+}
+
+function normalizedIssueCriteria(input: unknown, observation: Record<string, unknown>): readonly string[] | null {
+  const candidate = input ?? observation.acceptanceCriteria ?? observation.criteria;
+  const items = Array.isArray(candidate) ? candidate : isPlainObject(candidate) ? candidate.items : null;
+  if (!Array.isArray(items) || items.length === 0 || items.length > ISSUE_INTAKE_MAX_CRITERIA_ITEMS) return null;
+  const normalized = items.map((item) => typeof item === "string" ? item.replace(/\r\n?/gu, "\n").trim() : null);
+  if (normalized.some((item) => item === null || item.length === 0 || item.length > ISSUE_INTAKE_MAX_CRITERION_LENGTH || CONTROL_CHARACTERS.test(item))) return null;
+  return normalized as string[];
+}
+
+function observationField(value: Record<string, unknown>, ...names: string[]): unknown {
+  for (const name of names) if (Object.hasOwn(value, name)) return value[name];
+  return undefined;
+}
+
+export function compileIssueIntakeV1(input: unknown): IssueIntakeCompilerResultV1 {
+  if (!isPlainObject(input) || !isPlainObject(input.issueObservation)) return issueCompilerInvalid("invalid_input", "Issue-intake compiler input is not a plain closed request.");
+  const observation = input.issueObservation as Record<string, unknown>;
+  const repositoryId = typeof input.repositoryId === "string" ? input.repositoryId : isPlainObject(input.repositoryObservation) && typeof input.repositoryObservation.repositoryId === "string" ? input.repositoryObservation.repositoryId : null;
+  const hostRepositoryId = observationField(observation, "hostRepositoryId", "repositoryHostId");
+  const repositoryNameWithOwner = observationField(observation, "repositoryNameWithOwner", "nameWithOwner");
+  const hostIssueId = observationField(observation, "hostIssueId", "issueHostId");
+  const issueNumber = observationField(observation, "issueNumber", "number");
+  const issueNumberValue = typeof issueNumber === "number" ? issueNumber : null;
+  const issueUrl = observationField(observation, "issueUrl", "url");
+  const title = observation.title;
+  const updatedAt = observation.updatedAt;
+  const issueRevisionId = observation.issueRevisionId;
+  if (repositoryId === null || !ISSUE_REPOSITORY.test(repositoryId) || typeof hostRepositoryId !== "string" || !ISSUE_HOST_ID.test(hostRepositoryId) || typeof repositoryNameWithOwner !== "string" || !ISSUE_REPOSITORY.test(repositoryNameWithOwner) || repositoryNameWithOwner !== repositoryId || typeof hostIssueId !== "string" || !ISSUE_HOST_ID.test(hostIssueId) || issueNumberValue === null || !Number.isSafeInteger(issueNumberValue) || issueNumberValue < 1 || typeof issueUrl !== "string" || !ISSUE_URL.test(issueUrl) || typeof title !== "string" || title.trim().length === 0 || title.length > MISSION_INTAKE_MAX_OBJECTIVE_LENGTH || CONTROL_CHARACTERS.test(title) || typeof updatedAt !== "string" || !isoUtc(updatedAt) || typeof issueRevisionId !== "string" || !ISSUE_REVISION.test(issueRevisionId)) {
+    return issueCompilerInvalid("invalid_observation", "Issue-intake observation is malformed or not repository-bound.");
+  }
+  let profile: MissionProfileId;
+  try {
+    if (typeof input.profileId !== "string") throw new Error();
+    profile = getMissionProfileV1(input.profileId as MissionProfileId).profileId;
+  } catch {
+    return issueCompilerInvalid("invalid_profile", "Issue-intake compiler requires an explicit supported profile.");
+  }
+  const branch = typeof input.branch === "string" ? input.branch : isPlainObject(input.repositoryObservation) && typeof input.repositoryObservation.branch === "string" ? input.repositoryObservation.branch : null;
+  const headRevision = typeof input.headRevision === "string" ? input.headRevision : isPlainObject(input.repositoryObservation) && typeof input.repositoryObservation.headRevision === "string" ? input.repositoryObservation.headRevision : null;
+  if (branch === null || branch.length === 0 || branch.length > MISSION_INTAKE_MAX_BRANCH_LENGTH || CONTROL_CHARACTERS.test(branch) || headRevision === null || !GIT_HEAD.test(headRevision)) return issueCompilerInvalid("invalid_repository", "Issue-intake branch or exact HEAD is malformed.");
+  const preparedWorktreeReceiptDigest = typeof input.preparedWorktreeReceiptDigest === "string" ? input.preparedWorktreeReceiptDigest : isPlainObject(input.preparedWorktreeReceipt) && typeof input.preparedWorktreeReceipt.receiptDigest === "string" ? input.preparedWorktreeReceipt.receiptDigest : null;
+  if (preparedWorktreeReceiptDigest === null || !BYTE_DIGEST.test(preparedWorktreeReceiptDigest)) return issueCompilerInvalid("invalid_prepared_worktree", "Prepared-worktree receipt digest is missing or malformed.");
+  const configBytes = issueBytes(input.configBytes);
+  const registryBytes = issueBytes(input.trustedBindingRegistryBytes);
+  if (configBytes === null || registryBytes === null) return issueCompilerInvalid("invalid_policy_bytes", "Exact config and trusted-binding-registry bytes are required.");
+  if (!Array.isArray(input.trustedBindings)) return issueCompilerInvalid("invalid_bindings", "Trusted bindings used for admission are required.");
+  const criteria = normalizedIssueCriteria(input.acceptanceCriteria, observation);
+  if (criteria === null) return issueCompilerInvalid("invalid_acceptance_criteria", "Exactly one bounded non-empty acceptance-criteria sequence is required.");
+  const criteriaDigest = computeIssueAcceptanceCriteriaDigestV1(criteria);
+  const suppliedCriteria = input.acceptanceCriteria ?? observation.acceptanceCriteria;
+  if (isPlainObject(suppliedCriteria) && suppliedCriteria.digest !== undefined && suppliedCriteria.digest !== criteriaDigest) return issueCompilerInvalid("invalid_acceptance_criteria", "Acceptance-criteria digest does not match canonical criteria.");
+  const missionId = computeIssueIntakeMissionIdV1(hostRepositoryId, hostIssueId);
+  const expectedRequireSimmons = profile === "product_sensitive";
+  const briefContent: ProfileAwareMissionBriefContentV1 = {
+    schemaVersion: 2,
+    missionId,
+    objective: title,
+    subjectId: `github:${repositoryNameWithOwner}/issue/${issueNumberValue}`,
+    riskFlags: { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: true },
+    participants: ["hill", "fury", "may", ...getMissionProfileV1(profile).requiredExecutionGateRoleIds.filter((role) => role !== "coulson"), "coulson"].filter((seatId, index, seats) => seats.indexOf(seatId) === index).sort((left, right) => CANONICAL_ROLE_IDS.indexOf(left as never) - CANONICAL_ROLE_IDS.indexOf(right as never)).map((seatId) => ({ seatId })),
+    activatedModes: [{ modeId: "delivery", modeVersion: "1.0.0", seatId: "hill", activationSource: "issue-intake" }],
+    requireSimmons: expectedRequireSimmons,
+    createdAt: { value: updatedAt, provenance: "hostTrusted" },
+    profileId: profile,
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: [...getMissionProfileV1(profile).requiredExecutionGateRoleIds],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9",
+  };
+  let brief: ProfileAwareMissionBriefV1;
+  try { brief = createProfileAwareMissionBrief(briefContent); } catch (error) { return issueCompilerInvalid("brief_invalid", error instanceof Error ? error.message : "Compiled profile-aware brief is invalid."); }
+  const sourceBinding: IssueIntakeSourceBindingV1 = {
+    schemaVersion: 1,
+    contractVersion: "mission.issue-intake-source-binding.v1",
+    repositoryId,
+    hostRepositoryId,
+    repositoryNameWithOwner,
+    hostIssueId,
+    issueNumber: issueNumberValue,
+    issueUrl,
+    issueRevisionId,
+    updatedAt,
+    criteriaDigest,
+    profileId: profile,
+    profileVersion: 1,
+    branch,
+    headRevision,
+    preparedWorktreeReceiptDigest,
+    configBytesDigest: byteDigest(configBytes),
+    trustedBindingRegistryBytesDigest: byteDigest(registryBytes),
+    briefRevisionId: brief.revisionId,
+  };
+  const sourceCheck = validateIssueIntakeSourceBindingV1(sourceBinding, brief);
+  if (sourceCheck.state === "invalid") return issueCompilerInvalid("binding_invalid", sourceCheck.errors.join(" "));
+  const intake = profileAwareMissionIntakeV1({ brief: briefContent, trustedBindings: input.trustedBindings as import("./mission-v2.mjs").TrustedHumanBinding[], issueIntakeSourceBinding: sourceBinding });
+  if (intake.state === "invalid") return issueCompilerInvalid(intake.code, intake.errors.join(" "));
+  const entry = createIssueIntakeMissionBegunEntryV1({ brief: intake.value.brief, trustedBindings: input.trustedBindings as import("./mission-v2.mjs").TrustedHumanBinding[], issueIntakeSourceBinding: sourceBinding });
+  return { state: "valid", value: { schemaVersion: ISSUE_INTAKE_COMPILER_SCHEMA_VERSION, contractVersion: ISSUE_INTAKE_COMPILER_CONTRACT_VERSION, brief: intake.value.brief, sourceBinding, entry } };
+}
+
+export const compileIssueToProfileAwareMissionV1 = compileIssueIntakeV1;
+export const compileIssueToProfileAwareBriefV1 = compileIssueIntakeV1;

@@ -41,6 +41,77 @@ export interface CommandResult {
   stderr: string;
 }
 
+export declare const GITHUB_ISSUE_OBSERVATION_SCHEMA_VERSION: 1;
+export declare const GITHUB_ISSUE_OBSERVATION_CONTRACT_VERSION: "github.issue-observation.v1";
+export declare const GITHUB_ISSUE_OBSERVER_MAX_BYTES: 4194304;
+export declare const GITHUB_ISSUE_OBSERVER_MAX_DEPTH: 16;
+export declare const GITHUB_ISSUE_OBSERVER_TIMEOUT_MS: 15000;
+export declare const GITHUB_ISSUE_GRAPHQL_QUERY_V1: string;
+
+export interface GitHubIssueByteRunnerOptionsV1 {
+  cwd?: string;
+  encoding: "buffer";
+  timeoutMs: 15000;
+  maxBuffer: 4194304;
+  shell: false;
+  env: Readonly<Record<string, string>>;
+  input: null;
+}
+
+export interface GitHubIssueObservationV1 {
+  schemaVersion: 1;
+  contractVersion: "github.issue-observation.v1";
+  authority: "none";
+  assuranceKind: "host_asserted";
+  sourceRef: string;
+  observedAt: string;
+  hostRepositoryId: string;
+  repositoryNameWithOwner: string;
+  hostIssueId: string;
+  issueNumber: number;
+  issueUrl: string;
+  title: string;
+  body: string;
+  state: "OPEN";
+  labels: readonly string[];
+  updatedAt: string;
+  issueRevisionId: string;
+  acceptanceCriteria: { items: readonly string[]; digest: string };
+}
+
+export type GitHubIssueByteRunnerV1 = (
+  executable: "gh",
+  args: readonly string[],
+  options: GitHubIssueByteRunnerOptionsV1,
+) => {
+  exitCode: number;
+  stdout: Uint8Array;
+  stderr: Uint8Array;
+};
+
+export type GitHubAcceptanceCriteriaResultV1 =
+  | { state: "observed"; items: readonly string[]; digest: string }
+  | { state: "blocked"; reason: "acceptance_criteria_invalid" };
+
+export function extractGitHubAcceptanceCriteriaV1(body: string): GitHubAcceptanceCriteriaResultV1;
+export function observeGitHubIssueV1(
+  input:
+    | string
+    | {
+        repositoryId?: string;
+        repositoryOwner?: string;
+        repositoryName?: string;
+        issueNumber?: number;
+        sourceRef?: string;
+        issueRef?: string;
+      },
+  options?: {
+    cwd?: string;
+    run?: GitHubIssueByteRunnerV1;
+    now?: () => string;
+  },
+): { state: "observed"; observation: GitHubIssueObservationV1 } | { state: "blocked"; reason: string };
+
 export interface FeatureIntegrationGitHubRefObservationV1 {
   repositoryId: string;
   fullRef: string;

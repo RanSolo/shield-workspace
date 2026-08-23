@@ -1,15 +1,320 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { isProxy } from "node:util/types";
 
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
 import { validateAdapterCandidate } from "../dist/adapter-v1.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
+import { strictParseJson } from "../scripts/model/strict-json.mjs";
 import {
   createOrUpdatePR,
   defaultRun,
   evaluatePRPublicationScope,
 } from "./pr-workspace.mjs";
 import { resolveJournaledPublicationRequest } from "./publication-gate.mjs";
+
+export const GITHUB_ISSUE_OBSERVATION_SCHEMA_VERSION = 1;
+export const GITHUB_ISSUE_OBSERVATION_CONTRACT_VERSION = "github.issue-observation.v1";
+export const GITHUB_ISSUE_OBSERVER_MAX_BYTES = 4 * 1024 * 1024;
+export const GITHUB_ISSUE_OBSERVER_MAX_DEPTH = 16;
+export const GITHUB_ISSUE_OBSERVER_TIMEOUT_MS = 15_000;
+export const GITHUB_ISSUE_GRAPHQL_QUERY_V1 = `query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    id
+    nameWithOwner
+    issue(number: $number) {
+      id
+      number
+      url
+      title
+      body
+      state
+      updatedAt
+      labels(first: 65) { nodes { name } }
+    }
+  }
+}`;
+
+const GITHUB_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+const GITHUB_ISSUE_REFERENCE = /^github:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/issues\/([1-9][0-9]{0,8})$/u;
+const GITHUB_HOST_ID = /^[A-Za-z0-9_:-]{1,256}$/u;
+const GITHUB_ISSUE_STATES = new Set(["OPEN"]);
+
+function githubIssueBlocked(reason) {
+  return { state: "blocked", reason };
+}
+
+function plainRecord(value) {
+  try {
+    return value !== null && typeof value === "object" && !Array.isArray(value) &&
+      Object.getPrototypeOf(value) === Object.prototype;
+  } catch {
+    return false;
+  }
+}
+
+function exactRecord(value, fields) {
+  try {
+    if (!plainRecord(value) || Reflect.ownKeys(value).some((key) => typeof key !== "string")) return false;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    return Object.keys(value).length === fields.length &&
+      fields.every((field) => Object.hasOwn(value, field) && "value" in descriptors[field] && !descriptors[field].get && !descriptors[field].set);
+  } catch {
+    return false;
+  }
+}
+
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (plainRecord(value)) {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalJsonValue(value[key])]));
+  }
+  return value;
+}
+
+function digest(value) {
+  return `sha256:${createHash("sha256").update(JSON.stringify(canonicalJsonValue(value)), "utf8").digest("base64url")}`;
+}
+
+function criteriaDigest(items) {
+  return `sha256:${createHash("sha256").update(JSON.stringify(canonicalJsonValue({ schemaVersion: 1, items })), "utf8").digest("hex")}`;
+}
+
+function bytewiseSort(values) {
+  return [...values].sort((left, right) => Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")));
+}
+
+function normalizeIssueRequest(input) {
+  let sourceRef;
+  let repositoryId;
+  let issueNumber;
+  if (typeof input === "string") {
+    sourceRef = input;
+  } else if (plainRecord(input)) {
+    if (Reflect.ownKeys(input).some((key) => typeof key !== "string") ||
+        Object.values(Object.getOwnPropertyDescriptors(input)).some((descriptor) => descriptor.get || descriptor.set)) return null;
+    const fields = Object.keys(input);
+    const allowed = new Set(["repositoryId", "repositoryOwner", "repositoryName", "issueNumber", "sourceRef", "issueRef"]);
+    if (fields.some((field) => !allowed.has(field))) return null;
+    if (input.sourceRef !== undefined && input.issueRef !== undefined) return null;
+    if (input.repositoryId !== undefined && (input.repositoryOwner !== undefined || input.repositoryName !== undefined)) return null;
+    if ((input.repositoryOwner === undefined) !== (input.repositoryName === undefined)) return null;
+    sourceRef = input.sourceRef ?? input.issueRef;
+    issueNumber = input.issueNumber;
+    repositoryId = input.repositoryId ??
+      (typeof input.repositoryOwner === "string" && typeof input.repositoryName === "string"
+        ? `${input.repositoryOwner}/${input.repositoryName}` : undefined);
+  } else {
+    return null;
+  }
+  if (typeof sourceRef !== "string") return null;
+  const match = GITHUB_ISSUE_REFERENCE.exec(sourceRef);
+  if (!match) return null;
+  const referenceRepositoryId = `${match[1]}/${match[2]}`;
+  const referenceIssueNumber = Number(match[3]);
+  if (repositoryId !== undefined && (typeof repositoryId !== "string" || repositoryId !== referenceRepositoryId)) return null;
+  if (issueNumber !== undefined && (typeof issueNumber !== "number" || !Number.isSafeInteger(issueNumber) || issueNumber !== referenceIssueNumber)) return null;
+  if (!GITHUB_REPOSITORY.test(referenceRepositoryId) || !Number.isSafeInteger(referenceIssueNumber)) return null;
+  return Object.freeze({
+    repositoryId: referenceRepositoryId,
+    owner: match[1],
+    repository: match[2],
+    issueNumber: referenceIssueNumber,
+    sourceRef,
+  });
+}
+
+function issueEnvironment() {
+  return Object.freeze({ PATH: process.env.PATH ?? "", LANG: "C", LC_ALL: "C" });
+}
+
+function defaultGitHubIssueByteRunner(executable, args, options) {
+  try {
+    return {
+      exitCode: 0,
+      stdout: execFileSync(executable, args, {
+        cwd: options.cwd,
+        encoding: "buffer",
+        timeout: options.timeoutMs,
+        maxBuffer: options.maxBuffer,
+        shell: false,
+        env: options.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      }),
+      stderr: Buffer.alloc(0),
+    };
+  } catch (error) {
+    return {
+      exitCode: Number.isInteger(error?.status) ? error.status : -1,
+      stdout: Buffer.isBuffer(error?.stdout) ? error.stdout : Buffer.from(error?.stdout ?? ""),
+      stderr: Buffer.isBuffer(error?.stderr) ? error.stderr : Buffer.from(String(error?.stderr ?? error?.message ?? error)),
+    };
+  }
+}
+
+function runnerBytes(value) {
+  return Buffer.isBuffer(value) || value instanceof Uint8Array ? Buffer.from(value) : null;
+}
+
+function runnerFailureReason(result) {
+  let text = "";
+  try {
+    const stderr = runnerBytes(result?.stderr);
+    const stdout = runnerBytes(result?.stdout);
+    text = `${stderr ? new TextDecoder("utf-8", { fatal: false }).decode(stderr) : ""}\n${stdout ? new TextDecoder("utf-8", { fatal: false }).decode(stdout) : ""}`.toLowerCase();
+  } catch { /* use the stable host failure below */ }
+  if (/authenticat|not logged|credential/u.test(text)) return "authentication_failed";
+  if (/forbidden|permission|not authorized/u.test(text)) return "authorization_failed";
+  if (/rate.?limit/u.test(text)) return "rate_limited";
+  if (/timeout|timed out/u.test(text)) return "timeout";
+  if (/not found|could not resolve/u.test(text)) return "not_found";
+  if (/network|offline|connection|dns/u.test(text)) return "network_failed";
+  return "host_rejected";
+}
+
+function strictResponseObject(value) {
+  if (!exactRecord(value, ["data"])) return null;
+  if (!exactRecord(value.data, ["repository"])) return null;
+  if (!exactRecord(value.data.repository, ["id", "nameWithOwner", "issue"])) return null;
+  return value.data.repository;
+}
+
+function normalizeMarkdownHeading(value) {
+  return value.normalize("NFKC").replace(/\s+/gu, " ").replace(/\s+#+\s*$/u, "").trim().toLowerCase();
+}
+
+export function extractGitHubAcceptanceCriteriaV1(body) {
+  if (typeof body !== "string" || Buffer.byteLength(body, "utf8") > 262_144) {
+    return githubIssueBlocked("acceptance_criteria_invalid");
+  }
+  const lines = body.replace(/\r\n?/gu, "\n").split("\n");
+  const headings = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^(#{1,6})[ \t]+(.+?)[ \t]*$/u.exec(lines[index]);
+    if (match) headings.push({ index, level: match[1].length, title: normalizeMarkdownHeading(match[2]) });
+  }
+  const matches = headings.filter((heading) => heading.level === 2 && heading.title === "acceptance criteria");
+  if (matches.length !== 1) return githubIssueBlocked("acceptance_criteria_invalid");
+  const heading = matches[0];
+  const nextHeading = headings.find((candidate) => candidate.index > heading.index && candidate.level <= 2);
+  const section = lines.slice(heading.index + 1, nextHeading?.index ?? lines.length);
+  if (headings.some((candidate) => candidate.index > heading.index && candidate.index < (nextHeading?.index ?? lines.length) && candidate.level > 2)) {
+    return githubIssueBlocked("acceptance_criteria_invalid");
+  }
+  const criteria = [];
+  for (const line of section) {
+    if (line.trim() === "") continue;
+    if (/^[ \t]/u.test(line)) return githubIssueBlocked("acceptance_criteria_invalid");
+    const item = /^(?:[-*+])[ \t]+(.+?)\s*$/u.exec(line);
+    if (!item) return githubIssueBlocked("acceptance_criteria_invalid");
+    const text = item[1].replace(/^\[[ xX]\][ \t]+/u, "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+    if (text.length === 0 || text.length > 512) return githubIssueBlocked("acceptance_criteria_invalid");
+    criteria.push(text);
+    if (criteria.length > 64) return githubIssueBlocked("acceptance_criteria_invalid");
+  }
+  if (criteria.length === 0) return githubIssueBlocked("acceptance_criteria_invalid");
+  return {
+    state: "observed",
+    items: Object.freeze(criteria),
+    digest: criteriaDigest(criteria),
+  };
+}
+
+export function observeGitHubIssueV1(input, options = {}) {
+  const request = normalizeIssueRequest(input);
+  if (!request || (options !== undefined && !plainRecord(options))) return githubIssueBlocked("invalid_issue_reference");
+  const run = options.run ?? defaultGitHubIssueByteRunner;
+  if (typeof run !== "function") return githubIssueBlocked("adapter_unavailable");
+  const args = [
+    "api", "graphql", "-f", `query=${GITHUB_ISSUE_GRAPHQL_QUERY_V1}`,
+    "-f", `owner=${request.owner}`, "-f", `repo=${request.repository}`, "-F", `number=${request.issueNumber}`,
+  ];
+  const runOptions = {
+    cwd: options.cwd,
+    encoding: "buffer",
+    timeoutMs: GITHUB_ISSUE_OBSERVER_TIMEOUT_MS,
+    maxBuffer: GITHUB_ISSUE_OBSERVER_MAX_BYTES,
+    shell: false,
+    env: issueEnvironment(),
+    input: null,
+  };
+  let result;
+  try {
+    result = run("gh", args, runOptions);
+  } catch (error) {
+    result = { exitCode: -1, stdout: Buffer.alloc(0), stderr: Buffer.from(String(error?.message ?? error)) };
+  }
+  if (!result || !Number.isInteger(result.exitCode) || result.exitCode !== 0) {
+    return githubIssueBlocked(runnerFailureReason(result));
+  }
+  const bytes = runnerBytes(result.stdout);
+  if (!bytes || bytes.length > GITHUB_ISSUE_OBSERVER_MAX_BYTES) return githubIssueBlocked("invalid_utf8");
+  let responseText;
+  try {
+    responseText = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return githubIssueBlocked("invalid_utf8");
+  }
+  const parsed = strictParseJson(responseText, { maxBytes: GITHUB_ISSUE_OBSERVER_MAX_BYTES, maxDepth: GITHUB_ISSUE_OBSERVER_MAX_DEPTH, rejectControlCharacters: false });
+  if (parsed.state !== "valid") return githubIssueBlocked("malformed_response");
+  const repository = strictResponseObject(parsed.value);
+  if (!repository || typeof repository.id !== "string" || !GITHUB_HOST_ID.test(repository.id) ||
+      typeof repository.nameWithOwner !== "string" || repository.nameWithOwner !== request.repositoryId) {
+    return githubIssueBlocked("repository_identity_mismatch");
+  }
+  const issue = repository.issue;
+  if (issue === null) return githubIssueBlocked("issue_not_found");
+  if (!exactRecord(issue, ["id", "number", "url", "title", "body", "state", "updatedAt", "labels"]) ||
+      !GITHUB_HOST_ID.test(issue.id) || issue.number !== request.issueNumber || typeof issue.url !== "string" ||
+      issue.url !== `https://github.com/${request.repositoryId}/issues/${request.issueNumber}` ||
+      typeof issue.title !== "string" || issue.title.trim() === "" ||
+      (issue.body !== null && typeof issue.body !== "string") || !GITHUB_ISSUE_STATES.has(issue.state) ||
+      typeof issue.updatedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(issue.updatedAt) ||
+      Number.isNaN(Date.parse(issue.updatedAt)) ||
+      !exactRecord(issue.labels, ["nodes"]) || !Array.isArray(issue.labels.nodes) || issue.labels.nodes.length > 64 ||
+      issue.labels.nodes.some((label) => !exactRecord(label, ["name"]) || typeof label.name !== "string" || label.name.length === 0)) {
+    return githubIssueBlocked(issue.state !== "OPEN" ? "issue_not_open" : "issue_identity_mismatch");
+  }
+  const labels = bytewiseSort(issue.labels.nodes.map((label) => label.name));
+  const acceptance = extractGitHubAcceptanceCriteriaV1(issue.body ?? "");
+  if (acceptance.state !== "observed") return acceptance;
+  const issueRevision = digest({
+    repositoryHostId: repository.id,
+    repositoryNameWithOwner: repository.nameWithOwner,
+    issueHostId: issue.id,
+    issueNumber: issue.number,
+    url: issue.url,
+    title: issue.title,
+    body: issue.body ?? "",
+    state: issue.state,
+    labels,
+    updatedAt: issue.updatedAt,
+    acceptanceCriteriaDigest: acceptance.digest,
+  });
+  const observedAt = typeof options.now === "function" ? options.now() : new Date().toISOString();
+  if (typeof observedAt !== "string" || Number.isNaN(Date.parse(observedAt))) return githubIssueBlocked("observation_time_invalid");
+  const observation = Object.freeze({
+    schemaVersion: GITHUB_ISSUE_OBSERVATION_SCHEMA_VERSION,
+    contractVersion: GITHUB_ISSUE_OBSERVATION_CONTRACT_VERSION,
+    authority: "none",
+    assuranceKind: "host_asserted",
+    sourceRef: request.sourceRef,
+    observedAt,
+    hostRepositoryId: repository.id,
+    repositoryNameWithOwner: repository.nameWithOwner,
+    hostIssueId: issue.id,
+    issueNumber: issue.number,
+    issueUrl: issue.url,
+    title: issue.title,
+    body: issue.body ?? "",
+    state: issue.state,
+    labels: Object.freeze(labels),
+    updatedAt: issue.updatedAt,
+    issueRevisionId: issueRevision,
+    acceptanceCriteria: Object.freeze({ items: acceptance.items, digest: acceptance.digest }),
+  });
+  return { state: "observed", observation };
+}
 
 const FAILURE_REASONS = new Set([
   "adapter_unavailable",

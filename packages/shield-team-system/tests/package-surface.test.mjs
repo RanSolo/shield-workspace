@@ -322,6 +322,11 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof localTools.runMayControlLoop, "function");
   assert.equal(localTools.MAY_TOOL_DEFINITIONS.length, 2);
   assert.equal(typeof github.deliverGitHubCommunication, "function");
+  assert.equal(github.GITHUB_ISSUE_OBSERVATION_SCHEMA_VERSION, 1);
+  assert.equal(github.GITHUB_ISSUE_OBSERVATION_CONTRACT_VERSION, "github.issue-observation.v1");
+  assert.equal(typeof github.GITHUB_ISSUE_GRAPHQL_QUERY_V1, "string");
+  assert.equal(typeof github.extractGitHubAcceptanceCriteriaV1, "function");
+  assert.equal(typeof github.observeGitHubIssueV1, "function");
   assert.equal(typeof github.prepareDeliveryWorkspaceForDispatch, "function");
   assert.equal(github.FURY_PLAN_GATE_CONTRACT_VERSION, "fury.plan-gate.v1");
   assert.equal(typeof github.evaluateFuryPlanGateV1, "function");
@@ -589,6 +594,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       FURY_PLAN_REVIEW_EVIDENCE_CONTRACT_VERSION,
       createGitHubFollowUpCandidate,
       deliverGitHubCommunication,
+      extractGitHubAcceptanceCriteriaV1,
+      observeGitHubIssueV1,
       evaluateFuryPlanGateV1,
       evaluateFuryPlanReviewEvidenceV1,
       prepareDeliveryWorkspaceForDispatch,
@@ -601,6 +608,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       type FuryPlanReviewEvidenceCandidateV1,
       type FuryPlanReviewEvidenceEvaluationV1,
       type GitHubFollowUpCandidateInput,
+      type GitHubIssueObservationV1,
+      type GitHubIssueByteRunnerV1,
       type PRWorkspaceReceipt,
       type PRPublicationReconciliation,
     } from "@shield/team-system/github";

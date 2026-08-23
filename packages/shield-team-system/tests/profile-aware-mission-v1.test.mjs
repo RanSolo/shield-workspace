@@ -291,6 +291,16 @@ test("profile-aware brief activations reject human gates and V0.3-disabled dispa
   })).state, "valid");
 });
 
+test("shared profile-aware validation strengthens risk, uniqueness, gates, and Simmons consistency without changing legacy modes", () => {
+  const { revisionId: _revisionId, ...content } = brief("standard");
+  const legacyMode = { modeId: "debugger", modeVersion: "1.0.0", seatId: "daisy", activationSource: "legacy-brief" };
+  assert.equal(validateProfileAwareMissionBrief(createProfileAwareMissionBrief({ ...content, activatedModes: [legacyMode] })).state, "valid");
+  assert.equal(validateProfileAwareMissionBrief(createProfileAwareMissionBrief({ ...content, participants: [...content.participants, { seatId: "may" }] })).state, "invalid");
+  assert.equal(validateProfileAwareMissionBrief(createProfileAwareMissionBrief({ ...content, riskFlags: { ...content.riskFlags, unexpected: false } })).state, "invalid");
+  assert.equal(validateProfileAwareMissionBrief({ ...createProfileAwareMissionBrief(content), requiredExecutionGateRoleIds: ["coulson", "fitz"] }).state, "invalid");
+  assert.equal(validateProfileAwareMissionBrief(createProfileAwareMissionBrief({ ...content, requireSimmons: true, participants: [...content.participants, { seatId: "simmons" }] })).state, "invalid");
+});
+
 test("Coulson authorization is distinct from final acceptance and ordering is replayed", () => {
   const current = brief("standard");
   const coulson = authority("coulson");

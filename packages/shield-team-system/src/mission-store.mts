@@ -449,6 +449,15 @@ async function acquireProfileAwareLock(paths: MissionJournalPaths): Promise<Cont
   }
 }
 
+async function acquireProfileAwareLockForIssueReplay(paths: MissionJournalPaths): Promise<ContractResult<ProfileAwareLockToken>> {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    const acquired = await acquireProfileAwareLock(paths);
+    if (acquired.state === "valid" || acquired.code !== "journal_lock_held") return acquired;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+  return invalid("journal_lock_held", "Mission journal lock remained held during bounded issue replay initialization.");
+}
+
 async function releaseProfileAwareLock(token: ProfileAwareLockToken): Promise<ContractResult<never>> {
   if (!await verifyProfileAwareLockToken(token) || !await isMatchingLockToken(token.path, token)) {
     return invalid("recovery_required", "Mission journal lock identity or marker changed before release.");
@@ -587,6 +596,77 @@ export async function initializeProfileAwareMissionJournalV1(input: unknown): Pr
     result = invalid("recovery_required", `Profile-aware mission initialization failed unexpectedly: ${error instanceof Error ? error.message : String(error)}.`);
   }
 
+  const released = await releaseProfileAwareLock(token.value);
+  if (released.state === "invalid") return invalidMany("recovery_required", released.errors);
+  return result;
+}
+
+export async function initializeIssueIntakeMissionJournalV1(input: unknown): Promise<ContractResult<{ journalPath: string; projection: ProfileAwareProjectionV1; replayed: boolean }>> {
+  const checked = snapshotProfileAwareInput(input);
+  if (checked.state === "invalid") return checked;
+  const { repositoryRoot, configuredJournalPath, missionId, entry } = checked.value;
+  if (entry.missionId !== missionId || entry.sequence !== 0 || entry.type !== "mission.begun") return invalid("sequence_invalid", "Issue-intake initialization requires exactly one sequence-0 mission.begun entry.");
+  if (!isPlainObject(entry.payload) || !Object.hasOwn(entry.payload, "issueIntakeSourceBinding")) return invalid("invalid_issue_intake", "Issue-intake initialization requires its durable source binding.");
+  const candidateReplay = replayProfileAwareMissionJournal([entry]);
+  if (candidateReplay.state === "invalid") return invalidMany(candidateReplay.code, candidateReplay.errors);
+  if (candidateReplay.value.missionId !== missionId) return invalid("mission_mismatch", "Initial issue-intake projection does not match the requested mission.");
+  const candidateBytes = lineJson(entry);
+  const paths = resolveSupervisedMissionPaths(repositoryRoot, configuredJournalPath, missionId);
+  if (paths.state === "invalid") return paths;
+  const root = await ensureProfileAwareJournalRoot(repositoryRoot, paths.value.root);
+  if (root.state === "invalid") return root;
+  const confinement = await verifyConfinement(repositoryRoot, paths.value.root);
+  if (confinement.state === "invalid") return confinement;
+  const token = await acquireProfileAwareLockForIssueReplay(paths.value);
+  if (token.state === "invalid") return token;
+  let result: ContractResult<{ journalPath: string; projection: ProfileAwareProjectionV1; replayed: boolean }>;
+  try {
+    const existing = await readExistingText(paths.value.journalPath);
+    if (existing !== null) {
+      if (existing.state === "invalid") {
+        result = invalidMany("recovery_required", existing.errors);
+      } else {
+        const parsed = await parseProfileAwareJournalText(existing.value);
+        if (parsed.state === "invalid") {
+          result = invalidMany("recovery_required", parsed.errors);
+        } else if (parsed.value.entries.length === 0 || parsed.value.entries[0].type !== "mission.begun") {
+          result = invalid("conflicting_replay", "Existing mission journal is not an issue-intake begin entry.");
+        } else if (canonicalJson(parsed.value.entries[0]) !== canonicalJson(entry)) {
+          result = invalid("conflicting_replay", "Existing issue-intake mission identity conflicts with the requested replay.");
+        } else {
+          result = valid({ journalPath: paths.value.journalPath, projection: parsed.value.projection, replayed: true });
+        }
+      }
+    } else {
+      let handle;
+      try {
+        handle = await open(paths.value.journalPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644);
+        const stats = await handle.stat();
+        if (!stats.isFile()) {
+          result = invalid("unsafe_path", "Issue-intake mission journal must be a regular file.");
+        } else {
+          const write = await handle.write(candidateBytes, null, "utf8");
+          if (write.bytesWritten !== lineLength(candidateBytes)) result = invalid("recovery_required", "Issue-intake mission initialization write was incomplete.");
+          else {
+            await handle.sync();
+            if (!await syncDirectory(paths.value.root)) result = invalid("recovery_required", "Issue-intake mission journal parent directory sync failed after creation.");
+            else {
+              const after = await readProfileAwareMissionJournal(paths.value);
+              if (after.state === "invalid" || after.value.bytes !== candidateBytes || canonicalJson(after.value.projection) !== canonicalJson(candidateReplay.value)) result = invalid("recovery_required", "Issue-intake mission initialization readback is not exact.");
+              else result = valid({ journalPath: paths.value.journalPath, projection: after.value.projection, replayed: false });
+            }
+          }
+        }
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        result = invalid(code === "ELOOP" ? "unsafe_path" : "recovery_required", `Issue-intake mission initialization failed durably: ${code ?? "unknown_error"}.`);
+      } finally {
+        await handle?.close().catch(() => undefined);
+      }
+    }
+  } catch (error) {
+    result = invalid("recovery_required", `Issue-intake replay initialization failed unexpectedly: ${error instanceof Error ? error.message : String(error)}.`);
+  }
   const released = await releaseProfileAwareLock(token.value);
   if (released.state === "invalid") return invalidMany("recovery_required", released.errors);
   return result;
@@ -1106,3 +1186,5 @@ export async function initializeSupervisedMissionJournal(input: {
     return valid({ journalPath: paths.value.journalPath, projection: candidate.value.projection });
   } finally { await lockHandle.close().catch(() => undefined); await unlink(paths.value.lockPath).catch(() => undefined); }
 }
+
+export const initializeReplayAwareIssueIntakeMissionJournalV1 = initializeIssueIntakeMissionJournalV1;

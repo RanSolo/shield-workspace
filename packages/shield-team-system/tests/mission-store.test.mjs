@@ -19,12 +19,14 @@ import {
   replayProfileAwareMissionJournal,
   MISSION_130_JOURNAL_DIGEST,
 } from "../dist/profile-aware-mission-v1.mjs";
+import { compileIssueIntakeV1 } from "../dist/mission-intake-v1.mjs";
 import {
   appendProfileAwareMissionEntryV1,
   appendProfileAwareMissionEntriesAtomicV1,
   atomicBatchStoreTestOnly,
   appendSupervisedMissionEntry,
   initializeProfileAwareMissionJournalV1,
+  initializeIssueIntakeMissionJournalV1,
   journalByteSha256,
   readMissionJournalForDisplay,
   readSupervisedMissionJournal,
@@ -145,6 +147,172 @@ function profileAwareTransitionEntry(fixture, sequence = 2) {
 function profileAwareJournalBytes(entries) {
   return entries.map((entry) => `${canonicalJson(entry)}\n`).join("");
 }
+
+function issueIntakeFixture(overrides = {}) {
+  const authority = profileAwareAuthority();
+  const repositoryId = overrides.repositoryId ?? "RanSolo/shield-workspace";
+  const repositoryNameWithOwner = overrides.repositoryNameWithOwner ?? repositoryId;
+  const hostRepositoryId = overrides.hostRepositoryId ?? "R_repo_issue_store";
+  const hostIssueId = overrides.hostIssueId ?? "I_issue_store";
+  const issueNumber = overrides.issueNumber ?? 368;
+  const observation = {
+    hostRepositoryId,
+    repositoryNameWithOwner,
+    hostIssueId,
+    issueNumber,
+    issueUrl: `https://github.com/${repositoryNameWithOwner}/issues/${issueNumber}`,
+    title: "Bounded issue-intake store fixture",
+    body: "## Acceptance criteria\n- [ ] preserve exact replay",
+    state: "OPEN",
+    labels: [],
+    updatedAt: "2026-08-22T12:00:00Z",
+    issueRevisionId: "sha256:issue-store-revision",
+    acceptanceCriteria: { items: ["preserve exact replay"] },
+    ...overrides.observation,
+  };
+  const compiled = compileIssueIntakeV1({
+    repositoryId,
+    issueObservation: observation,
+    profileId: "standard",
+    branch: "agent/issue-368-store",
+    headRevision: "0123456789012345678901234567890123456789",
+    preparedWorktreeReceiptDigest: `sha256:${"a".repeat(64)}`,
+    configBytes: "{\"schemaVersion\":3}\n",
+    trustedBindingRegistryBytes: "{\"schemaVersion\":1}\n",
+    trustedBindings: [authority.binding],
+    ...overrides.compiler,
+  });
+  assert.equal(compiled.state, "valid", compiled.state === "invalid" ? compiled.errors.join(" ") : "");
+  return { authority, compiled: compiled.value };
+}
+
+function issueStoreInput(root, fixture, entry = fixture.compiled.entry) {
+  return {
+    repositoryRoot: root,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.compiled.brief.missionId,
+    entry,
+  };
+}
+
+test("issue-intake mission store creates once under concurrent exact callers and replays the exact projection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-issue-store-concurrent-"));
+  const fixture = issueIntakeFixture();
+  const input = issueStoreInput(root, fixture);
+  const results = await Promise.all([
+    initializeIssueIntakeMissionJournalV1(input),
+    initializeIssueIntakeMissionJournalV1(input),
+  ]);
+  assert.equal(results.filter((result) => result.state === "valid").length, 2);
+  assert.deepEqual(results.map((result) => result.state === "valid" ? result.value.replayed : null).sort(), [false, true]);
+  const paths = resolveSupervisedMissionPaths(root, ".shield/journals", fixture.compiled.brief.missionId);
+  assert.equal(paths.state, "valid");
+  assert.equal((await readFile(paths.value.journalPath, "utf8")), profileAwareJournalBytes([fixture.compiled.entry]));
+  const replay = await readMissionJournalForDisplay({
+    repositoryRoot: root,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.compiled.brief.missionId,
+  });
+  assert.equal(replay.state, "valid", replay.state === "invalid" ? replay.errors.join(" ") : "");
+  assert.equal(replay.value.projection.missionId, fixture.compiled.brief.missionId);
+});
+
+test("issue-intake mission store classifies each independent source-binding conflict without mutation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-issue-store-conflict-"));
+  const fixture = issueIntakeFixture();
+  const input = issueStoreInput(root, fixture);
+  const created = await initializeIssueIntakeMissionJournalV1(input);
+  assert.equal(created.state, "valid");
+  const paths = resolveSupervisedMissionPaths(root, ".shield/journals", fixture.compiled.brief.missionId);
+  assert.equal(paths.state, "valid");
+  const baseline = await readFile(paths.value.journalPath, "utf8");
+  for (const [field, value] of [
+    ["issueRevisionId", "sha256:issue-store-revision-drift"],
+    ["criteriaDigest", `sha256:${"b".repeat(64)}`],
+    ["branch", "agent/issue-368-store-drift"],
+    ["headRevision", "f".repeat(40)],
+    ["preparedWorktreeReceiptDigest", `sha256:${"c".repeat(64)}`],
+    ["configBytesDigest", `sha256:${"d".repeat(64)}`],
+    ["trustedBindingRegistryBytesDigest", `sha256:${"e".repeat(64)}`],
+  ]) {
+    const entry = structuredClone(fixture.compiled.entry);
+    entry.payload.issueIntakeSourceBinding[field] = value;
+    const replay = await initializeIssueIntakeMissionJournalV1(issueStoreInput(root, fixture, entry));
+    assert.equal(replay.state, "invalid", field);
+    assert.equal(replay.code, "conflicting_replay", field);
+    assert.equal(await readFile(paths.value.journalPath, "utf8"), baseline, `${field} mutated the journal`);
+  }
+});
+
+test("issue-intake mission store keeps malformed and incomplete journals in recovery_required", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-issue-store-recovery-"));
+  const fixture = issueIntakeFixture();
+  const paths = resolveSupervisedMissionPaths(root, ".shield/journals", fixture.compiled.brief.missionId);
+  assert.equal(paths.state, "valid");
+  await mkdir(paths.value.root, { recursive: true });
+  for (const bytes of ["{\n", profileAwareJournalBytes([fixture.compiled.entry]).slice(0, -4)]) {
+    await writeFile(paths.value.journalPath, bytes);
+    const result = await initializeIssueIntakeMissionJournalV1(issueStoreInput(root, fixture));
+    assert.equal(result.state, "invalid");
+    assert.equal(result.code, "recovery_required");
+    assert.equal(await readFile(paths.value.journalPath, "utf8"), bytes);
+  }
+});
+
+test("issue-intake mission store reports a held lock without changing the journal", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-issue-store-lock-"));
+  const fixture = issueIntakeFixture();
+  const input = issueStoreInput(root, fixture);
+  const created = await initializeIssueIntakeMissionJournalV1(input);
+  assert.equal(created.state, "valid");
+  const paths = resolveSupervisedMissionPaths(root, ".shield/journals", fixture.compiled.brief.missionId);
+  assert.equal(paths.state, "valid");
+  const baseline = await readFile(paths.value.journalPath, "utf8");
+  const lock = await open(paths.value.lockPath, "wx");
+  try {
+    const result = await initializeIssueIntakeMissionJournalV1(input);
+    assert.equal(result.state, "invalid");
+    assert.equal(result.code, "journal_lock_held");
+    assert.equal(await readFile(paths.value.journalPath, "utf8"), baseline);
+  } finally {
+    await lock.close();
+    await unlink(paths.value.lockPath);
+  }
+});
+
+test("issue-intake mission identity remains bounded at maximum host and repository lengths", async () => {
+  const owner = "o".repeat(100);
+  const repository = "r".repeat(100);
+  const fixture = issueIntakeFixture({
+    repositoryId: `${owner}/${repository}`,
+    repositoryNameWithOwner: `${owner}/${repository}`,
+    hostRepositoryId: `R${"h".repeat(255)}`,
+    hostIssueId: `I${"i".repeat(255)}`,
+    issueNumber: 999999999,
+  });
+  const root = await mkdtemp(join(tmpdir(), "shield-issue-store-max-"));
+  const result = await initializeIssueIntakeMissionJournalV1(issueStoreInput(root, fixture));
+  assert.equal(result.state, "valid");
+  const filename = supervisedMissionFilename(fixture.compiled.brief.missionId);
+  assert.equal(filename.state, "valid");
+  assert.ok(filename.value.length <= 180);
+  const readback = await readMissionJournalForDisplay({ repositoryRoot: root, configuredJournalPath: ".shield/journals", missionId: fixture.compiled.brief.missionId });
+  assert.equal(readback.state, "valid");
+});
+
+test("legacy profile-aware initialization remains byte-identical beside issue-intake replay", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-issue-store-legacy-bytes-"));
+  const fixture = profileAwareFixture();
+  const expected = profileAwareJournalBytes([fixture.begun]);
+  const result = await initializeProfileAwareMissionJournalV1({
+    repositoryRoot: root,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.brief.missionId,
+    entry: fixture.begun,
+  });
+  assert.equal(result.state, "valid");
+  assert.equal(await readFile(result.value.journalPath, "utf8"), expected);
+});
 
 async function runProfileAwareMockedAppendScenario(scenario) {
   const scriptPath = join(await mkdtemp(join(tmpdir(), "shield-store-profile-")), "fault-profile-aware.mjs");
