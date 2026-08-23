@@ -16,6 +16,7 @@ import {
   createGovernanceEntry,
   createMissionBegunEntry,
   deriveRepositoryMissionBindings,
+  parseSupervisedJournalJsonl,
   planMissionStep,
   replaySupervisedMissionJournal,
   resolveReviewPublicationAuthorizationRecordV1,
@@ -1904,7 +1905,270 @@ async function guidedReviewChoiceFromOptions(options: ParsedOptions): Promise<"y
 type PrepareNextDependenciesV1 = Readonly<{
   prepareSession?: typeof prepareMissionTransitionSessionV1;
   continueLegacy?: typeof continueLegacyReviewedTransitionV1;
+  beforeNativeIssueIntakeReadback?: () => void | Promise<void>;
+  afterNativeIssueIntakeJournalHandleRead?: () => void | Promise<void>;
+  parseNativeIssueIntakeJournalBytes?: NativeIssueIntakeJournalParserV1;
 }>;
+
+type NativeIssueIntakeJournalSnapshotV1 = Readonly<{
+  journal: MissionJournalDisplay;
+  journalBytes: string;
+  journalSha256: string;
+  journalIdentity: string;
+}>;
+
+type NativeIssueIntakeJournalParserV1 = (
+  journalBytes: string,
+  missionId: string,
+) => ContractResult<MissionJournalDisplay>;
+
+type NativeIssueIntakeClassificationV1 =
+  | Readonly<{
+    state: "fresh_eligible";
+    config: ShieldConfig;
+    route: NativeIssueIntakeAuthorizationReadyV1;
+    snapshot: NativeIssueIntakeJournalSnapshotV1;
+  }>
+  | Readonly<{ state: "valid_non_applicable" }>
+  | Readonly<{
+    state: "invalid";
+    code: string;
+    errors: readonly string[];
+    missionId: string;
+    repositoryRoot: string;
+  }>;
+
+type NativeIssueIntakeAuthorizationReadyV1 = Readonly<{
+  state: "mission_authorization_ready";
+  authority: "none";
+  owner: "coulson";
+  commandId: "mission.authorize";
+  humanGate: true;
+  pinRequired: true;
+  missionId: string;
+  repositoryRoot: string;
+}>;
+
+function nativeIssueIntakeJournalIdentity(stats: Awaited<ReturnType<typeof lstat>>): string {
+  return `${String(stats.dev)}:${String(stats.ino)}:${String(Number(stats.mode) & 0o7777)}`;
+}
+
+function sameNativeIssueIntakeJournalIdentity(
+  left: Awaited<ReturnType<typeof lstat>>,
+  right: Awaited<ReturnType<typeof lstat>>,
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino && Number(left.mode) === Number(right.mode);
+}
+
+function sameNativeIssueIntakeOpenFileState(
+  left: Awaited<ReturnType<typeof lstat>>,
+  right: Awaited<ReturnType<typeof lstat>>,
+): boolean {
+  return sameNativeIssueIntakeJournalIdentity(left, right) && left.size === right.size &&
+    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
+
+function invalidNativeIssueIntakeJournal<T = never>(code: string, ...errors: string[]): ContractResult<T> {
+  return { state: "invalid", code, errors };
+}
+
+function parseNativeIssueIntakeJournalBytes(
+  journalBytes: string,
+  missionId: string,
+): ContractResult<MissionJournalDisplay> {
+  if (journalBytes.length === 0) return invalidNativeIssueIntakeJournal("malformed", "Journal text must be non-empty.");
+  if (!journalBytes.endsWith("\n")) return invalidNativeIssueIntakeJournal("recovery_required", "Journal has an incomplete final line.");
+  const lines = journalBytes.slice(0, -1).split("\n");
+  const entries: unknown[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].length === 0) return invalidNativeIssueIntakeJournal("malformed", `Journal line ${index + 1} is empty.`);
+    try { entries.push(JSON.parse(lines[index])); }
+    catch { return invalidNativeIssueIntakeJournal("recovery_required", `Journal line ${index + 1} is malformed JSON.`); }
+  }
+  let hasProfileAware = false;
+  let hasOther = false;
+  for (const [index, entry] of entries.entries()) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry) ||
+        typeof (entry as { schemaVersion?: unknown }).schemaVersion !== "number") {
+      return invalidNativeIssueIntakeJournal("malformed", `Journal line ${index + 1} schemaVersion is invalid.`);
+    }
+    const schemaVersion = (entry as { schemaVersion: number }).schemaVersion;
+    if (!Number.isInteger(schemaVersion) || schemaVersion < 2 || schemaVersion > 9) {
+      return invalidNativeIssueIntakeJournal("unsupported_schema", `Journal line ${index + 1} schemaVersion is unsupported.`);
+    }
+    if (schemaVersion === 9) hasProfileAware = true;
+    else hasOther = true;
+  }
+  if (hasProfileAware && hasOther) {
+    return invalidNativeIssueIntakeJournal("schema_mixed", "Schema 9 entries cannot be mixed with legacy journal entries.");
+  }
+  if (hasProfileAware) {
+    const replay = replayProfileAwareMissionJournal(entries);
+    if (replay.state === "invalid") return replay;
+    if (replay.value.missionId !== missionId) {
+      return invalidNativeIssueIntakeJournal("mission_mismatch", "Journal missionId does not match the requested mission.");
+    }
+    return { state: "valid", value: { kind: "profile-aware", entries: entries as ProfileAwareMissionEntryV1[], projection: replay.value } };
+  }
+  const replay = parseSupervisedJournalJsonl(journalBytes);
+  if (replay.state === "invalid") return replay;
+  if (replay.value.projection.missionId !== missionId) {
+    return invalidNativeIssueIntakeJournal("mission_mismatch", "Journal missionId does not match the requested mission.");
+  }
+  return { state: "valid", value: { kind: "supervised", entries: replay.value.entries, projection: replay.value.projection } };
+}
+
+async function readNativeIssueIntakeJournalSnapshot(
+  root: string,
+  config: ShieldConfig,
+  missionId: string,
+  parser: NativeIssueIntakeJournalParserV1,
+  afterHandleRead?: () => void | Promise<void>,
+): Promise<ContractResult<NativeIssueIntakeJournalSnapshotV1>> {
+  const resolvedPaths = resolveSupervisedMissionPaths(root, config.paths.journals, missionId);
+  if (resolvedPaths.state === "invalid") return resolvedPaths;
+  const journalPaths = resolvedPaths.value;
+  let handle;
+  try {
+    handle = await open(journalPaths.journalPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = await handle.stat();
+    if (!before.isFile()) return invalidNativeIssueIntakeJournal("unsafe_path", "Mission journal must be a regular file.");
+    const journalBytes = await handle.readFile("utf8");
+    await afterHandleRead?.();
+    const after = await handle.stat();
+    const current = await lstat(journalPaths.journalPath);
+    if (!sameNativeIssueIntakeOpenFileState(before, after) || current.isSymbolicLink() || !current.isFile() ||
+        !sameNativeIssueIntakeJournalIdentity(after, current)) {
+      return invalidNativeIssueIntakeJournal("journal_identity_changed", "Mission journal identity or state changed during bound snapshot.");
+    }
+    const parsed = parser(journalBytes, missionId);
+    if (parsed.state === "invalid") return parsed;
+    return {
+      state: "valid",
+      value: {
+        journal: parsed.value,
+        journalBytes,
+        journalSha256: journalByteSha256(journalBytes),
+        journalIdentity: nativeIssueIntakeJournalIdentity(before),
+      },
+    };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return invalidNativeIssueIntakeJournal("mission_missing", `Mission journal does not exist: ${missionId}.`);
+    if (code === "ELOOP") return invalidNativeIssueIntakeJournal("unsafe_path", "Mission journal must not be a symlink.");
+    return invalidNativeIssueIntakeJournal("journal_unavailable", `Mission journal snapshot failed: ${code ?? "unknown_error"}.`);
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+function isFreshNativeIssueIntakeJournal(journal: ProfileAwareJournal): boolean {
+  const begun = journal.entries[0];
+  const unsatisfiedAuthorization = journal.projection.requirements.filter((requirement) =>
+    requirement.requiredRoleId === "coulson" && requirement.evidenceKind === "mission_authorization" &&
+    !journal.projection.evidence.some(({ requirementId }) => requirementId === requirement.requirementId),
+  );
+  return journal.entries.length === 1 &&
+    begun?.sequence === 0 && begun.type === "mission.begun" && Object.hasOwn(begun.payload, "issueIntakeSourceBinding") &&
+    journal.projection.lastSequence === 0 &&
+    journal.projection.authorization === "waiting" &&
+    journal.projection.execution === "not-started" &&
+    journal.projection.implementationAuthorityState === "waiting" &&
+    journal.projection.implementationAuthority === null &&
+    journal.projection.runtimeBindings.length === 0 &&
+    journal.projection.activeRuntimeBindings.length === 0 &&
+    journal.projection.publicationAuthorizations.length === 0 &&
+    journal.projection.evidence.length === 0 &&
+    journal.projection.effects.length === 0 &&
+    journal.projection.finalAcceptance === "waiting" &&
+    !Object.hasOwn(journal.projection, "daisyCoordinationAuthority") &&
+    !Object.hasOwn(journal.projection, "daisyRuntimeBindings") &&
+    unsatisfiedAuthorization.length === 1;
+}
+
+async function classifyNativeIssueIntakeJournal(
+  root: string,
+  missionId: string,
+  parser: NativeIssueIntakeJournalParserV1,
+  afterHandleRead?: () => void | Promise<void>,
+): Promise<NativeIssueIntakeClassificationV1> {
+  let config: ShieldConfig;
+  try { config = await repositoryConfig(root); }
+  catch { return { state: "valid_non_applicable" }; }
+  const repositoryRoot = await fsRealpath(root);
+  const snapshot = await readNativeIssueIntakeJournalSnapshot(root, config, missionId, parser, afterHandleRead);
+  if (snapshot.state === "invalid") {
+    if (snapshot.code === "mission_missing") return { state: "valid_non_applicable" };
+    return { state: "invalid", code: snapshot.code, errors: snapshot.errors, missionId, repositoryRoot };
+  }
+  if (snapshot.value.journal.kind !== "profile-aware" || !isFreshNativeIssueIntakeJournal(snapshot.value.journal)) {
+    return { state: "valid_non_applicable" };
+  }
+  return {
+    state: "fresh_eligible",
+    config,
+    snapshot: snapshot.value,
+    route: canonicalSnapshot({
+      state: "mission_authorization_ready" as const,
+      authority: "none" as const,
+      owner: "coulson" as const,
+      commandId: "mission.authorize" as const,
+      humanGate: true as const,
+      pinRequired: true as const,
+      missionId,
+      repositoryRoot,
+    }),
+  };
+}
+
+function nativeIssueIntakeAuthorizationHuman(result: NativeIssueIntakeAuthorizationReadyV1): string {
+  return [
+    `state: ${result.state}`,
+    `authority: ${result.authority}`,
+    `owner: ${result.owner}`,
+    `commandId: ${result.commandId}`,
+    `humanGate: ${result.humanGate}`,
+    `pinRequired: ${result.pinRequired}`,
+    `missionId: ${result.missionId}`,
+    `repositoryRoot: ${result.repositoryRoot}`,
+    `Next action: shield mission authorize --mission-id ${shellQuote(result.missionId)} --root ${shellQuote(result.repositoryRoot)}`,
+  ].join("\n");
+}
+
+function nativeIssueIntakeReadbackBlocked(missionId: string, repositoryRoot: string) {
+  return canonicalSnapshot({
+    state: "blocked" as const,
+    reasonCode: "native_issue_intake_readback_changed" as const,
+    authority: "none" as const,
+    missionId,
+    repositoryRoot,
+    errors: ["Mission journal changed before native issue-intake authorization output."],
+  });
+}
+
+function nativeIssueIntakeJournalInvalidBlocked(classification: Extract<NativeIssueIntakeClassificationV1, { state: "invalid" }>) {
+  return canonicalSnapshot({
+    state: "blocked" as const,
+    reasonCode: "native_issue_intake_journal_invalid" as const,
+    authority: "none" as const,
+    missionId: classification.missionId,
+    repositoryRoot: classification.repositoryRoot,
+    code: classification.code,
+    errors: [...classification.errors],
+  });
+}
+
+function nativeIssueIntakeJournalStable(
+  initial: NativeIssueIntakeJournalSnapshotV1,
+  fresh: NativeIssueIntakeJournalSnapshotV1 | null,
+): boolean {
+  return fresh !== null &&
+    initial.journalBytes === fresh.journalBytes &&
+    initial.journalSha256 === fresh.journalSha256 &&
+    initial.journalIdentity === fresh.journalIdentity &&
+    initial.journal.projection.lastSequence === fresh.journal.projection.lastSequence &&
+    canonicalJson(initial.journal.projection) === canonicalJson(fresh.journal.projection);
+}
 
 function renderLegacyContinuationResult(result: Awaited<ReturnType<typeof continueLegacyReviewedTransitionV1>>): string {
   return result.state === "materialized" || result.state === "already_materialized"
@@ -1944,6 +2208,42 @@ async function prepareNext(args: string[], behavior: Readonly<{
   if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
   const root = await exactRoot(options.values.get("--root"), true);
   const missionId = required(options, "--mission-id");
+  const nativeParser = dependencies.parseNativeIssueIntakeJournalBytes ?? parseNativeIssueIntakeJournalBytes;
+  const native = await classifyNativeIssueIntakeJournal(
+    root,
+    missionId,
+    nativeParser,
+    dependencies.afterNativeIssueIntakeJournalHandleRead,
+  );
+  if (native.state === "invalid") {
+    const blocked = nativeIssueIntakeJournalInvalidBlocked(native);
+    outputPreparationBlocked(blocked, options.flags.has("--json"));
+    return 1;
+  }
+  if (native.state === "fresh_eligible") {
+    await dependencies.beforeNativeIssueIntakeReadback?.();
+    let fresh: NativeIssueIntakeJournalSnapshotV1 | null = null;
+    try {
+      const readback = await readNativeIssueIntakeJournalSnapshot(
+        root,
+        native.config,
+        missionId,
+        nativeParser,
+        dependencies.afterNativeIssueIntakeJournalHandleRead,
+      );
+      if (readback.state === "valid") fresh = readback.value;
+    } catch {
+      fresh = null;
+    }
+    const repositoryRoot = native.route.repositoryRoot;
+    if (!nativeIssueIntakeJournalStable(native.snapshot, fresh)) {
+      const blocked = nativeIssueIntakeReadbackBlocked(missionId, repositoryRoot);
+      output(blocked, options.flags.has("--json"), `Preparation blocked — ${blocked.reasonCode}: ${blocked.errors.join(" ")}`);
+      return 1;
+    }
+    output(native.route, options.flags.has("--json"), nativeIssueIntakeAuthorizationHuman(native.route));
+    return 0;
+  }
   const prepareSession = dependencies.prepareSession ?? prepareMissionTransitionSessionV1;
   let result = await prepareSession(
     { missionId, repositoryRoot: root },
@@ -2941,6 +3241,9 @@ export async function runMissionCli(
     legacyReviewedTransition?: LegacyReviewedTransitionDependenciesV1;
     continueLegacyReviewedTransition?: typeof continueLegacyReviewedTransitionV1;
     prepareSession?: typeof prepareMissionTransitionSessionV1;
+    beforeNativeIssueIntakeReadback?: () => void | Promise<void>;
+    afterNativeIssueIntakeJournalHandleRead?: () => void | Promise<void>;
+    parseNativeIssueIntakeJournalBytes?: NativeIssueIntakeJournalParserV1;
   }> = {},
 ): Promise<number> {
   const [group, action, ...rest] = args;
@@ -2959,6 +3262,9 @@ export async function runMissionCli(
     if (action === "prepare-next") return prepareNext(rest, {}, {
       ...(dependencies.prepareSession === undefined ? {} : { prepareSession: dependencies.prepareSession }),
       ...(dependencies.continueLegacyReviewedTransition === undefined ? {} : { continueLegacy: dependencies.continueLegacyReviewedTransition }),
+      ...(dependencies.beforeNativeIssueIntakeReadback === undefined ? {} : { beforeNativeIssueIntakeReadback: dependencies.beforeNativeIssueIntakeReadback }),
+      ...(dependencies.afterNativeIssueIntakeJournalHandleRead === undefined ? {} : { afterNativeIssueIntakeJournalHandleRead: dependencies.afterNativeIssueIntakeJournalHandleRead }),
+      ...(dependencies.parseNativeIssueIntakeJournalBytes === undefined ? {} : { parseNativeIssueIntakeJournalBytes: dependencies.parseNativeIssueIntakeJournalBytes }),
     });
     if (action === "publish-reviewed") return publishReviewed(rest);
     if (action === "authorize-daisy-coordination") return authorizeDaisyCoordination(rest);
