@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdtemp, mkdir, open, readFile, readdir, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,7 +15,8 @@ const { migrateConfigFile } = await import("../dist/cli.mjs");
 const { createShieldConfig, formatShieldConfig } = await import("../dist/config.mjs");
 const { missionUsage, validateAuthorizeDaisyCoordinationInput } = await import("../dist/mission-cli.mjs");
 const { computeEd25519SigningKeyRef } = await import("../dist/mission-v2.mjs");
-const { createProfileAwareMissionBrief, MISSION_130_JOURNAL_DIGEST } = await import("../dist/profile-aware-mission-v1.mjs");
+const { canonicalJson } = await import("../dist/mission-v2.mjs");
+const { createProfileAwareGovernanceDecisionEntryV1, createProfileAwareMissionBrief, MISSION_130_JOURNAL_DIGEST, replayProfileAwareMissionJournal } = await import("../dist/profile-aware-mission-v1.mjs");
 const { computeIssueAcceptanceCriteriaDigestV1 } = await import("../dist/mission-intake-v1.mjs");
 const { prepareWorktreeStateV1 } = await import("../dist/worktree-state-v1.mjs");
 const initArgs = [
@@ -77,6 +78,27 @@ function cliAuthority(seatId) {
   };
 }
 
+function cliSigningAuthority(seatId) {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const publicKeySpkiBase64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  return {
+    privateKey,
+    binding: {
+      schemaVersion: 1,
+      bindingId: `binding:test:${seatId}`,
+      humanPrincipalId: `human:test:${seatId}`,
+      seatId,
+      missionScope: "*",
+      signingKeyRef: computeEd25519SigningKeyRef(publicKeySpkiBase64),
+      publicKeySpkiBase64,
+      validFromSequence: 0,
+      validThroughSequence: null,
+      attestedBy: "repository-policy:test",
+      provenanceRef: `repository-config:test:${seatId}`,
+    },
+  };
+}
+
 function profileJournalPath(root, missionId) {
   return join(root, ".shield", "journals", `${Buffer.from(missionId).toString("base64url")}.jsonl`);
 }
@@ -100,11 +122,11 @@ async function issueCliFixture() {
   await writeFile(join(source, "untracked-source-canary.txt"), "untracked source bytes\n");
   execFileSync("git", ["worktree", "add", "--quiet", "-b", `issue-cli-${process.pid}-${Date.now()}`, root, "HEAD"], { cwd: source });
 
-  const coulson = cliAuthority("coulson");
-  const fitz = cliAuthority("fitz");
-  const config = createShieldConfig({ repositoryId: "RanSolo/fixture", coulsonBindingRef: coulson.signingKeyRef, fitzBindingRef: fitz.signingKeyRef });
+  const coulson = cliSigningAuthority("coulson");
+  const fitz = cliSigningAuthority("fitz");
+  const config = createShieldConfig({ repositoryId: "RanSolo/fixture", coulsonBindingRef: coulson.binding.signingKeyRef, fitzBindingRef: fitz.binding.signingKeyRef });
   await writeFile(join(source, ".shield", "config.json"), formatShieldConfig(config));
-  await writeFile(join(source, ".shield", "trusted-human-bindings.json"), `${JSON.stringify({ schemaVersion: 1, bindings: [coulson, fitz] }, null, 2)}\n`);
+  await writeFile(join(source, ".shield", "trusted-human-bindings.json"), `${JSON.stringify({ schemaVersion: 1, bindings: [coulson.binding, fitz.binding] }, null, 2)}\n`);
   await writeFile(join(source, ".shield", ".gitignore"), "/journals/\n/reports/\n/tmp/\n");
   const prepared = await prepareWorktreeStateV1({ sourceRoot: await realpath(source), destinationRoot: await realpath(root) });
   assert.equal(prepared.state, "ready");
@@ -136,7 +158,7 @@ async function issueCliFixture() {
   const fakeGh = join(fakeBin, "gh");
   await writeFile(fakeGh, "#!/bin/sh\ncount=$(cat \"$PWD/.shield/tmp/gh-count\")\nprintf '%s\\n' $((count + 1)) > \"$PWD/.shield/tmp/gh-count\"\ncat \"$PWD/.shield/tmp/issue-response.json\"\n");
   await chmod(fakeGh, 0o755);
-  return { sourceRoot: await realpath(source), root: await realpath(root), fakePath: `${fakeBin}:${process.env.PATH}`, missionId: "" };
+  return { sourceRoot: await realpath(source), root: await realpath(root), fakePath: `${fakeBin}:${process.env.PATH}`, missionId: "", coulson, preparedWorktreeReceiptDigest: prepared.receipt.receiptDigest };
 }
 
 async function completeWorktreeSnapshot(root) {
@@ -1819,6 +1841,84 @@ test("profile-aware issue begin uses two hermetic GitHub reads, exact replay use
   assert.ok(human.stdout.includes(`shield mission prepare-next --mission-id '${created.projection.missionId}' --root '${current.root}'`));
   assert.equal(JSON.parse(await readFile(join(current.root, ".shield", "tmp", "gh-count"), "utf8")), 4);
   assert.deepEqual(outsideMissionRoot(await completeWorktreeSnapshot(current.root)), outsideMissionRoot(invokingBefore));
+});
+
+test("authorized issue-intake prepare-next returns the closed Hill planning packet without Fury or mutation", async () => {
+  const current = await issueCliFixture();
+  const begin = run([
+    "mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--root", current.root, "--json",
+  ], current.root, { PATH: current.fakePath });
+  assert.equal(begin.status, 0, begin.stderr);
+  const created = JSON.parse(begin.stdout);
+  const journalPath = profileJournalPath(current.root, created.projection.missionId);
+  const journalBefore = await readFile(journalPath, "utf8");
+  const journalEntries = journalBefore.trimEnd().split("\n").map(JSON.parse);
+  const replay = replayProfileAwareMissionJournal(journalEntries);
+  assert.equal(replay.state, "valid");
+  const sourceBinding = journalEntries[0].payload.issueIntakeSourceBinding;
+  const requirement = replay.value.requirements.find(({ requiredRoleId, evidenceKind }) => requiredRoleId === "coulson" && evidenceKind === "mission_authorization");
+  const evidencePayload = {
+    schemaVersion: 1,
+    evidenceId: `evidence:${created.projection.missionId}:1`,
+    requirementId: requirement.requirementId,
+    missionId: created.projection.missionId,
+    revisionId: replay.value.brief.revisionId,
+    seatId: "coulson",
+    evidenceKind: "mission_authorization",
+    decision: "approved",
+    humanPrincipalId: current.coulson.binding.humanPrincipalId,
+    bindingId: current.coulson.binding.bindingId,
+    signingKeyRef: current.coulson.binding.signingKeyRef,
+    sourceRef: `test:${created.projection.missionId}`,
+    timestamp: { value: "2026-08-22T12:00:00Z", provenance: "hostTrusted" },
+    journalSequence: 1,
+  };
+  const authorization = createProfileAwareGovernanceDecisionEntryV1({
+    projection: replay.value,
+    trustedBindings: [current.coulson.binding],
+    evidence: {
+      payload: evidencePayload,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(evidencePayload)), current.coulson.privateKey).toString("base64"),
+    },
+  });
+  await writeFile(journalPath, `${journalBefore}${canonicalJson(authorization)}\n`);
+  const journalAuthorized = await readFile(journalPath, "utf8");
+  const prepared = run(["mission", "prepare-next", "--mission-id", created.projection.missionId, "--root", current.root, "--json"], current.root, { PATH: current.fakePath });
+  assert.equal(prepared.status, 0, prepared.stderr);
+  assert.deepEqual(JSON.parse(prepared.stdout), {
+    schemaVersion: 1,
+    contractVersion: "mission.issue-intake-planning.v1",
+    state: "planning_ready",
+    authority: "none",
+    owner: "hill",
+    commandId: "hill.plan.freeze",
+    humanGate: false,
+    pinRequired: false,
+    missionId: created.projection.missionId,
+    repositoryId: "RanSolo/fixture",
+    repositoryRoot: current.root,
+    branch: sourceBinding.branch,
+    headRevision: sourceBinding.headRevision,
+    subjectId: replay.value.brief.subjectId,
+    issueUrl: sourceBinding.issueUrl,
+    issueRevisionId: sourceBinding.issueRevisionId,
+    objective: "Intake issue",
+    riskFlags: replay.value.brief.riskFlags,
+    acceptanceCriteria: ["preserve the issue identity", "remain authority-neutral"],
+    criteriaDigest: sourceBinding.criteriaDigest,
+    instruction: "Freeze the smallest acceptance-driven implementation plan against this exact packet. The subsequent Fury and Wheels Up transition rail is unresolved; do not infer implementation scope, authority, runtime identity, or publication effects.",
+  });
+  assert.equal(await readFile(journalPath, "utf8"), journalAuthorized);
+  assert.equal(prepared.stderr, "");
+  assert.equal(JSON.parse(await readFile(join(current.root, ".shield", "tmp", "gh-count"), "utf8")), 4);
+  const replayPrepared = run(["mission", "prepare-next", "--mission-id", created.projection.missionId, "--root", current.root, "--json"], current.root, { PATH: current.fakePath });
+  assert.equal(replayPrepared.status, 0, replayPrepared.stderr);
+  assert.equal(replayPrepared.stdout, prepared.stdout);
+  const human = run(["mission", "prepare-next", "--mission-id", created.projection.missionId, "--root", current.root], current.root, { PATH: current.fakePath });
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /No PIN is required\./u);
+  assert.doesNotMatch(human.stdout, /fury-model|Next action/u);
+  assert.equal(JSON.parse(await readFile(join(current.root, ".shield", "tmp", "gh-count"), "utf8")), 8);
 });
 
 test("profile-aware issue and brief forms are mutually exclusive before repository access", () => {

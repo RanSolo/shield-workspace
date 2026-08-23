@@ -15,6 +15,7 @@ import {
 } from "../dist/mission-v2.mjs";
 import { canonicalDelegationJson, createWheelsOffDelegation, createWheelsOffEligibility } from "../dist/delegation-v1.mjs";
 import {
+  createProfileAwareGovernanceDecisionEntryV1,
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
   MISSION_130_JOURNAL_DIGEST,
@@ -360,6 +361,110 @@ async function nativeIssueIntakeFixture() {
   const initialBytes = `${JSON.stringify(compiled.value.entry)}\n`;
   await writeFile(missionJournalPath, initialBytes);
   return { ...current, compiled: compiled.value, missionId, missionJournalPath, initialBytes };
+}
+
+async function authorizeNativeIssueIntakeFixture(current) {
+  const journalBytes = await readFile(current.missionJournalPath, "utf8");
+  const entries = journalBytes.trimEnd().split("\n").map(JSON.parse);
+  const replay = replayProfileAwareMissionJournal(entries);
+  assert.equal(replay.state, "valid");
+  const sourceBinding = entries[0].payload.issueIntakeSourceBinding;
+  const requirement = replay.value.requirements.find(({ requiredRoleId, evidenceKind }) =>
+    requiredRoleId === "coulson" && evidenceKind === "mission_authorization");
+  const evidencePayload = {
+    schemaVersion: 1,
+    evidenceId: `evidence:${current.missionId}:1`,
+    requirementId: requirement.requirementId,
+    missionId: current.missionId,
+    revisionId: replay.value.brief.revisionId,
+    seatId: "coulson",
+    evidenceKind: "mission_authorization",
+    decision: "approved",
+    humanPrincipalId: current.coulson.binding.humanPrincipalId,
+    bindingId: current.coulson.binding.bindingId,
+    signingKeyRef: current.coulson.binding.signingKeyRef,
+    sourceRef: `test:${current.missionId}`,
+    timestamp: { value: "2026-08-22T12:00:00Z", provenance: "hostTrusted" },
+    journalSequence: 1,
+  };
+  const authorization = createProfileAwareGovernanceDecisionEntryV1({
+    projection: replay.value,
+    trustedBindings: [current.coulson.binding, current.fitz.binding],
+    evidence: {
+      payload: evidencePayload,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(evidencePayload)), current.coulson.privateKey).toString("base64"),
+    },
+  });
+  await writeFile(current.missionJournalPath, `${journalBytes}${canonicalJson(authorization)}\n`);
+  return { ...current, sourceBinding, authorizedBytes: await readFile(current.missionJournalPath, "utf8") };
+}
+
+async function nativePlanningFixture() {
+  const parent = await realpath(await mkdtemp(join(tmpdir(), "shield-native-planning-")));
+  const source = join(parent, "source");
+  const root = join(parent, "lane");
+  await mkdir(join(source, ".shield"), { recursive: true });
+  await writeFile(join(source, ".gitignore"), ".shield/\n");
+  await writeFile(join(source, "package.json"), "{\"private\":true}\n");
+  runGit(source, ["init", "--quiet", "-b", "main"]);
+  runGit(source, ["config", "user.email", "shield@example.invalid"]);
+  runGit(source, ["config", "user.name", "SHIELD Native Fixture"]);
+  runGit(source, ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"]);
+  runGit(source, ["add", ".gitignore", "package.json"]);
+  runGit(source, ["commit", "--quiet", "-m", "native planning base"]);
+  runGit(source, ["worktree", "add", "--quiet", "-b", `native-${process.pid}-${Date.now()}`, root, "HEAD"]);
+  const coulson = authority("coulson");
+  const fitz = authority("fitz");
+  const config = createShieldConfig({
+    repositoryId: "RanSolo/fixture",
+    coulsonBindingRef: coulson.binding.signingKeyRef,
+    fitzBindingRef: fitz.binding.signingKeyRef,
+  });
+  await writeFile(join(source, ".shield", "config.json"), formatShieldConfig(config));
+  await writeFile(join(source, ".shield", "trusted-human-bindings.json"), `${JSON.stringify({ schemaVersion: 1, bindings: [coulson.binding, fitz.binding] }, null, 2)}\n`);
+  await writeFile(join(source, ".shield", ".gitignore"), "/journals/\n/reports/\n/tmp/\n");
+  const prepared = await prepareWorktreeStateV1({ sourceRoot: await realpath(source), destinationRoot: await realpath(root) });
+  assert.equal(prepared.state, "ready");
+  const branch = runGit(root, ["branch", "--show-current"]);
+  const headRevision = runGit(root, ["rev-parse", "HEAD"]);
+  const configBytes = await readFile(join(root, ".shield", "config.json"), "utf8");
+  const registryBytes = await readFile(join(root, ".shield", "trusted-human-bindings.json"), "utf8");
+  const issueObservation = {
+    hostRepositoryId: "R_repo_native",
+    repositoryNameWithOwner: "RanSolo/fixture",
+    hostIssueId: "I_issue_native",
+    issueNumber: 374,
+    issueUrl: "https://github.com/RanSolo/fixture/issues/374",
+    title: "Native planning issue",
+    updatedAt: "2026-08-22T12:00:00Z",
+    issueRevisionId: "rev:issue-374",
+    acceptanceCriteria: { items: ["preserve native ordering", "stop before implementation authority"] },
+  };
+  const compiled = compileIssueIntakeV1({
+    repositoryId: "RanSolo/fixture",
+    issueObservation,
+    profileId: "standard",
+    branch,
+    headRevision,
+    preparedWorktreeReceiptDigest: prepared.receipt.receiptDigest,
+    configBytes,
+    trustedBindingRegistryBytes: registryBytes,
+    trustedBindings: [coulson.binding, fitz.binding],
+  });
+  assert.equal(compiled.state, "valid");
+  issueObservation.acceptanceCriteria.digest = compiled.value.entry.payload.issueIntakeSourceBinding.criteriaDigest;
+  const missionId = compiled.value.brief.missionId;
+  const missionJournalPath = journalPath(root, missionId);
+  await mkdir(dirname(missionJournalPath), { recursive: true });
+  await writeFile(missionJournalPath, `${JSON.stringify(compiled.value.entry)}\n`);
+  const authorized = await authorizeNativeIssueIntakeFixture({ root, missionId, missionJournalPath, coulson, fitz });
+  return {
+    ...authorized,
+    source,
+    issueObservation,
+    issueObserver: async () => ({ state: "observed", observation: issueObservation }),
+    preparedWorktreeReceiptDigest: prepared.receipt.receiptDigest,
+  };
 }
 
 async function runMissionCliCaptured(args, dependencies) {
@@ -2358,7 +2463,11 @@ test("prepare-next binds each native snapshot to one no-follow handle and reject
     const result = await runMissionCliCaptured(
       ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
       {
-        prepareSession: async () => { prepareCalls += 1; throw new Error("protected preparation must not run"); },
+        prepareSession: async () => {
+          prepareCalls += 1;
+          return { state: "blocked", missionId: current.missionId, reasonCode: "protected_evidence_mismatch", errors: ["resolver first"] };
+        },
+        preflightProtectedGraphAbsence: async () => ({ state: "absent" }),
         continueLegacyReviewedTransition: async () => { legacyCalls += 1; throw new Error("legacy continuation must not run"); },
         afterNativeIssueIntakeJournalHandleRead: async () => {
           if (swapped) return;
@@ -2382,7 +2491,7 @@ test("prepare-next binds each native snapshot to one no-follow handle and reject
     assert.equal(blocked.reasonCode, "native_issue_intake_journal_invalid", scenario);
     assert.equal(blocked.code, "journal_identity_changed", scenario);
     assert.equal(blocked.authority, "none", scenario);
-    assert.equal(prepareCalls, 0, scenario);
+    assert.equal(prepareCalls, 1, scenario);
     assert.equal(legacyCalls, 0, scenario);
     if (scenario === "replacement") assert.equal(await readFile(current.missionJournalPath, "utf8"), current.initialBytes);
     else assert.equal((await lstat(current.missionJournalPath)).isSymbolicLink(), true);
@@ -2426,7 +2535,7 @@ test("prepare-next blocks a projection that does not match the exact bound journ
   assert.equal(await readFile(current.missionJournalPath, "utf8"), current.initialBytes);
 });
 
-test("prepare-next blocks malformed, mixed-schema, and tampered issue-intake journals without downstream calls or mutation", async () => {
+test("prepare-next sends malformed and tampered native input through resolver and protected-graph preflight", async () => {
   const cases = [
     {
       label: "malformed JSON",
@@ -2453,11 +2562,19 @@ test("prepare-next blocks malformed, mixed-schema, and tampered issue-intake jou
     const journalBytes = scenario.bytes(current);
     await writeFile(current.missionJournalPath, journalBytes);
     let prepareCalls = 0;
+    let preflightCalls = 0;
     let legacyCalls = 0;
     const result = await runMissionCliCaptured(
       ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
       {
-        prepareSession: async () => { prepareCalls += 1; throw new Error("protected preparation must not run"); },
+        prepareSession: async () => {
+          prepareCalls += 1;
+          return { state: "blocked", missionId: current.missionId, reasonCode: "protected_evidence_mismatch", errors: ["resolver first"] };
+        },
+        preflightProtectedGraphAbsence: async () => {
+          preflightCalls += 1;
+          return { state: "absent" };
+        },
         continueLegacyReviewedTransition: async () => { legacyCalls += 1; throw new Error("legacy continuation must not run"); },
       },
     );
@@ -2468,9 +2585,193 @@ test("prepare-next blocks malformed, mixed-schema, and tampered issue-intake jou
     assert.equal(blocked.reasonCode, "native_issue_intake_journal_invalid", scenario.label);
     assert.equal(blocked.code, scenario.expectedCode, scenario.label);
     assert.equal(blocked.authority, "none", scenario.label);
-    assert.equal(prepareCalls, 0, scenario.label);
+    assert.equal(prepareCalls, 1, scenario.label);
+    assert.equal(preflightCalls, 1, scenario.label);
     assert.equal(legacyCalls, 0, scenario.label);
     assert.equal(await readFile(current.missionJournalPath, "utf8"), journalBytes, scenario.label);
+  }
+});
+
+test("prepare-next gives valid and malformed native input resolver-first protected graph precedence", async () => {
+  for (const kind of ["valid", "malformed"]) {
+    const current = await nativeIssueIntakeFixture();
+    if (kind === "valid") await authorizeNativeIssueIntakeFixture(current);
+    else await writeFile(current.missionJournalPath, `${current.initialBytes}{not-json}\n`);
+    const calls = [];
+    let legacyCalls = 0;
+    const result = await runMissionCliCaptured(
+      ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
+      {
+        prepareSession: async () => {
+          calls.push("resolver");
+          return { state: "blocked", missionId: current.missionId, reasonCode: "protected_evidence_mismatch", errors: ["unsafe graph"] };
+        },
+        preflightProtectedGraphAbsence: async () => {
+          calls.push("preflight");
+          return {
+            state: "blocked",
+            authority: "none",
+            missionId: current.missionId,
+            code: "PROTECTED_GRAPH_NOT_ABSENT",
+            errors: ["graph is present"],
+          };
+        },
+        issueObserver: async () => { throw new Error("issue observation must wait for graph absence"); },
+        continueLegacyReviewedTransition: async () => { legacyCalls += 1; throw new Error("legacy must not run"); },
+      },
+    );
+    assert.equal(result.status, 1, kind);
+    assert.equal(result.stderr, "", kind);
+    const blocked = JSON.parse(result.stdout);
+    assert.equal(blocked.code, "PROTECTED_GRAPH_NOT_ABSENT", kind);
+    assert.deepEqual(calls, ["resolver", "preflight"], kind);
+    assert.equal(legacyCalls, 0, kind);
+  }
+});
+
+test("prepare-next delegates an advanced native journal to the reviewed resolver with zero effects", async () => {
+  const current = await authorizeNativeIssueIntakeFixture(await nativeIssueIntakeFixture());
+  const journalBefore = await readFile(current.missionJournalPath, "utf8");
+  const calls = [];
+  const result = await runMissionCliCaptured(
+    ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
+    {
+      prepareSession: async () => {
+        calls.push("resolver");
+        return { state: "blocked", missionId: current.missionId, reasonCode: "repository_observation_stale", errors: ["delegated"] };
+      },
+      preflightProtectedGraphAbsence: async () => { calls.push("preflight"); throw new Error("preflight must not run"); },
+      issueObserver: async () => { calls.push("issue"); throw new Error("issue observer must not run"); },
+      continueLegacyReviewedTransition: async () => { calls.push("legacy"); throw new Error("legacy must not run"); },
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    state: "blocked",
+    reasonCode: "repository_observation_stale",
+    missionId: current.missionId,
+    errors: ["delegated"],
+  });
+  assert.deepEqual(calls, ["resolver"]);
+  assert.equal(await readFile(current.missionJournalPath, "utf8"), journalBefore);
+});
+
+test("prepare-next proves graph absence before native output and suppresses output on graph creation", async () => {
+  const current = await nativePlanningFixture();
+  const journalBefore = await readFile(current.missionJournalPath, "utf8");
+  const graphRoot = join(current.root, ".shield", "audit", "mission-preparation", createHash("sha256").update(current.missionId).digest("hex"));
+  const calls = [];
+  const result = await runMissionCliCaptured(
+    ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
+    {
+      prepareSession: async () => {
+        calls.push("resolver");
+        return { state: "blocked", missionId: current.missionId, reasonCode: "protected_evidence_mismatch", errors: ["graph missing"] };
+      },
+      preflightProtectedGraphAbsence: async () => {
+        calls.push("preflight");
+        if (calls.filter((call) => call === "preflight").length === 2) {
+          await mkdir(graphRoot, { recursive: true });
+          return { state: "blocked", authority: "none", missionId: current.missionId, code: "PROTECTED_GRAPH_NOT_ABSENT", errors: ["graph appeared"] };
+        }
+        return { state: "absent" };
+      },
+      issueObserver: current.issueObserver,
+      continueLegacyReviewedTransition: async () => { throw new Error("legacy must not run"); },
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stdout).code, "PROTECTED_GRAPH_NOT_ABSENT");
+  assert.deepEqual(calls, ["resolver", "preflight", "preflight"]);
+  assert.equal(await readFile(current.missionJournalPath, "utf8"), journalBefore);
+});
+
+test("prepare-next rejects issue and criteria drift during the native planning readback", async () => {
+  for (const drift of ["issue", "criteria"]) {
+    const current = await nativePlanningFixture();
+    const journalBefore = await readFile(current.missionJournalPath, "utf8");
+    let observations = 0;
+    const result = await runMissionCliCaptured(
+      ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
+      {
+        prepareSession: async () => ({ state: "blocked", missionId: current.missionId, reasonCode: "protected_evidence_mismatch", errors: ["graph missing"] }),
+        preflightProtectedGraphAbsence: async () => ({ state: "absent" }),
+        issueObserver: async () => {
+          observations += 1;
+          if (observations === 1) return current.issueObserver();
+          const observation = structuredClone(current.issueObservation);
+          if (drift === "issue") observation.issueRevisionId = "rev:drifted";
+          else observation.acceptanceCriteria = { items: ["criteria changed"], digest: "sha256:criteria-drift" };
+          return { state: "observed", observation };
+        },
+        continueLegacyReviewedTransition: async () => { throw new Error("legacy must not run"); },
+      },
+    );
+    assert.equal(result.status, 1, drift);
+    const blocked = JSON.parse(result.stdout);
+    assert.equal(blocked.reasonCode, "native_issue_intake_planning_blocked", drift);
+    assert.equal(blocked.code, "issue_observation_drifted", drift);
+    assert.equal(await readFile(current.missionJournalPath, "utf8"), journalBefore, drift);
+  }
+});
+
+test("prepare-next fails closed on source, repository, HEAD, and journal drift before native output", async () => {
+  const cases = [
+    {
+      label: "source",
+      mutate: async (current) => {
+        await writeFile(join(current.root, ".shield", "config.json"), `${await readFile(join(current.root, ".shield", "config.json"), "utf8")}\n`);
+      },
+      expectedCode: "source_binding_drifted",
+    },
+    {
+      label: "repository",
+      mutate: async (current) => { runGit(current.root, ["checkout", "-q", "-b", "native-drift-branch"]); },
+      expectedCode: "source_binding_drifted",
+    },
+    {
+      label: "HEAD",
+      mutate: async (current) => {
+        await writeFile(join(current.root, "native-head-drift.txt"), "drift\n");
+        runGit(current.root, ["add", "native-head-drift.txt"]);
+        runGit(current.root, ["commit", "--quiet", "-m", "native HEAD drift"]);
+      },
+      expectedCode: "source_binding_drifted",
+    },
+    {
+      label: "journal",
+      mutate: async (current) => {
+        const replacement = `${current.authorizedBytes} `;
+        const replacementPath = `${current.missionJournalPath}.replacement`;
+        await writeFile(replacementPath, replacement);
+        await rename(replacementPath, current.missionJournalPath);
+      },
+      expectedCode: "journal_identity_changed",
+    },
+  ];
+  for (const scenario of cases) {
+    const current = await nativePlanningFixture();
+    let journalReads = 0;
+    const journalBefore = await readFile(current.missionJournalPath, "utf8");
+    const result = await runMissionCliCaptured(
+      ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
+      {
+        prepareSession: async () => ({ state: "blocked", missionId: current.missionId, reasonCode: "protected_evidence_mismatch", errors: ["graph missing"] }),
+        preflightProtectedGraphAbsence: async () => ({ state: "absent" }),
+        issueObserver: current.issueObserver,
+        afterNativeIssueIntakeJournalHandleRead: async () => {
+          journalReads += 1;
+          if (journalReads === 2) await scenario.mutate(current);
+        },
+        continueLegacyReviewedTransition: async () => { throw new Error("legacy must not run"); },
+      },
+    );
+    assert.equal(result.status, 1, scenario.label);
+    const blocked = JSON.parse(result.stdout);
+    assert.equal(blocked.reasonCode, "native_issue_intake_planning_blocked", scenario.label);
+    if (["source", "repository", "HEAD"].includes(scenario.label)) assert.equal(blocked.code, "source_observation_unavailable", scenario.label);
+    else assert.equal(blocked.code, scenario.expectedCode, scenario.label);
+    assert.equal(await readFile(current.missionJournalPath, "utf8"), scenario.label === "journal" ? `${current.authorizedBytes} ` : journalBefore, scenario.label);
   }
 });
 
