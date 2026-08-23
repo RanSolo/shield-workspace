@@ -938,22 +938,22 @@ async function begin(args: string[], dependencies: IssueBeginDependencies = {}):
     } catch (error) {
       throw new MissionCliError(`profile_invalid: ${error instanceof Error ? error.message : "Profile-aware brief is invalid."}`, 1);
     }
-    const checkedBrief = validateProfileAwareMissionBrief(canonicalBrief);
-    if (checkedBrief.state === "invalid") {
-      throw new MissionCliError(`${checkedBrief.code}: ${checkedBrief.errors.join(" ")}`, 1);
-    }
     const registry = await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry");
     const bindings = unwrap(deriveRepositoryMissionBindings(
       config,
       registry,
-      checkedBrief.value.missionId,
+      briefInput.missionId,
       {
         kind: "profile-aware",
-        profileId: checkedBrief.value.profileId,
-        profileVersion: checkedBrief.value.profileVersion,
-        requireSimmons: checkedBrief.value.requireSimmons,
+        profileId: briefInput.profileId,
+        profileVersion: briefInput.profileVersion,
+        requireSimmons: briefInput.requireSimmons,
       },
     ));
+    const checkedBrief = validateProfileAwareMissionBrief(canonicalBrief);
+    if (checkedBrief.state === "invalid") {
+      throw new MissionCliError(`${checkedBrief.code}: ${checkedBrief.errors.join(" ")}`, 1);
+    }
     const intake = unwrap(profileAwareMissionIntakeV1({
       brief: briefInput as unknown as ProfileAwareMissionBriefContentV1,
       trustedBindings: bindings,

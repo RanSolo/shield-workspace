@@ -1280,6 +1280,9 @@ test("repository mission admission failures create no journal", async () => {
     const result = run(coulsonOnly.root, ["mission", "begin", "--profile-aware", "--brief", path, "--json"]);
     assert.equal(result.status, 1);
     assert.match(result.stderr, new RegExp(code, "u"));
+    if (code === "repository_mission_profile_inconsistent") {
+      assert.doesNotMatch(result.stderr, /Profile-aware brief requireSimmons is inconsistent with its profile or participants/u);
+    }
     await assert.rejects(lstat(journalPath(coulsonOnly.root, brief.missionId)), { code: "ENOENT" });
   }
 
