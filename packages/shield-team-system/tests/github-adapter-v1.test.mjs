@@ -131,6 +131,16 @@ function issueRunner(response) {
   return run;
 }
 
+const safeObserverOptions = {
+  cwd: "/workspace",
+  sourceEnv: { PATH: "/safe/bin", XDG_CONFIG_HOME: "/safe/config", XDG_STATE_HOME: "/safe/state" },
+  platform: "linux",
+  sourceRoot: "/workspace",
+  missionRoot: "/mission",
+  canonicalizeNoFollow: (value) => value,
+  now: () => "2026-08-22T12:01:00Z",
+};
+
 test("GitHub issue observer projects only explicit credentials and selected discovery roots", () => {
   const result = projectGitHubIssueObserverEnvironmentV1({
     sourceEnv: {
@@ -329,8 +339,10 @@ test("GitHub issue observer blocks relative paths, symlink ambiguity, and missin
   assertAbsentFrom(observed, canaries);
 
   const successful = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    ...safeObserverOptions,
     run: issueRunner(JSON.stringify(issueResponse())),
     cwd: "/repo",
+    sourceRoot: "/repo",
     sourceEnv: {
       PATH: "/safe/bin", GH_CONFIG_DIR: "/safe/config", XDG_STATE_HOME: "/safe/state",
       GH_TOKEN: canaries[0], GITHUB_TOKEN: "github-token-canary", GH_ENTERPRISE_TOKEN: canaries[0],
@@ -502,14 +514,8 @@ test("GitHub issue observer uses one exact authority-none GraphQL read and stabl
     issueNumber: 341,
     sourceRef: "github:RanSolo/shield-workspace/issues/341",
   }, {
+    ...safeObserverOptions,
     run,
-    cwd: "/workspace",
-    sourceEnv: { PATH: "/safe/bin", XDG_CONFIG_HOME: "/safe/config", XDG_STATE_HOME: "/safe/state" },
-    platform: "linux",
-    sourceRoot: "/workspace",
-    missionRoot: "/mission",
-    canonicalizeNoFollow: (value) => value,
-    now: () => "2026-08-22T12:01:00Z",
   });
   assert.equal(result.state, "observed");
   assert.equal(run.calls.length, 1);
@@ -538,15 +544,15 @@ test("GitHub issue observer uses one exact authority-none GraphQL read and stabl
 
 test("GitHub issue observer rejects malformed bytes and JSON before identity or criteria handling", () => {
   const malformedBytes = issueRunner(Buffer.from([0xc3, 0x28]));
-  assert.deepEqual(observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", { run: malformedBytes }), {
+  assert.deepEqual(observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", { ...safeObserverOptions, run: malformedBytes }), {
     state: "blocked", reason: "invalid_utf8",
   });
   const malformedJson = issueRunner(Buffer.from('{"data":}'));
-  assert.deepEqual(observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", { run: malformedJson }), {
+  assert.deepEqual(observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", { ...safeObserverOptions, run: malformedJson }), {
     state: "blocked", reason: "malformed_response",
   });
   const duplicateKey = issueRunner(Buffer.from('{"data":{"repository":{"id":"R_kgDOExample","id":"other"}}}'));
-  assert.deepEqual(observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", { run: duplicateKey }), {
+  assert.deepEqual(observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", { ...safeObserverOptions, run: duplicateKey }), {
     state: "blocked", reason: "malformed_response",
   });
 });
@@ -558,11 +564,13 @@ test("GitHub issue observer rejects foreign identity, unavailable issues, and ma
     { id: "I_kwDOExample", state: "CLOSED" },
   ]) {
     const result = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+      ...safeObserverOptions,
       run: issueRunner(JSON.stringify(issueResponse(issue))),
     });
     assert.equal(result.state, "blocked");
   }
   const missing = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    ...safeObserverOptions,
     run: issueRunner(JSON.stringify({ data: { repository: { id: "R_kgDOExample", nameWithOwner: "RanSolo/shield-workspace", issue: null } } })),
   });
   assert.deepEqual(missing, { state: "blocked", reason: "issue_not_found" });
@@ -583,16 +591,19 @@ test("GitHub issue observer rejects foreign identity, unavailable issues, and ma
 test("GitHub issue observer closes the 64-label boundary and binds label identity", () => {
   const labels = Array.from({ length: 64 }, (_value, index) => ({ name: `label-${String(index).padStart(2, "0")}` }));
   const first = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    ...safeObserverOptions,
     run: issueRunner(JSON.stringify(issueResponse({ labels: { nodes: labels } }))),
   });
   assert.equal(first.state, "observed");
   const changedLabels = labels.map((label, index) => index === 63 ? { name: "label-drift" } : label);
   const second = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    ...safeObserverOptions,
     run: issueRunner(JSON.stringify(issueResponse({ labels: { nodes: changedLabels } }))),
   });
   assert.equal(second.state, "observed");
   assert.notEqual(first.observation.issueRevisionId, second.observation.issueRevisionId);
   const tooMany = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    ...safeObserverOptions,
     run: issueRunner(JSON.stringify(issueResponse({ labels: { nodes: [...labels, { name: "label-64" }] } }))),
   });
   assert.deepEqual(tooMany, { state: "blocked", reason: "issue_identity_mismatch" });
