@@ -1751,10 +1751,41 @@ test("profile-aware issue begin uses two hermetic GitHub reads, exact replay use
   const status = run(["mission", "status", "--mission-id", created.projection.missionId, "--root", current.root, "--json"], current.root);
   assert.equal(status.status, 0, status.stderr);
   assert.equal(JSON.parse(status.stdout).missionId, created.projection.missionId);
+  const nativeJournalPath = profileJournalPath(current.root, created.projection.missionId);
+  const nativeJournalBeforePrepare = await readFile(nativeJournalPath, "utf8");
   const prepareNext = run(["mission", "prepare-next", "--mission-id", created.projection.missionId, "--root", current.root, "--json"], current.root);
-  assert.notEqual(prepareNext.status, 2, prepareNext.stderr);
+  assert.equal(prepareNext.status, 0, prepareNext.stderr);
+  const expectedAuthorizationRoute = {
+    state: "mission_authorization_ready",
+    authority: "none",
+    owner: "coulson",
+    commandId: "mission.authorize",
+    humanGate: true,
+    pinRequired: true,
+    missionId: created.projection.missionId,
+    repositoryRoot: current.root,
+  };
+  assert.deepEqual(JSON.parse(prepareNext.stdout), expectedAuthorizationRoute);
+  assert.equal(await readFile(nativeJournalPath, "utf8"), nativeJournalBeforePrepare);
+  const prepareReplay = run(["mission", "prepare-next", "--mission-id", created.projection.missionId, "--root", current.root, "--json"], current.root);
+  assert.equal(prepareReplay.status, 0, prepareReplay.stderr);
+  assert.equal(prepareReplay.stdout, prepareNext.stdout);
+  const prepareHuman = run(["mission", "prepare-next", "--mission-id", created.projection.missionId, "--root", current.root], current.root);
+  assert.equal(prepareHuman.status, 0, prepareHuman.stderr);
+  assert.equal(prepareHuman.stdout, [
+    "state: mission_authorization_ready",
+    "authority: none",
+    "owner: coulson",
+    "commandId: mission.authorize",
+    "humanGate: true",
+    "pinRequired: true",
+    `missionId: ${created.projection.missionId}`,
+    `repositoryRoot: ${current.root}`,
+    `Next action: shield mission authorize --mission-id '${created.projection.missionId}' --root '${current.root}'`,
+    "",
+  ].join("\n"));
 
-  const journalBeforeReplay = await readFile(profileJournalPath(current.root, created.projection.missionId));
+  const journalBeforeReplay = await readFile(nativeJournalPath);
   const replay = run(args, current.root, { PATH: current.fakePath });
   assert.equal(replay.status, 0, replay.stderr);
   const replayed = JSON.parse(replay.stdout);

@@ -1904,7 +1904,135 @@ async function guidedReviewChoiceFromOptions(options: ParsedOptions): Promise<"y
 type PrepareNextDependenciesV1 = Readonly<{
   prepareSession?: typeof prepareMissionTransitionSessionV1;
   continueLegacy?: typeof continueLegacyReviewedTransitionV1;
+  beforeNativeIssueIntakeReadback?: () => void | Promise<void>;
 }>;
+
+type NativeIssueIntakeJournalSnapshotV1 = Readonly<{
+  journal: ProfileAwareJournal;
+  journalBytes: string;
+  journalSha256: string;
+  journalIdentity: string;
+}>;
+
+type NativeIssueIntakeAuthorizationReadyV1 = Readonly<{
+  state: "mission_authorization_ready";
+  authority: "none";
+  owner: "coulson";
+  commandId: "mission.authorize";
+  humanGate: true;
+  pinRequired: true;
+  missionId: string;
+  repositoryRoot: string;
+}>;
+
+function nativeIssueIntakeJournalIdentity(stats: Awaited<ReturnType<typeof lstat>>): string {
+  return `${String(stats.dev)}:${String(stats.ino)}:${String(Number(stats.mode) & 0o7777)}`;
+}
+
+async function readNativeIssueIntakeJournalSnapshot(
+  root: string,
+  config: ShieldConfig,
+  missionId: string,
+): Promise<NativeIssueIntakeJournalSnapshotV1 | null> {
+  const displayed = await readMissionJournalForDisplay(missionPaths(root, config, missionId));
+  if (displayed.state === "invalid" || displayed.value.kind !== "profile-aware") return null;
+  const journalPaths = unwrap(resolveSupervisedMissionPaths(root, config.paths.journals, missionId));
+  const before = await lstat(journalPaths.journalPath);
+  if (before.isSymbolicLink() || !before.isFile()) throw new MissionCliError("Mission journal must be a regular file.", 1);
+  const journalBytes = await regularTextFile(journalPaths.journalPath, "Mission journal");
+  const after = await lstat(journalPaths.journalPath);
+  const journalIdentity = nativeIssueIntakeJournalIdentity(before);
+  if (journalIdentity !== nativeIssueIntakeJournalIdentity(after)) {
+    throw new MissionCliError("Mission journal identity changed during native issue-intake readback.", 1);
+  }
+  return { journal: displayed.value, journalBytes, journalSha256: journalByteSha256(journalBytes), journalIdentity };
+}
+
+function isFreshNativeIssueIntakeJournal(journal: ProfileAwareJournal): boolean {
+  const begun = journal.entries[0];
+  const unsatisfiedAuthorization = journal.projection.requirements.filter((requirement) =>
+    requirement.requiredRoleId === "coulson" && requirement.evidenceKind === "mission_authorization" &&
+    !journal.projection.evidence.some(({ requirementId }) => requirementId === requirement.requirementId),
+  );
+  return journal.entries.length === 1 &&
+    begun?.sequence === 0 && begun.type === "mission.begun" && Object.hasOwn(begun.payload, "issueIntakeSourceBinding") &&
+    journal.projection.lastSequence === 0 &&
+    journal.projection.authorization === "waiting" &&
+    journal.projection.execution === "not-started" &&
+    journal.projection.implementationAuthorityState === "waiting" &&
+    journal.projection.implementationAuthority === null &&
+    journal.projection.runtimeBindings.length === 0 &&
+    journal.projection.activeRuntimeBindings.length === 0 &&
+    journal.projection.publicationAuthorizations.length === 0 &&
+    journal.projection.evidence.length === 0 &&
+    journal.projection.effects.length === 0 &&
+    journal.projection.finalAcceptance === "waiting" &&
+    !Object.hasOwn(journal.projection, "daisyCoordinationAuthority") &&
+    !Object.hasOwn(journal.projection, "daisyRuntimeBindings") &&
+    unsatisfiedAuthorization.length === 1;
+}
+
+async function nativeIssueIntakeAuthorizationReady(
+  root: string,
+  missionId: string,
+): Promise<{ route: NativeIssueIntakeAuthorizationReadyV1; snapshot: NativeIssueIntakeJournalSnapshotV1 } | null> {
+  let config: ShieldConfig;
+  try { config = await repositoryConfig(root); }
+  catch { return null; }
+  const snapshot = await readNativeIssueIntakeJournalSnapshot(root, config, missionId);
+  if (snapshot === null || !isFreshNativeIssueIntakeJournal(snapshot.journal)) return null;
+  const repositoryRoot = await fsRealpath(root);
+  return {
+    snapshot,
+    route: canonicalSnapshot({
+      state: "mission_authorization_ready" as const,
+      authority: "none" as const,
+      owner: "coulson" as const,
+      commandId: "mission.authorize" as const,
+      humanGate: true as const,
+      pinRequired: true as const,
+      missionId,
+      repositoryRoot,
+    }),
+  };
+}
+
+function nativeIssueIntakeAuthorizationHuman(result: NativeIssueIntakeAuthorizationReadyV1): string {
+  return [
+    `state: ${result.state}`,
+    `authority: ${result.authority}`,
+    `owner: ${result.owner}`,
+    `commandId: ${result.commandId}`,
+    `humanGate: ${result.humanGate}`,
+    `pinRequired: ${result.pinRequired}`,
+    `missionId: ${result.missionId}`,
+    `repositoryRoot: ${result.repositoryRoot}`,
+    `Next action: shield mission authorize --mission-id ${shellQuote(result.missionId)} --root ${shellQuote(result.repositoryRoot)}`,
+  ].join("\n");
+}
+
+function nativeIssueIntakeReadbackBlocked(missionId: string, repositoryRoot: string) {
+  return canonicalSnapshot({
+    state: "blocked" as const,
+    reasonCode: "native_issue_intake_readback_changed" as const,
+    authority: "none" as const,
+    missionId,
+    repositoryRoot,
+    errors: ["Mission journal changed before native issue-intake authorization output."],
+  });
+}
+
+function nativeIssueIntakeJournalStable(
+  initial: NativeIssueIntakeJournalSnapshotV1,
+  fresh: NativeIssueIntakeJournalSnapshotV1 | null,
+): boolean {
+  return fresh !== null &&
+    initial.journalBytes === fresh.journalBytes &&
+    initial.journalSha256 === fresh.journalSha256 &&
+    initial.journalIdentity === fresh.journalIdentity &&
+    initial.journal.projection.lastSequence === fresh.journal.projection.lastSequence &&
+    canonicalJson(initial.journal.projection) === canonicalJson(fresh.journal.projection);
+}
 
 function renderLegacyContinuationResult(result: Awaited<ReturnType<typeof continueLegacyReviewedTransitionV1>>): string {
   return result.state === "materialized" || result.state === "already_materialized"
@@ -1944,6 +2072,25 @@ async function prepareNext(args: string[], behavior: Readonly<{
   if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
   const root = await exactRoot(options.values.get("--root"), true);
   const missionId = required(options, "--mission-id");
+  const native = await nativeIssueIntakeAuthorizationReady(root, missionId);
+  if (native !== null) {
+    await dependencies.beforeNativeIssueIntakeReadback?.();
+    const config = await repositoryConfig(root);
+    let fresh: NativeIssueIntakeJournalSnapshotV1 | null = null;
+    try {
+      fresh = await readNativeIssueIntakeJournalSnapshot(root, config, missionId);
+    } catch {
+      fresh = null;
+    }
+    const repositoryRoot = native.route.repositoryRoot;
+    if (!nativeIssueIntakeJournalStable(native.snapshot, fresh)) {
+      const blocked = nativeIssueIntakeReadbackBlocked(missionId, repositoryRoot);
+      output(blocked, options.flags.has("--json"), `Preparation blocked — ${blocked.reasonCode}: ${blocked.errors.join(" ")}`);
+      return 1;
+    }
+    output(native.route, options.flags.has("--json"), nativeIssueIntakeAuthorizationHuman(native.route));
+    return 0;
+  }
   const prepareSession = dependencies.prepareSession ?? prepareMissionTransitionSessionV1;
   let result = await prepareSession(
     { missionId, repositoryRoot: root },
@@ -2941,6 +3088,7 @@ export async function runMissionCli(
     legacyReviewedTransition?: LegacyReviewedTransitionDependenciesV1;
     continueLegacyReviewedTransition?: typeof continueLegacyReviewedTransitionV1;
     prepareSession?: typeof prepareMissionTransitionSessionV1;
+    beforeNativeIssueIntakeReadback?: () => void | Promise<void>;
   }> = {},
 ): Promise<number> {
   const [group, action, ...rest] = args;
@@ -2959,6 +3107,7 @@ export async function runMissionCli(
     if (action === "prepare-next") return prepareNext(rest, {}, {
       ...(dependencies.prepareSession === undefined ? {} : { prepareSession: dependencies.prepareSession }),
       ...(dependencies.continueLegacyReviewedTransition === undefined ? {} : { continueLegacy: dependencies.continueLegacyReviewedTransition }),
+      ...(dependencies.beforeNativeIssueIntakeReadback === undefined ? {} : { beforeNativeIssueIntakeReadback: dependencies.beforeNativeIssueIntakeReadback }),
     });
     if (action === "publish-reviewed") return publishReviewed(rest);
     if (action === "authorize-daisy-coordination") return authorizeDaisyCoordination(rest);
