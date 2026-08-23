@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { lstatSync, realpathSync } from "node:fs";
+import { join, posix, win32 } from "node:path";
 import { isProxy } from "node:util/types";
 
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
@@ -124,8 +126,129 @@ function normalizeIssueRequest(input) {
   });
 }
 
-function issueEnvironment() {
-  return Object.freeze({ PATH: process.env.PATH ?? "", LANG: "C", LC_ALL: "C" });
+function pathTools(platform) {
+  return platform === "win32" ? win32 : posix;
+}
+
+function pathIsAbsolute(value, pathModule) {
+  return typeof value === "string" && pathModule.isAbsolute(value);
+}
+
+function canonicalizeNoFollowNearestExistingAncestor(pathValue, platform) {
+  const pathModule = pathTools(platform);
+  if (!pathIsAbsolute(pathValue, pathModule)) return null;
+  const normalized = pathModule.normalize(pathValue);
+  const parsed = pathModule.parse(normalized);
+  const segments = normalized.slice(parsed.root.length).split(pathModule.sep).filter(Boolean);
+  let current = parsed.root;
+  let missing = [];
+  for (let index = 0; index < segments.length; index += 1) {
+    current = pathModule.join(current, segments[index]);
+    try {
+      const stats = lstatSync(current);
+      if (stats.isSymbolicLink() || !stats.isDirectory()) return null;
+    } catch (error) {
+      if (error?.code !== "ENOENT") return null;
+      missing = segments.slice(index);
+      break;
+    }
+  }
+  try {
+    const canonicalExisting = (realpathSync.native ?? realpathSync)(current);
+    return pathModule.normalize(pathModule.join(canonicalExisting, ...missing));
+  } catch {
+    return null;
+  }
+}
+
+function pathWithinRoot(candidate, root, platform) {
+  const pathModule = pathTools(platform);
+  const normalizedCandidate = pathModule.normalize(candidate);
+  const normalizedRoot = pathModule.normalize(root);
+  const comparableCandidate = platform === "win32" ? normalizedCandidate.toLowerCase() : normalizedCandidate;
+  const comparableRoot = platform === "win32" ? normalizedRoot.toLowerCase() : normalizedRoot;
+  const rootPrefix = comparableRoot.endsWith(pathModule.sep) ? comparableRoot : `${comparableRoot}${pathModule.sep}`;
+  return comparableCandidate === comparableRoot || comparableCandidate.startsWith(rootPrefix);
+}
+
+function selectedEnvironmentValue(sourceEnv, name) {
+  return Object.hasOwn(sourceEnv, name) ? sourceEnv[name] : undefined;
+}
+
+function selectCredentialDirectory(sourceEnv, platform, candidates) {
+  const pathModule = pathTools(platform);
+  for (const candidate of candidates) {
+    const value = selectedEnvironmentValue(sourceEnv, candidate.name);
+    if (value === undefined) continue;
+    if (typeof value !== "string") return { state: "invalid" };
+    return {
+      state: "selected",
+      name: candidate.name,
+      value,
+      directory: candidate.suffix === null ? value : pathModule.join(value, ...candidate.suffix),
+    };
+  }
+  return { state: "missing" };
+}
+
+function credentialDirectorySafe(selection, sourceRoot, missionRoot, platform, canonicalizeNoFollow) {
+  if (selection.state !== "selected") return false;
+  const pathModule = pathTools(platform);
+  if (!pathIsAbsolute(selection.directory, pathModule)) return false;
+  let canonical;
+  try {
+    canonical = canonicalizeNoFollow(selection.directory);
+  } catch {
+    return false;
+  }
+  if (!pathIsAbsolute(canonical, pathModule)) return false;
+  return !pathWithinRoot(canonical, sourceRoot, platform) && !pathWithinRoot(canonical, missionRoot, platform);
+}
+
+export function projectGitHubIssueObserverEnvironmentV1({
+  sourceEnv,
+  platform,
+  sourceRoot,
+  missionRoot,
+  canonicalizeNoFollow,
+} = {}) {
+  if (sourceEnv === null || typeof sourceEnv !== "object" || Array.isArray(sourceEnv) || typeof platform !== "string" ||
+      !pathIsAbsolute(sourceRoot, pathTools(platform)) || !pathIsAbsolute(missionRoot, pathTools(platform)) ||
+      (pathWithinRoot(sourceRoot, missionRoot, platform) && pathWithinRoot(missionRoot, sourceRoot, platform)) ||
+      typeof canonicalizeNoFollow !== "function") {
+    return githubIssueBlocked("credential_environment_unsafe");
+  }
+  const config = selectCredentialDirectory(sourceEnv, platform, [
+    { name: "GH_CONFIG_DIR", suffix: null },
+    { name: "XDG_CONFIG_HOME", suffix: ["gh"] },
+    ...(platform === "win32" ? [{ name: "APPDATA", suffix: ["GitHub CLI"] }] : []),
+    { name: platform === "win32" ? "USERPROFILE" : "HOME", suffix: [".config", "gh"] },
+  ]);
+  const state = selectCredentialDirectory(sourceEnv, platform, [
+    { name: "XDG_STATE_HOME", suffix: ["gh"] },
+    ...(platform === "win32" ? [{ name: "LOCALAPPDATA", suffix: ["GitHub CLI"] }] : []),
+    { name: platform === "win32" ? "USERPROFILE" : "HOME", suffix: [".local", "state", "gh"] },
+  ]);
+  if (config.state !== "selected" || !credentialDirectorySafe(config, sourceRoot, missionRoot, platform, canonicalizeNoFollow)) {
+    return githubIssueBlocked("credential_environment_unsafe");
+  }
+  if (state.state !== "selected" || !credentialDirectorySafe(state, sourceRoot, missionRoot, platform, canonicalizeNoFollow)) {
+    return githubIssueBlocked("credential_state_unavailable");
+  }
+  const environment = {
+    PATH: typeof selectedEnvironmentValue(sourceEnv, "PATH") === "string" ? selectedEnvironmentValue(sourceEnv, "PATH") : "",
+    LANG: "C",
+    LC_ALL: "C",
+    GH_PROMPT_DISABLED: "1",
+  };
+  for (const selection of [config, state]) {
+    if (!Object.hasOwn(environment, selection.name)) environment[selection.name] = selection.value;
+  }
+  for (const name of ["GH_TOKEN", "GITHUB_TOKEN"]) {
+    const value = selectedEnvironmentValue(sourceEnv, name);
+    if (typeof value === "string" && value.length > 0) environment[name] = value;
+  }
+  return { state: "ready", environment: Object.freeze(environment) };
 }
 
 function defaultGitHubIssueByteRunner(executable, args, options) {
@@ -229,13 +352,22 @@ export function observeGitHubIssueV1(input, options = {}) {
     "api", "graphql", "-f", `query=${GITHUB_ISSUE_GRAPHQL_QUERY_V1}`,
     "-f", `owner=${request.owner}`, "-f", `repo=${request.repository}`, "-F", `number=${request.issueNumber}`,
   ];
+  const sourceRoot = options.sourceRoot ?? options.cwd ?? process.cwd();
+  const projection = projectGitHubIssueObserverEnvironmentV1({
+    sourceEnv: options.sourceEnv ?? process.env,
+    platform: options.platform ?? process.platform,
+    sourceRoot,
+    missionRoot: options.missionRoot ?? join(sourceRoot, ".shield"),
+    canonicalizeNoFollow: options.canonicalizeNoFollow ?? ((pathValue) => canonicalizeNoFollowNearestExistingAncestor(pathValue, options.platform ?? process.platform)),
+  });
+  if (projection.state !== "ready") return githubIssueBlocked(projection.reason);
   const runOptions = {
     cwd: options.cwd,
     encoding: "buffer",
     timeoutMs: GITHUB_ISSUE_OBSERVER_TIMEOUT_MS,
     maxBuffer: GITHUB_ISSUE_OBSERVER_MAX_BYTES,
     shell: false,
-    env: issueEnvironment(),
+    env: projection.environment,
     input: null,
   };
   let result;
