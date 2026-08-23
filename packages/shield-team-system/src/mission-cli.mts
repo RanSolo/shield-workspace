@@ -2497,11 +2497,6 @@ async function prepareNext(args: string[], behavior: Readonly<{
     nativeParser,
     dependencies.afterNativeIssueIntakeJournalHandleRead,
   );
-  if (native.state === "invalid") {
-    const blocked = nativeIssueIntakeJournalInvalidBlocked(native);
-    outputPreparationBlocked(blocked, options.flags.has("--json"));
-    return 1;
-  }
   if (native.state === "fresh_eligible") {
     await dependencies.beforeNativeIssueIntakeReadback?.();
     let fresh: NativeIssueIntakeJournalSnapshotV1 | null = null;
@@ -2542,6 +2537,11 @@ async function prepareNext(args: string[], behavior: Readonly<{
     if (preflight.state !== "absent") {
       if (options.flags.has("--json")) output(preflight, true, renderLegacyContinuationResult(preflight));
       else process.stderr.write(`${renderLegacyContinuationResult(preflight)}\n`);
+      return 1;
+    }
+    if (native.state === "invalid") {
+      const blocked = nativeIssueIntakeJournalInvalidBlocked(native);
+      outputPreparationBlocked(blocked, options.flags.has("--json"));
       return 1;
     }
     const issueObserver = dependencies.issueObserver ?? observeGitHubIssueV1;
