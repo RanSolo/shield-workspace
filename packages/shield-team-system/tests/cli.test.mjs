@@ -4,7 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdtemp, mkdir, open, readFile, readdir, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -96,6 +96,7 @@ async function issueCliFixture() {
   execFileSync("git", ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"], { cwd: source });
   execFileSync("git", ["add", ".gitignore", "package.json"], { cwd: source });
   execFileSync("git", ["commit", "--quiet", "-m", "issue fixture"], { cwd: source });
+  await writeFile(join(source, ".git", "info", "exclude"), "ignored-invoking-worktree-canary\n");
   await writeFile(join(source, "untracked-source-canary.txt"), "untracked source bytes\n");
   execFileSync("git", ["worktree", "add", "--quiet", "-b", `issue-cli-${process.pid}-${Date.now()}`, root, "HEAD"], { cwd: source });
 
@@ -129,6 +130,7 @@ async function issueCliFixture() {
   };
   await writeFile(join(root, ".shield", "tmp", "issue-response.json"), JSON.stringify(response));
   await writeFile(join(root, ".shield", "tmp", "gh-count"), "0\n");
+  await writeFile(join(root, "ignored-invoking-worktree-canary"), "preserve invoking worktree bytes\n");
   const fakeBin = join(parent, "fake-bin");
   await mkdir(fakeBin);
   const fakeGh = join(fakeBin, "gh");
@@ -138,9 +140,29 @@ async function issueCliFixture() {
 }
 
 async function completeWorktreeSnapshot(root) {
-  const names = execFileSync("git", ["ls-files", "--cached", "--others", "--ignored", "--exclude-standard", "-z"], { cwd: root })
-    .toString("utf8").split("\0").filter(Boolean).sort();
+  const names = [...new Set([
+    ...execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], { cwd: root })
+      .toString("utf8").split("\0").filter(Boolean),
+    ...execFileSync("git", ["ls-files", "--cached", "--others", "--ignored", "--exclude-standard", "-z"], { cwd: root })
+      .toString("utf8").split("\0").filter(Boolean),
+  ])].sort();
   return Promise.all(names.map(async (name) => ({ name, bytes: (await readFile(join(root, name))).toString("base64") })));
+}
+
+function snapshotMap(snapshot) {
+  return new Map(snapshot.map(({ name, bytes }) => [name, bytes]));
+}
+
+function changedSnapshotNames(before, after) {
+  const beforeMap = snapshotMap(before);
+  const afterMap = snapshotMap(after);
+  return [...new Set([...beforeMap.keys(), ...afterMap.keys()])]
+    .filter((name) => beforeMap.get(name) !== afterMap.get(name))
+    .sort();
+}
+
+function outsideMissionRoot(snapshot) {
+  return snapshot.filter(({ name }) => name !== ".shield" && !name.startsWith(".shield/"));
 }
 
 async function daisyCliFixture(includeDaisy = true) {
@@ -1706,7 +1728,9 @@ test("doctor classifies unsafe SHIELD ancestors as stale instead of a usage fail
 
 test("profile-aware issue begin uses two hermetic GitHub reads, exact replay uses one, and exposes the prepare-next handoff", async () => {
   const current = await issueCliFixture();
-  const sourceBefore = await completeWorktreeSnapshot(current.sourceRoot);
+  const invokingBefore = await completeWorktreeSnapshot(current.root);
+  assert.equal(invokingBefore.some(({ name }) => name === "ignored-invoking-worktree-canary"), true);
+  assert.equal(invokingBefore.some(({ name }) => name === ".shield/tmp/issue-response.json"), true);
   const args = ["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--root", current.root, "--json"];
   const first = run(args, current.root, { PATH: current.fakePath });
   assert.equal(first.status, 0, first.stderr);
@@ -1715,7 +1739,12 @@ test("profile-aware issue begin uses two hermetic GitHub reads, exact replay use
   assert.equal(created.nextAction.command, "shield mission prepare-next");
   assert.equal(created.nextAction.missionId, created.projection.missionId);
   assert.equal(JSON.parse(await readFile(join(current.root, ".shield", "tmp", "gh-count"), "utf8")), 2);
-  assert.deepEqual(await completeWorktreeSnapshot(current.sourceRoot), sourceBefore);
+  const firstAfter = await completeWorktreeSnapshot(current.root);
+  assert.deepEqual(outsideMissionRoot(firstAfter), outsideMissionRoot(invokingBefore));
+  assert.deepEqual(changedSnapshotNames(invokingBefore, firstAfter), [
+    relative(current.root, profileJournalPath(current.root, created.projection.missionId)),
+    ".shield/tmp/gh-count",
+  ].sort());
   await assert.rejects(lstat(join(current.root, ".local")), { code: "ENOENT" });
   await assert.rejects(lstat(join(current.root, ".config")), { code: "ENOENT" });
 
@@ -1733,6 +1762,7 @@ test("profile-aware issue begin uses two hermetic GitHub reads, exact replay use
   assert.deepEqual(replayed.projection, created.projection);
   assert.equal(JSON.parse(await readFile(join(current.root, ".shield", "tmp", "gh-count"), "utf8")), 3);
   assert.deepEqual(await readFile(profileJournalPath(current.root, created.projection.missionId)), journalBeforeReplay);
+  assert.deepEqual(outsideMissionRoot(await completeWorktreeSnapshot(current.root)), outsideMissionRoot(invokingBefore));
 
   const human = run(["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--root", current.root], current.root, { PATH: current.fakePath });
   assert.equal(human.status, 0, human.stderr);
@@ -1757,7 +1787,7 @@ test("profile-aware issue begin uses two hermetic GitHub reads, exact replay use
   ]);
   assert.ok(human.stdout.includes(`shield mission prepare-next --mission-id '${created.projection.missionId}' --root '${current.root}'`));
   assert.equal(JSON.parse(await readFile(join(current.root, ".shield", "tmp", "gh-count"), "utf8")), 4);
-  assert.deepEqual(await completeWorktreeSnapshot(current.sourceRoot), sourceBefore);
+  assert.deepEqual(outsideMissionRoot(await completeWorktreeSnapshot(current.root)), outsideMissionRoot(invokingBefore));
 });
 
 test("profile-aware issue and brief forms are mutually exclusive before repository access", () => {

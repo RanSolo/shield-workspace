@@ -74,6 +74,12 @@ function runner(responses) {
 }
 
 const ok = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" });
+
+function assertAbsentFrom(value, canaries) {
+  const serialized = JSON.stringify(value);
+  for (const canary of canaries) assert.equal(serialized.includes(canary), false, `unexpected canary: ${canary}`);
+}
+
 const scopeChecks = () => [
   ok("/workspace/shield-workspace"), ok("git@github.com:RanSolo/shield-workspace.git"),
   ok(branchSlug), ok(head), ok(base), ok(), ok(`${missionBriefPath}\0`), ok(), ok(),
@@ -158,6 +164,281 @@ test("GitHub issue observer projects only explicit credentials and selected disc
   });
   assert.equal(Object.hasOwn(result.environment, "GH_HOST"), false);
   assert.equal(Object.hasOwn(result.environment, "SHIELD_CREDENTIAL_CANARY"), false);
+});
+
+test("GitHub issue observer blocks relative and effective in-root credential directories across suffix variants", () => {
+  const variants = {
+    linux: {
+      sourceRoot: "/repo",
+      missionRoot: "/mission",
+      config: [
+        ["GH_CONFIG_DIR", []],
+        ["XDG_CONFIG_HOME", ["gh"]],
+        ["HOME", [".config", "gh"]],
+      ],
+      state: [
+        ["XDG_STATE_HOME", ["gh"]],
+        ["HOME", [".local", "state", "gh"]],
+      ],
+      safeConfig: "/safe/config",
+      safeState: "/safe/state",
+    },
+    win32: {
+      sourceRoot: "C:\\repo",
+      missionRoot: "C:\\mission",
+      config: [
+        ["GH_CONFIG_DIR", []],
+        ["XDG_CONFIG_HOME", ["gh"]],
+        ["APPDATA", ["GitHub CLI"]],
+        ["USERPROFILE", [".config", "gh"]],
+      ],
+      state: [
+        ["XDG_STATE_HOME", ["gh"]],
+        ["LOCALAPPDATA", ["GitHub CLI"]],
+        ["USERPROFILE", [".local", "state", "gh"]],
+      ],
+      safeConfig: "C:\\safe\\config",
+      safeState: "C:\\safe\\state",
+    },
+  };
+
+  for (const [platform, definition] of Object.entries(variants)) {
+    for (const [name, suffix] of definition.config) {
+      for (const root of [definition.sourceRoot, definition.missionRoot]) {
+        const seen = [];
+        const result = projectGitHubIssueObserverEnvironmentV1({
+          sourceEnv: { PATH: "/safe/bin", [name]: root, XDG_STATE_HOME: definition.safeState },
+          platform,
+          sourceRoot: definition.sourceRoot,
+          missionRoot: definition.missionRoot,
+          canonicalizeNoFollow: (value) => { seen.push(value); return value; },
+        });
+        assert.deepEqual(result, { state: "blocked", reason: "credential_environment_unsafe" }, `${platform}:${name}:${root}`);
+        assert.deepEqual(seen, [pathToolsForTest(platform, root, suffix)], `${platform}:${name}:${root}`);
+      }
+    }
+    for (const [name, suffix] of definition.state) {
+      for (const root of [definition.sourceRoot, definition.missionRoot]) {
+        const seen = [];
+        const result = projectGitHubIssueObserverEnvironmentV1({
+          sourceEnv: { PATH: "/safe/bin", GH_CONFIG_DIR: definition.safeConfig, [name]: root },
+          platform,
+          sourceRoot: definition.sourceRoot,
+          missionRoot: definition.missionRoot,
+          canonicalizeNoFollow: (value) => { seen.push(value); return value; },
+        });
+        assert.deepEqual(result, { state: "blocked", reason: "credential_state_unavailable" }, `${platform}:${name}:${root}`);
+        assert.deepEqual(seen, [definition.safeConfig, pathToolsForTest(platform, root, suffix)], `${platform}:${name}:${root}`);
+      }
+    }
+    for (const [name] of definition.config) {
+      const seen = [];
+      const result = projectGitHubIssueObserverEnvironmentV1({
+        sourceEnv: { PATH: "/safe/bin", [name]: "relative-config", XDG_STATE_HOME: definition.safeState },
+        platform,
+        sourceRoot: definition.sourceRoot,
+        missionRoot: definition.missionRoot,
+        canonicalizeNoFollow: (value) => { seen.push(value); return value; },
+      });
+      assert.deepEqual(result, { state: "blocked", reason: "credential_environment_unsafe" }, `${platform}:${name}:relative`);
+      assert.deepEqual(seen, [], `${platform}:${name}:relative`);
+    }
+    for (const [name] of definition.state) {
+      const seen = [];
+      const result = projectGitHubIssueObserverEnvironmentV1({
+        sourceEnv: { PATH: "/safe/bin", GH_CONFIG_DIR: definition.safeConfig, [name]: "relative-state" },
+        platform,
+        sourceRoot: definition.sourceRoot,
+        missionRoot: definition.missionRoot,
+        canonicalizeNoFollow: (value) => { seen.push(value); return value; },
+      });
+      assert.deepEqual(result, { state: "blocked", reason: "credential_state_unavailable" }, `${platform}:${name}:relative`);
+      assert.deepEqual(seen, [definition.safeConfig], `${platform}:${name}:relative`);
+    }
+  }
+});
+
+function pathToolsForTest(platform, root, suffix) {
+  if (platform === "win32") {
+    return [root, ...suffix].join("\\").replace(/\\+/gu, "\\");
+  }
+  return [root, ...suffix].join("/").replace(/\/+/gu, "/");
+}
+
+test("GitHub issue observer blocks relative paths, symlink ambiguity, and missing safe state without leaking canaries", () => {
+  const canaries = ["secret-canary", "/private/canary/config", "unrelated-path-canary"];
+  const relative = projectGitHubIssueObserverEnvironmentV1({
+    sourceEnv: { PATH: "/safe/bin", GH_CONFIG_DIR: "relative-config", XDG_STATE_HOME: "/safe/state", GH_TOKEN: canaries[0] },
+    platform: "linux",
+    sourceRoot: "/repo",
+    missionRoot: "/mission",
+    canonicalizeNoFollow: (value) => value,
+  });
+  assert.deepEqual(relative, { state: "blocked", reason: "credential_environment_unsafe" });
+  assertAbsentFrom(relative, canaries);
+
+  const symlink = projectGitHubIssueObserverEnvironmentV1({
+    sourceEnv: { PATH: "/safe/bin", GH_CONFIG_DIR: "/safe/config", XDG_STATE_HOME: "/safe/state" },
+    platform: "linux",
+    sourceRoot: "/repo",
+    missionRoot: "/mission",
+    canonicalizeNoFollow: () => null,
+  });
+  assert.deepEqual(symlink, { state: "blocked", reason: "credential_environment_unsafe" });
+
+  const missingState = projectGitHubIssueObserverEnvironmentV1({
+    sourceEnv: { PATH: "/safe/bin", GH_CONFIG_DIR: "/safe/config", GH_TOKEN: canaries[0], SHIELD_PATH_CANARY: canaries[1] },
+    platform: "linux",
+    sourceRoot: "/repo",
+    missionRoot: "/mission",
+    canonicalizeNoFollow: (value) => value,
+  });
+  assert.deepEqual(missingState, { state: "blocked", reason: "credential_state_unavailable" });
+  assertAbsentFrom(missingState, canaries);
+
+  for (const [name, reason] of [["GH_CONFIG_DIR", "credential_environment_unsafe"], ["XDG_STATE_HOME", "credential_state_unavailable"]]) {
+    const result = projectGitHubIssueObserverEnvironmentV1({
+      sourceEnv: { PATH: "/safe/bin", GH_CONFIG_DIR: "/safe/config", XDG_STATE_HOME: "/safe/state", [name]: "" },
+      platform: "linux",
+      sourceRoot: "/repo",
+      missionRoot: "/mission",
+      canonicalizeNoFollow: (value) => value,
+    });
+    assert.deepEqual(result, { state: "blocked", reason }, `empty ${name}`);
+  }
+
+  const observed = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    run: () => ({ exitCode: 1, stdout: Buffer.from(canaries.join("\n")), stderr: Buffer.from(canaries.join("\n")) }),
+    cwd: "/repo",
+    sourceEnv: {
+      PATH: "/safe/bin",
+      GH_CONFIG_DIR: "/safe/config",
+      XDG_STATE_HOME: "/safe/state",
+      GH_TOKEN: canaries[0],
+      GITHUB_TOKEN: "github-token-canary",
+      GH_ENTERPRISE_TOKEN: canaries[0],
+      SHIELD_PATH_CANARY: canaries[1],
+      UNRELATED_ENV_CANARY: canaries[2],
+    },
+    platform: "linux",
+    sourceRoot: "/repo",
+    missionRoot: "/mission",
+    canonicalizeNoFollow: (value) => value,
+  });
+  assert.deepEqual(observed, { state: "blocked", reason: "host_rejected" });
+  assertAbsentFrom(observed, canaries);
+
+  const successful = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    run: issueRunner(JSON.stringify(issueResponse())),
+    cwd: "/repo",
+    sourceEnv: {
+      PATH: "/safe/bin", GH_CONFIG_DIR: "/safe/config", XDG_STATE_HOME: "/safe/state",
+      GH_TOKEN: canaries[0], GITHUB_TOKEN: "github-token-canary", GH_ENTERPRISE_TOKEN: canaries[0],
+      SHIELD_PATH_CANARY: canaries[1], UNRELATED_ENV_CANARY: canaries[2],
+    },
+    platform: "linux",
+    sourceRoot: "/repo",
+    missionRoot: "/mission",
+    canonicalizeNoFollow: (value) => value,
+    now: () => "2026-08-22T12:01:00Z",
+  });
+  assert.equal(successful.state, "observed");
+  assertAbsentFrom(successful, [...canaries, "github-token-canary"]);
+});
+
+test("GitHub issue observer honors platform credential precedence and empty token exclusion", () => {
+  const unix = projectGitHubIssueObserverEnvironmentV1({
+    sourceEnv: {
+      PATH: "/safe/bin",
+      GH_CONFIG_DIR: "/safe/gh-config",
+      XDG_CONFIG_HOME: "/lower/xdg-config",
+      HOME: "/lower/home",
+      XDG_STATE_HOME: "/safe/xdg-state",
+      GH_TOKEN: "",
+      GITHUB_TOKEN: "",
+    },
+    platform: "linux",
+    sourceRoot: "/repo",
+    missionRoot: "/mission",
+    canonicalizeNoFollow: (value) => value,
+  });
+  assert.equal(unix.state, "ready");
+  assert.deepEqual(unix.environment, {
+    PATH: "/safe/bin", LANG: "C", LC_ALL: "C", GH_PROMPT_DISABLED: "1",
+    GH_CONFIG_DIR: "/safe/gh-config", XDG_STATE_HOME: "/safe/xdg-state",
+  });
+
+  const unixFallback = projectGitHubIssueObserverEnvironmentV1({
+    sourceEnv: { PATH: "/safe/bin", XDG_CONFIG_HOME: "/safe/xdg-config", HOME: "/safe/home", HOME_STATE_CANARY: "unrelated" },
+    platform: "linux", sourceRoot: "/repo", missionRoot: "/mission", canonicalizeNoFollow: (value) => value,
+  });
+  assert.deepEqual(Object.fromEntries(Object.entries(unixFallback.environment).filter(([key]) => !["PATH", "LANG", "LC_ALL", "GH_PROMPT_DISABLED"].includes(key))), {
+    XDG_CONFIG_HOME: "/safe/xdg-config", HOME: "/safe/home",
+  });
+
+  const windowsAll = {
+    PATH: "C:\\safe\\bin",
+    GH_CONFIG_DIR: "C:\\safe\\gh-config",
+    XDG_CONFIG_HOME: "C:\\lower\\xdg-config",
+    APPDATA: "C:\\lower\\appdata",
+    USERPROFILE: "C:\\lower\\profile",
+    XDG_STATE_HOME: "C:\\safe\\xdg-state",
+    LOCALAPPDATA: "C:\\lower\\localappdata",
+    GH_TOKEN: "gh-token",
+    GITHUB_TOKEN: "github-token",
+  };
+  const windows = projectGitHubIssueObserverEnvironmentV1({
+    sourceEnv: windowsAll, platform: "win32", sourceRoot: "C:\\repo", missionRoot: "C:\\mission", canonicalizeNoFollow: (value) => value,
+  });
+  assert.equal(windows.state, "ready");
+  assert.deepEqual(Object.fromEntries(Object.entries(windows.environment).filter(([key]) => !["PATH", "LANG", "LC_ALL", "GH_PROMPT_DISABLED"].includes(key))), {
+    GH_CONFIG_DIR: "C:\\safe\\gh-config", XDG_STATE_HOME: "C:\\safe\\xdg-state", GH_TOKEN: "gh-token", GITHUB_TOKEN: "github-token",
+  });
+
+  for (const [removed, expected, removeAlso] of [
+    ["GH_CONFIG_DIR", "XDG_CONFIG_HOME", []],
+    ["XDG_CONFIG_HOME", "APPDATA", ["GH_CONFIG_DIR"]],
+    ["APPDATA", "USERPROFILE", ["GH_CONFIG_DIR", "XDG_CONFIG_HOME"]],
+  ]) {
+    const sourceEnv = { ...windowsAll };
+    delete sourceEnv[removed];
+    for (const name of removeAlso) delete sourceEnv[name];
+    const result = projectGitHubIssueObserverEnvironmentV1({
+      sourceEnv, platform: "win32", sourceRoot: "C:\\repo", missionRoot: "C:\\mission", canonicalizeNoFollow: (value) => value,
+    });
+    assert.equal(result.state, "ready");
+    assert.equal(Object.hasOwn(result.environment, expected), true, `${removed} fallback`);
+  }
+  const stateFallback = { ...windowsAll };
+  delete stateFallback.XDG_STATE_HOME;
+  const localState = projectGitHubIssueObserverEnvironmentV1({
+    sourceEnv: stateFallback, platform: "win32", sourceRoot: "C:\\repo", missionRoot: "C:\\mission", canonicalizeNoFollow: (value) => value,
+  });
+  assert.equal(localState.state, "ready");
+  assert.equal(localState.environment.LOCALAPPDATA, windowsAll.LOCALAPPDATA);
+  delete stateFallback.LOCALAPPDATA;
+  const profileState = projectGitHubIssueObserverEnvironmentV1({
+    sourceEnv: stateFallback, platform: "win32", sourceRoot: "C:\\repo", missionRoot: "C:\\mission", canonicalizeNoFollow: (value) => value,
+  });
+  assert.equal(profileState.state, "ready");
+  assert.equal(profileState.environment.USERPROFILE, windowsAll.USERPROFILE);
+});
+
+test("GitHub issue observer accepts GH_CONFIG_DIR with HOME state fallback", () => {
+  const result = projectGitHubIssueObserverEnvironmentV1({
+    sourceEnv: { PATH: "/safe/bin", GH_CONFIG_DIR: "/safe/config", HOME: "/safe/home" },
+    platform: "linux",
+    sourceRoot: "/repo",
+    missionRoot: "/mission",
+    canonicalizeNoFollow: (value) => value,
+  });
+  assert.deepEqual(result, {
+    state: "ready",
+    environment: {
+      PATH: "/safe/bin", LANG: "C", LC_ALL: "C", GH_PROMPT_DISABLED: "1",
+      GH_CONFIG_DIR: "/safe/config", HOME: "/safe/home",
+    },
+  });
 });
 
 test("GitHub issue observer resolves independent Unix and Windows credential roots", () => {
