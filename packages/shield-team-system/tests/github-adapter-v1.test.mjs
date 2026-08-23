@@ -13,6 +13,7 @@ import {
   observeFeatureIntegrationPullRequestProofV2,
   observeFeatureIntegrationTargetProofV2,
 } from "../public/github.mjs";
+import { projectGitHubIssueObserverEnvironmentV1 } from "../github/adapter-v1.mjs";
 import { publicationJournalFixture } from "./fixtures/review-publication-journal.mjs";
 import { resolveJournaledPublicationRequest } from "../github/publication-gate.mjs";
 import {
@@ -124,13 +125,111 @@ function issueRunner(response) {
   return run;
 }
 
+test("GitHub issue observer projects only explicit credentials and selected discovery roots", () => {
+  const result = projectGitHubIssueObserverEnvironmentV1({
+    sourceEnv: {
+      PATH: "/safe/bin",
+      GH_TOKEN: "gh-secret",
+      GITHUB_TOKEN: "github-secret",
+      GH_HOST: "evil.example",
+      GH_ENTERPRISE_TOKEN: "enterprise-secret",
+      XDG_CONFIG_HOME: "/safe/config",
+      XDG_STATE_HOME: "/safe/state",
+      HOME: "/ambient/home",
+      SHIELD_CREDENTIAL_CANARY: "ambient-canary",
+    },
+    platform: "linux",
+    sourceRoot: "/repo",
+    missionRoot: "/mission",
+    canonicalizeNoFollow: (value) => value,
+  });
+  assert.deepEqual(result, {
+    state: "ready",
+    environment: {
+      PATH: "/safe/bin",
+      LANG: "C",
+      LC_ALL: "C",
+      GH_PROMPT_DISABLED: "1",
+      XDG_CONFIG_HOME: "/safe/config",
+      XDG_STATE_HOME: "/safe/state",
+      GH_TOKEN: "gh-secret",
+      GITHUB_TOKEN: "github-secret",
+    },
+  });
+  assert.equal(Object.hasOwn(result.environment, "GH_HOST"), false);
+  assert.equal(Object.hasOwn(result.environment, "SHIELD_CREDENTIAL_CANARY"), false);
+});
+
+test("GitHub issue observer resolves independent Unix and Windows credential roots", () => {
+  const cases = [
+    {
+      platform: "linux",
+      sourceEnv: { PATH: "/bin", GH_CONFIG_DIR: "/external/config", HOME: "/external/home" },
+      expected: { GH_CONFIG_DIR: "/external/config", HOME: "/external/home" },
+    },
+    {
+      platform: "win32",
+      sourceEnv: { PATH: "C:\\bin", XDG_CONFIG_HOME: "C:\\xdg-config", APPDATA: "C:\\app-data", LOCALAPPDATA: "C:\\local-app-data" },
+      expected: { XDG_CONFIG_HOME: "C:\\xdg-config", LOCALAPPDATA: "C:\\local-app-data" },
+    },
+    {
+      platform: "win32",
+      sourceEnv: { PATH: "C:\\bin", USERPROFILE: "C:\\Users\\fixture" },
+      expected: { USERPROFILE: "C:\\Users\\fixture" },
+    },
+  ];
+  for (const { platform, sourceEnv, expected } of cases) {
+    const result = projectGitHubIssueObserverEnvironmentV1({
+      sourceEnv,
+      platform,
+      sourceRoot: platform === "win32" ? "C:\\repo" : "/repo",
+      missionRoot: platform === "win32" ? "C:\\mission" : "/mission",
+      canonicalizeNoFollow: (value) => value,
+    });
+    assert.equal(result.state, "ready", platform);
+    assert.deepEqual(Object.fromEntries(Object.entries(result.environment).filter(([name]) => !["PATH", "LANG", "LC_ALL", "GH_PROMPT_DISABLED"].includes(name))), expected, platform);
+  }
+});
+
+test("GitHub issue observer blocks unsafe effective credential directories before spawning", () => {
+  const calls = [];
+  const run = (...args) => { calls.push(args); return { exitCode: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }; };
+  const blocked = projectGitHubIssueObserverEnvironmentV1({
+    sourceEnv: { PATH: "/bin", XDG_CONFIG_HOME: "/repo", HOME: "/external/home" },
+    platform: "linux",
+    sourceRoot: "/repo",
+    missionRoot: "/mission",
+    canonicalizeNoFollow: (value) => value,
+  });
+  assert.deepEqual(blocked, { state: "blocked", reason: "credential_environment_unsafe" });
+  const observed = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    run,
+    sourceEnv: { PATH: "/bin", XDG_CONFIG_HOME: "/repo", HOME: "/external/home" },
+    platform: "linux",
+    sourceRoot: "/repo",
+    missionRoot: "/mission",
+    canonicalizeNoFollow: (value) => value,
+  });
+  assert.deepEqual(observed, { state: "blocked", reason: "credential_environment_unsafe" });
+  assert.equal(calls.length, 0);
+});
+
 test("GitHub issue observer uses one exact authority-none GraphQL read and stable criteria binding", () => {
   const run = issueRunner(JSON.stringify(issueResponse()));
   const result = observeGitHubIssueV1({
     repositoryId: "RanSolo/shield-workspace",
     issueNumber: 341,
     sourceRef: "github:RanSolo/shield-workspace/issues/341",
-  }, { run, cwd: "/workspace", now: () => "2026-08-22T12:01:00Z" });
+  }, {
+    run,
+    cwd: "/workspace",
+    sourceEnv: { PATH: "/safe/bin", XDG_CONFIG_HOME: "/safe/config", XDG_STATE_HOME: "/safe/state" },
+    platform: "linux",
+    sourceRoot: "/workspace",
+    missionRoot: "/mission",
+    canonicalizeNoFollow: (value) => value,
+    now: () => "2026-08-22T12:01:00Z",
+  });
   assert.equal(result.state, "observed");
   assert.equal(run.calls.length, 1);
   assert.deepEqual(run.calls[0].args, [
@@ -141,7 +240,12 @@ test("GitHub issue observer uses one exact authority-none GraphQL read and stabl
   assert.equal(run.calls[0].options.shell, false);
   assert.equal(run.calls[0].options.input, null);
   assert.equal(run.calls[0].options.encoding, "buffer");
-  assert.deepEqual(run.calls[0].options.env, { PATH: process.env.PATH ?? "", LANG: "C", LC_ALL: "C" });
+  assert.equal(run.calls[0].options.timeoutMs, 15_000);
+  assert.equal(run.calls[0].options.maxBuffer, 4 * 1024 * 1024);
+  assert.deepEqual(run.calls[0].options.env, {
+    PATH: "/safe/bin", LANG: "C", LC_ALL: "C", GH_PROMPT_DISABLED: "1",
+    XDG_CONFIG_HOME: "/safe/config", XDG_STATE_HOME: "/safe/state",
+  });
   assert.equal(result.observation.authority, "none");
   assert.deepEqual(result.observation.labels, ["alpha", "zeta"]);
   assert.deepEqual(result.observation.acceptanceCriteria.items, [
