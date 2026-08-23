@@ -2098,6 +2098,7 @@ async function classifyNativeIssueIntakeJournal(
   const repositoryRoot = await fsRealpath(root);
   const snapshot = await readNativeIssueIntakeJournalSnapshot(root, config, missionId, parser, afterHandleRead);
   if (snapshot.state === "invalid") {
+    if (snapshot.code === "mission_missing") return { state: "valid_non_applicable" };
     return { state: "invalid", code: snapshot.code, errors: snapshot.errors, missionId, repositoryRoot };
   }
   if (snapshot.value.journal.kind !== "profile-aware" || !isFreshNativeIssueIntakeJournal(snapshot.value.journal)) {

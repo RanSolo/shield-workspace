@@ -2261,6 +2261,35 @@ test("prepare-next returns protected graph evidence unchanged before model selec
   }
 });
 
+test("prepare-next delegates a configured repository with no journal to reviewed v2 preparation", async () => {
+  const current = await fixture();
+  const missionId = "mission:issue-372-absent-journal";
+  const prepared = {
+    state: "blocked",
+    missionId,
+    reasonCode: "repository_observation_stale",
+    errors: ["reviewed v2 preparation reached"],
+  };
+  let prepareCalls = 0;
+  await assert.rejects(lstat(journalPath(current.root, missionId)), { code: "ENOENT" });
+  const result = await runMissionCliCaptured(
+    ["mission", "prepare-next", "--mission-id", missionId, "--root", current.root, "--json"],
+    {
+      prepareSession: async () => {
+        prepareCalls += 1;
+        return prepared;
+      },
+      continueLegacyReviewedTransition: async () => { throw new Error("legacy continuation must not run"); },
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.equal(prepareCalls, 1);
+  assert.deepEqual(JSON.parse(result.stdout), prepared);
+  assert.notEqual(JSON.parse(result.stdout).reasonCode, "native_issue_intake_journal_invalid");
+  await assert.rejects(lstat(journalPath(current.root, missionId)), { code: "ENOENT" });
+});
+
 test("prepare-next routes a fresh issue-intake journal before protected or legacy preparation and blocks journal readback drift", async () => {
   const current = await nativeIssueIntakeFixture();
   const { initialBytes, missionId, missionJournalPath } = current;
