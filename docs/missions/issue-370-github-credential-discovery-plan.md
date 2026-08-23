@@ -14,28 +14,29 @@ Make the closed GitHub issue-observer process environment sufficient for normal 
 ## Frozen design
 
 1. Keep the executable and GraphQL argv closed exactly as they are.
-2. Replace the three-variable environment builder with a versioned, testable projection that always sets `PATH`, `LANG=C`, `LC_ALL=C`, and `GH_PROMPT_DISABLED=1`.
-3. Copy only the GitHub CLI authentication/discovery variables documented by the installed `gh help environment` surface when they are present as non-empty strings:
-   - `GH_TOKEN`, then `GITHUB_TOKEN`;
-   - `GH_ENTERPRISE_TOKEN`, then `GITHUB_ENTERPRISE_TOKEN`;
-   - `GH_HOST`;
-   - `GH_CONFIG_DIR`;
-   - `XDG_CONFIG_HOME`, `AppData`, and `HOME` only as path-discovery inputs needed when `GH_CONFIG_DIR` is absent;
-   - `XDG_STATE_HOME` when present so GitHub CLI state remains host-scoped.
-4. Preserve GitHub CLI precedence by copying names and values without translating one token variable into another.
-5. Never include the projected environment, token values, config contents, or credential paths in observations, digests, errors, logs, journals, or returned evidence.
-6. Keep stdin disabled and prompting disabled. Authentication failure remains a stable fail-closed `authentication_failed` result.
-7. Prove the real authenticated smoke path leaves the repository byte-for-byte clean and advances to issue observation or the next non-authentication rail edge.
+2. Add a pure `projectGitHubIssueObserverEnvironmentV1` seam accepting explicit `sourceEnv`, `platform`, `sourceRoot`, and `missionRoot`. Production supplies `process.env`, `process.platform`, the invoking source root, and the canonical mission root. The projection always sets `PATH`, `LANG=C`, `LC_ALL=C`, and `GH_PROMPT_DISABLED=1`.
+3. This adapter remains GitHub.com-only. Admit only `GH_TOKEN` and `GITHUB_TOKEN`, unchanged and simultaneously when present as non-empty strings so GitHub CLI's documented precedence remains intact. Exclude `GH_HOST`, enterprise tokens, and all unrelated ambient variables. GHES requires a separate source-reference and endpoint contract.
+4. Resolve config and state discovery independently:
+   - Config precedence: `GH_CONFIG_DIR`; otherwise Windows `AppData`, Unix `XDG_CONFIG_HOME`, then `HOME`.
+   - State precedence: `XDG_STATE_HOME`; otherwise Windows `LocalAppData`, then `HOME`.
+   - `HOME` remains admitted on Unix whenever it is the state fallback, including when `GH_CONFIG_DIR` is present.
+5. Every selected config/state root must be absolute and outside both source and mission roots after no-follow canonicalization of its nearest existing ancestor. Relative, missing, symlink-ambiguous, equal, or nested roots block before spawning `gh` with stable redacted reasons `credential_environment_unsafe` or `credential_state_unavailable`. Rejected path values never appear in diagnostics.
+6. Never include the projected environment, token values, config contents, credential paths, or path canaries in observations, digests, errors, logs, journals, or returned evidence. The pure seam is used only to construct the child process environment; ordinary observer results remain closed.
+7. Keep exact argv, `shell:false`, ignored stdin, timeout, byte limits, and prompting disabled. Authentication failure remains a stable fail-closed `authentication_failed` result.
+8. Prove the real authenticated smoke path snapshots the complete invoking source worktree, including ignored and untracked entries, before and after and leaves it byte-for-byte unchanged. Separately allowlist only the expected mission journal/projection changes under the mission root. The smoke must advance to issue observation or the next non-authentication rail edge.
 
 ## Acceptance matrix
 
-- Explicit `GH_TOKEN` and `GITHUB_TOKEN` are admitted with documented precedence unchanged.
-- Stored-login discovery works through the minimal host path variables when explicit tokens are absent.
+- Explicit `GH_TOKEN` and `GITHUB_TOKEN` are admitted together with documented precedence unchanged; `GH_HOST` and enterprise tokens are excluded.
+- Stored-login discovery works through separately selected config and state roots when explicit tokens are absent.
+- Unix and Windows table cases cover config/state precedence, including `GH_CONFIG_DIR` with no `XDG_STATE_HOME`, Windows `AppData` plus `LocalAppData`, and Unix `HOME` state fallback.
+- Empty values, missing safe state roots, relative paths, repository-contained paths, symlink ambiguity, and source/mission root equality fail closed before child execution.
 - Missing authentication remains fail-closed.
 - Unrelated ambient variables are excluded.
-- No secret value, credential path, or child environment is returned or persisted.
+- Secret and path canaries occur nowhere in observer results, stderr/stdout, diagnostics, journals, or projections.
 - The observer creates no `.local`, GitHub CLI config, device ID, or other state below the repository root.
 - Existing timeout, byte limits, strict JSON, identity checks, acceptance-criteria parsing, and replay identity remain unchanged.
+- Deterministic tests inject `sourceEnv`, `platform`, source/mission roots, and a no-follow path canonicalizer rather than mutating global process state.
 - Focused adapter and CLI tests pass through Nx with cache enabled; `@shield/multiband` is excluded.
 
 ## Bounded paths
