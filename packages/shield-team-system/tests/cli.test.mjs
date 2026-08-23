@@ -16,6 +16,7 @@ const { createShieldConfig, formatShieldConfig } = await import("../dist/config.
 const { missionUsage, validateAuthorizeDaisyCoordinationInput } = await import("../dist/mission-cli.mjs");
 const { computeEd25519SigningKeyRef } = await import("../dist/mission-v2.mjs");
 const { createProfileAwareMissionBrief, MISSION_130_JOURNAL_DIGEST } = await import("../dist/profile-aware-mission-v1.mjs");
+const { prepareWorktreeStateV1 } = await import("../dist/worktree-state-v1.mjs");
 const initArgs = [
   "init",
   "--repository-id", "RanSolo/fixture",
@@ -77,6 +78,60 @@ function cliAuthority(seatId) {
 
 function profileJournalPath(root, missionId) {
   return join(root, ".shield", "journals", `${Buffer.from(missionId).toString("base64url")}.jsonl`);
+}
+
+async function issueCliFixture() {
+  const parent = await realpath(await mkdtemp(join(tmpdir(), "shield-issue-cli-")));
+  const source = join(parent, "source");
+  const root = join(parent, "destination");
+  await mkdir(source);
+  await mkdir(join(source, ".shield"));
+  await writeFile(join(source, ".gitignore"), ".shield/\n");
+  await writeFile(join(source, "package.json"), "{\"private\":true}\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: source });
+  execFileSync("git", ["config", "user.email", "shield@example.invalid"], { cwd: source });
+  execFileSync("git", ["config", "user.name", "SHIELD Issue Fixture"], { cwd: source });
+  execFileSync("git", ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"], { cwd: source });
+  execFileSync("git", ["add", ".gitignore", "package.json"], { cwd: source });
+  execFileSync("git", ["commit", "--quiet", "-m", "issue fixture"], { cwd: source });
+  execFileSync("git", ["worktree", "add", "--quiet", "-b", `issue-cli-${process.pid}-${Date.now()}`, root, "HEAD"], { cwd: source });
+
+  const coulson = cliAuthority("coulson");
+  const fitz = cliAuthority("fitz");
+  const config = createShieldConfig({ repositoryId: "RanSolo/fixture", coulsonBindingRef: coulson.signingKeyRef, fitzBindingRef: fitz.signingKeyRef });
+  await writeFile(join(source, ".shield", "config.json"), formatShieldConfig(config));
+  await writeFile(join(source, ".shield", "trusted-human-bindings.json"), `${JSON.stringify({ schemaVersion: 1, bindings: [coulson, fitz] }, null, 2)}\n`);
+  await writeFile(join(source, ".shield", ".gitignore"), "/journals/\n/reports/\n/tmp/\n");
+  const prepared = await prepareWorktreeStateV1({ sourceRoot: await realpath(source), destinationRoot: await realpath(root) });
+  assert.equal(prepared.state, "ready");
+  await mkdir(join(root, ".shield", "tmp"), { recursive: true });
+
+  const response = {
+    data: {
+      repository: {
+        id: "R_repo_1",
+        nameWithOwner: "RanSolo/fixture",
+        issue: {
+          id: "I_issue_7",
+          number: 7,
+          url: "https://github.com/RanSolo/fixture/issues/7",
+          title: "Intake issue",
+          body: "## Acceptance criteria\n- [ ] preserve the issue identity\n- [ ] remain authority-neutral\n",
+          state: "OPEN",
+          updatedAt: "2026-08-22T12:00:00Z",
+          labels: { nodes: [{ name: "intake" }] },
+        },
+      },
+    },
+  };
+  await writeFile(join(root, ".shield", "tmp", "issue-response.json"), JSON.stringify(response));
+  await writeFile(join(root, ".shield", "tmp", "gh-count"), "0\n");
+  const fakeBin = join(parent, "fake-bin");
+  await mkdir(fakeBin);
+  const fakeGh = join(fakeBin, "gh");
+  await writeFile(fakeGh, "#!/bin/sh\ncount=$(cat \"$PWD/.shield/tmp/gh-count\")\nprintf '%s\\n' $((count + 1)) > \"$PWD/.shield/tmp/gh-count\"\ncat \"$PWD/.shield/tmp/issue-response.json\"\n");
+  await chmod(fakeGh, 0o755);
+  return { root: await realpath(root), fakePath: `${fakeBin}:${process.env.PATH}`, missionId: "" };
 }
 
 async function daisyCliFixture(includeDaisy = true) {
@@ -1638,4 +1693,42 @@ test("doctor classifies unsafe SHIELD ancestors as stale instead of a usage fail
   const report = JSON.parse(inspected.stdout);
   assert.equal(report.worktreeState.classification, "stale_or_malformed_worktree_state");
   assert.equal(report.worktreeState.ok, false);
+});
+
+test("profile-aware issue begin uses two hermetic GitHub reads, exact replay uses one, and exposes the prepare-next handoff", async () => {
+  const current = await issueCliFixture();
+  const args = ["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--root", current.root, "--json"];
+  const first = run(args, current.root, { PATH: current.fakePath });
+  assert.equal(first.status, 0, first.stderr);
+  const created = JSON.parse(first.stdout);
+  assert.equal(created.replayed, false);
+  assert.equal(created.nextAction.command, "shield mission prepare-next");
+  assert.equal(created.nextAction.missionId, created.projection.missionId);
+  assert.equal(JSON.parse(await readFile(join(current.root, ".shield", "tmp", "gh-count"), "utf8")), 2);
+
+  const status = run(["mission", "status", "--mission-id", created.projection.missionId, "--root", current.root, "--json"], current.root);
+  assert.equal(status.status, 0, status.stderr);
+  assert.equal(JSON.parse(status.stdout).missionId, created.projection.missionId);
+  const prepareNext = run(["mission", "prepare-next", "--mission-id", created.projection.missionId, "--root", current.root, "--json"], current.root);
+  assert.notEqual(prepareNext.status, 2, prepareNext.stderr);
+
+  const journalBeforeReplay = await readFile(profileJournalPath(current.root, created.projection.missionId));
+  const replay = run(args, current.root, { PATH: current.fakePath });
+  assert.equal(replay.status, 0, replay.stderr);
+  const replayed = JSON.parse(replay.stdout);
+  assert.equal(replayed.replayed, true);
+  assert.deepEqual(replayed.projection, created.projection);
+  assert.equal(JSON.parse(await readFile(join(current.root, ".shield", "tmp", "gh-count"), "utf8")), 3);
+  assert.deepEqual(await readFile(profileJournalPath(current.root, created.projection.missionId)), journalBeforeReplay);
+
+  const human = run(["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--root", current.root], current.root, { PATH: current.fakePath });
+  assert.equal(human.status, 0, human.stderr);
+  assert.ok(human.stdout.includes(`shield mission prepare-next --mission-id '${created.projection.missionId}' --root '${current.root}'`));
+  assert.equal(JSON.parse(await readFile(join(current.root, ".shield", "tmp", "gh-count"), "utf8")), 4);
+});
+
+test("profile-aware issue and brief forms are mutually exclusive before repository access", () => {
+  const result = run(["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--brief", "missing.json"], process.cwd());
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /mutually exclusive/u);
 });

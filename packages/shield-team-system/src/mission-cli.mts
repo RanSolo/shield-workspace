@@ -31,6 +31,7 @@ import {
 import {
   appendProfileAwareMissionEntryV1,
   appendProfileAwareMissionEntriesAtomicV1,
+  initializeIssueIntakeMissionJournalV1,
   appendSupervisedMissionEntry,
   initializeProfileAwareMissionJournalV1,
   initializeSupervisedMissionJournal,
@@ -58,6 +59,29 @@ import {
   type ProfileAwareProjectionV1,
   type SignedProfileEvidenceV1,
 } from "./profile-aware-mission-v1.mjs";
+import {
+  compileIssueIntakeV1,
+  computeIssueIntakeMissionIdV1,
+  type IssueIntakeCompiledMissionV1,
+} from "./mission-intake-v1.mjs";
+import { getMissionProfileV1, type MissionProfileId } from "./mission-profile-v1.mjs";
+import { inspectWorktreeStateV1 } from "./worktree-state-v1.mjs";
+// @ts-expect-error The host adapter is JavaScript; its paired public declaration is not a build input.
+import { observeGitHubIssueV1 } from "../github/adapter-v1.mjs";
+
+type GitHubIssueObservationV1 = {
+  hostRepositoryId: string;
+  repositoryNameWithOwner: string;
+  hostIssueId: string;
+  issueNumber: number;
+  issueUrl: string;
+  issueRevisionId: string;
+  updatedAt: string;
+  acceptanceCriteria: { digest: string };
+};
+type GitHubIssueObserverV1 = (input: string, options?: { cwd?: string }) =>
+  | { state: "observed"; observation: GitHubIssueObservationV1 }
+  | { state: "blocked"; reason: string };
 import {
   validateAdapterCandidate,
   type CommunicationOperation,
@@ -297,6 +321,12 @@ interface RepositoryConfigSnapshot {
   identity: string;
 }
 
+interface RepositoryBindingRegistrySnapshot {
+  value: unknown;
+  bytes: string;
+  identity: string;
+}
+
 async function repositoryConfigSnapshot(root: string): Promise<RepositoryConfigSnapshot> {
   const path = join(root, CONFIG_PATH);
   let handle;
@@ -325,6 +355,44 @@ async function repositoryConfigSnapshot(root: string): Promise<RepositoryConfigS
   } finally {
     if (handle !== undefined) await handle.close();
   }
+}
+
+async function repositoryBindingRegistrySnapshot(root: string): Promise<RepositoryBindingRegistrySnapshot> {
+  const path = join(root, BINDINGS_PATH);
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = await handle.stat();
+    if (!before.isFile()) throw new MissionCliError(`Trusted binding registry must be a regular file: ${path}.`);
+    const bytes = await handle.readFile("utf8");
+    const after = await handle.stat();
+    const pathStats = await lstat(path);
+    if (pathStats.isSymbolicLink() || !pathStats.isFile() ||
+        before.dev !== after.dev || before.ino !== after.ino ||
+        before.dev !== pathStats.dev || before.ino !== pathStats.ino) {
+      throw new MissionCliError("Trusted binding registry path identity changed during snapshot.", 1);
+    }
+    let value: unknown;
+    try { value = JSON.parse(bytes); }
+    catch { throw new MissionCliError(`Trusted binding registry contains malformed JSON: ${path}.`, 1); }
+    return { value, bytes, identity: `${String(before.dev)}:${String(before.ino)}:${String(before.mode & 0o7777)}` };
+  } catch (error) {
+    if (error instanceof MissionCliError) throw error;
+    throw new MissionCliError(`Trusted binding registry is missing, unsafe, or unreadable: ${path}.`, 1);
+  } finally {
+    if (handle !== undefined) await handle.close();
+  }
+}
+
+async function preparedWorktreeReceiptDigest(root: string): Promise<string> {
+  const state = await inspectWorktreeStateV1({ root, configPresent: true, configValid: true });
+  if (state.classification !== "prepared_worktree" || !state.ok || state.receiptDigest === null) {
+    throw new MissionCliError(`Prepared-worktree validation failed: ${state.message}.`, 1);
+  }
+  if (state.receiptDigest.length !== 64 || !/^[0-9a-f]+$/u.test(state.receiptDigest)) {
+    throw new MissionCliError("Prepared-worktree receipt digest is malformed.", 1);
+  }
+  return state.receiptDigest;
 }
 
 function requireGitHubConfiguration(snapshot: RepositoryConfigSnapshot): void {
@@ -699,8 +767,161 @@ function profileAwareStatusText(projection: ProfileAwareProjectionV1): string {
   ].join("\n");
 }
 
-async function begin(args: string[]): Promise<number> {
-  const options = parseOptions(args, ["--root", "--brief", "--authorization", "--delegation", "--eligibility"], ["--json", "--profile-aware"]);
+type IssueBeginDependencies = Readonly<{ issueObserver?: GitHubIssueObserverV1 }>;
+
+function issueObservationMatches(left: GitHubIssueObservationV1, right: GitHubIssueObservationV1): boolean {
+  return left.hostRepositoryId === right.hostRepositoryId &&
+    left.repositoryNameWithOwner === right.repositoryNameWithOwner &&
+    left.hostIssueId === right.hostIssueId &&
+    left.issueNumber === right.issueNumber &&
+    left.issueUrl === right.issueUrl &&
+    left.issueRevisionId === right.issueRevisionId &&
+    left.updatedAt === right.updatedAt &&
+    left.acceptanceCriteria.digest === right.acceptanceCriteria.digest;
+}
+
+function compileIssueMission(
+  configuration: RepositoryConfigSnapshot,
+  registry: RepositoryBindingRegistrySnapshot,
+  observation: GitHubIssueObservationV1,
+  profileId: MissionProfileId,
+  branch: string,
+  head: string,
+  receiptDigest: string,
+): IssueIntakeCompiledMissionV1 {
+  const config = configuration.config;
+  const missionId = computeIssueIntakeMissionIdV1(observation.hostRepositoryId, observation.hostIssueId);
+  const profile = getMissionProfileV1(profileId);
+  const bindings = unwrap(deriveRepositoryMissionBindings(config, registry.value, missionId, {
+    kind: "profile-aware",
+    profileId: profile.profileId,
+    profileVersion: profile.version,
+    requireSimmons: profile.profileId === "product_sensitive",
+  }));
+  const compiled = compileIssueIntakeV1({
+    repositoryId: config.repositoryId,
+    issueObservation: observation,
+    profileId,
+    branch,
+    headRevision: head,
+    preparedWorktreeReceiptDigest: receiptDigest,
+    configBytes: configuration.bytes,
+    trustedBindingRegistryBytes: registry.bytes,
+    trustedBindings: bindings,
+  });
+  if (compiled.state === "invalid") throw new MissionCliError(`${compiled.code}: ${compiled.errors.join(" ")}`, 1);
+  return compiled.value;
+}
+
+async function existingIssueMission(
+  root: string,
+  config: ShieldConfig,
+  missionId: string,
+): Promise<ProfileAwareJournal | null> {
+  const current = await readMissionJournalForDisplay(missionPaths(root, config, missionId));
+  if (current.state === "invalid") {
+    if (current.code === "mission_missing") return null;
+    throw new MissionCliError(`recovery_required: ${current.errors.join(" ")}`, 1);
+  }
+  if (current.value.kind !== "profile-aware") {
+    throw new MissionCliError("conflicting_replay: Existing mission journal is not an issue-intake profile-aware journal.", 1);
+  }
+  const begun = current.value.entries[0];
+  if (begun?.type !== "mission.begun" || !Object.hasOwn(begun.payload, "issueIntakeSourceBinding")) {
+    throw new MissionCliError("conflicting_replay: Existing mission journal is not an issue-intake begin entry.", 1);
+  }
+  return current.value;
+}
+
+function issueNextAction(missionId: string): Readonly<{ command: "shield mission prepare-next"; missionId: string }> {
+  return canonicalSnapshot({ command: "shield mission prepare-next" as const, missionId });
+}
+
+function issueBeginHumanOutput(root: string, projection: ProfileAwareProjectionV1, replayed: boolean): string {
+  return [
+    `Mission ${projection.missionId} proposed at ${projection.brief.revisionId}.`,
+    `Replay: ${replayed ? "exact" : "created"}`,
+    profileAwareStatusText(projection),
+    `Next action: shield mission prepare-next --mission-id ${shellQuote(projection.missionId)} --root ${shellQuote(root)}`,
+  ].join("\n");
+}
+
+async function beginIssueIntake(options: ParsedOptions, profileId: MissionProfileId, dependencies: IssueBeginDependencies): Promise<number> {
+  const issueRef = required(options, "--issue");
+  if (options.values.has("--authorization") || options.values.has("--delegation") || options.values.has("--eligibility")) {
+    throw new MissionCliError("Profile-aware issue intake cannot include supervised or delegated authorization inputs.");
+  }
+  const root = await fsRealpath(await exactRoot(options.values.get("--root"), true));
+  const configuration = await repositoryConfigSnapshot(root);
+  requireGitHubConfiguration(configuration);
+  const registry = await repositoryBindingRegistrySnapshot(root);
+  const receiptA = await preparedWorktreeReceiptDigest(root);
+  const repositoryA = await observeRepository(root);
+  const observer = dependencies.issueObserver ?? observeGitHubIssueV1;
+  const observedA = await observer(issueRef, { cwd: root });
+  if (observedA.state !== "observed") throw new MissionCliError(`issue_observation_blocked: ${observedA.reason}`, 1);
+  const compiledA = compileIssueMission(configuration, registry, observedA.observation, profileId, repositoryA.branch, repositoryA.head, receiptA);
+  const existing = await existingIssueMission(root, configuration.config, compiledA.brief.missionId);
+  if (existing !== null) {
+    const initialized = unwrap(await initializeIssueIntakeMissionJournalV1({
+      ...missionPaths(root, configuration.config, compiledA.brief.missionId),
+      entry: compiledA.entry,
+    }));
+    const result = canonicalSnapshot({
+      journalPath: initialized.journalPath,
+      projection: initialized.projection,
+      replayed: initialized.replayed,
+      nextAction: issueNextAction(initialized.projection.missionId),
+    });
+    output(result, options.flags.has("--json"), issueBeginHumanOutput(root, initialized.projection, initialized.replayed));
+    return 0;
+  }
+
+  const freshConfiguration = await repositoryConfigSnapshot(root);
+  assertRepositoryConfigFresh(configuration, freshConfiguration);
+  const freshRegistry = await repositoryBindingRegistrySnapshot(root);
+  if (freshRegistry.bytes !== registry.bytes || freshRegistry.identity !== registry.identity) {
+    throw new MissionCliError("repository_binding_registry_drifted: Trusted binding registry drifted before issue-intake initialization.", 1);
+  }
+  const receiptB = await preparedWorktreeReceiptDigest(root);
+  if (receiptB !== receiptA) throw new MissionCliError("prepared_worktree_drifted: Prepared-worktree receipt changed before issue-intake initialization.", 1);
+  const repositoryB = await observeRepository(root);
+  if (!sameObservation(repositoryA, repositoryB)) throw new MissionCliError("repository_drifted: Repository root, branch, or HEAD changed before issue-intake initialization.", 1);
+  const observedB = await observer(issueRef, { cwd: root });
+  if (observedB.state !== "observed") throw new MissionCliError(`issue_observation_blocked: ${observedB.reason}`, 1);
+  if (!issueObservationMatches(observedA.observation, observedB.observation)) {
+    throw new MissionCliError("issue_drifted: GitHub repository or issue identity changed before issue-intake initialization.", 1);
+  }
+  const compiledB = compileIssueMission(freshConfiguration, freshRegistry, observedB.observation, profileId, repositoryB.branch, repositoryB.head, receiptB);
+  const initialized = unwrap(await initializeIssueIntakeMissionJournalV1({
+    ...missionPaths(root, freshConfiguration.config, compiledB.brief.missionId),
+    entry: compiledB.entry,
+  }));
+  const result = canonicalSnapshot({
+    journalPath: initialized.journalPath,
+    projection: initialized.projection,
+    replayed: initialized.replayed,
+    nextAction: issueNextAction(initialized.projection.missionId),
+  });
+  output(result, options.flags.has("--json"), issueBeginHumanOutput(root, initialized.projection, initialized.replayed));
+  return 0;
+}
+
+async function begin(args: string[], dependencies: IssueBeginDependencies = {}): Promise<number> {
+  const options = parseOptions(args, ["--root", "--brief", "--issue", "--profile", "--authorization", "--delegation", "--eligibility"], ["--json", "--profile-aware"]);
+  const profileAware = options.flags.has("--profile-aware");
+  const hasBrief = options.values.has("--brief");
+  const hasIssue = options.values.has("--issue");
+  if (hasBrief && hasIssue) throw new MissionCliError("--brief and --issue are mutually exclusive.");
+  if (options.values.has("--profile") && (!profileAware || !hasIssue)) throw new MissionCliError("--profile is only valid with --profile-aware --issue.");
+  if (hasIssue && !profileAware) throw new MissionCliError("--issue requires --profile-aware.");
+  if (profileAware && hasIssue) {
+    const requestedProfile = required(options, "--profile");
+    let profile: MissionProfileId;
+    try { profile = getMissionProfileV1(requestedProfile as MissionProfileId).profileId; }
+    catch { throw new MissionCliError(`profile_invalid: Unknown mission profile: ${requestedProfile}.`, 1); }
+    return beginIssueIntake(options, profile, dependencies);
+  }
   const root = await exactRoot(options.values.get("--root"), true);
   const config = await repositoryConfig(root);
   const briefInput = await jsonFile(resolve(root, required(options, "--brief")), "Mission brief");
@@ -2664,6 +2885,7 @@ export function missionUsage(): string {
   return [
     "  shield mission begin --brief <file> [--root <path>] [--json]",
     "  shield mission begin --profile-aware --brief <file> [--root <path>] [--json]",
+    "  shield mission begin --profile-aware --issue <github-ref> --profile <id> [--root <path>] [--json]",
     "  shield mission begin --authorization delegated --brief <file> --delegation <revision> --eligibility <file> [--root <path>] [--json]",
     "  shield mission signer bootstrap --seat coulson --binding-id <id> --human-principal-id <id> [--passcode-stdin] [--json]",
     "  shield mission signer setup [--seat coulson] [--root <path>] [--passcode-stdin] [--json]",
@@ -2693,6 +2915,7 @@ export function missionUsage(): string {
 export async function runMissionCli(
   args: string[],
   dependencies: Readonly<{
+    issueObserver?: GitHubIssueObserverV1;
     copilotFuryPlanDispatch?: CopilotFuryPlanDispatchDependenciesV1;
     copilotFuryReviewedTransition?: CopilotFuryReviewedTransitionHostDependenciesV1;
     prepareReviewedMissionTransition?: typeof prepareReviewedMissionTransitionV1;
@@ -2703,7 +2926,7 @@ export async function runMissionCli(
 ): Promise<number> {
   const [group, action, ...rest] = args;
   if (group === "mission") {
-    if (action === "begin") return begin(rest);
+    if (action === "begin") return begin(rest, dependencies.issueObserver === undefined ? {} : { issueObserver: dependencies.issueObserver });
     if (action === "authorize") return authorize(rest);
     if (action === "authorize-wheels-up") return authorizeWheelsUp(rest);
     if (action === "dispatch-fury-plan-review") return dispatchFuryPlanReview(rest, dependencies.copilotFuryPlanDispatch);
