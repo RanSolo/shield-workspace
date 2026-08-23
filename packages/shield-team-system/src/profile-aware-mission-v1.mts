@@ -78,6 +78,8 @@ export const PROFILE_AWARE_JOURNAL_SCHEMA_VERSION = 9 as const;
 export const PROFILE_AWARE_CONTRACT_VERSION = "mission.profile-aware.v1" as const;
 export const MISSION_130_PREDECESSOR_ID = "mission:issue-130" as const;
 export const MISSION_130_JOURNAL_DIGEST = "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9" as const;
+export const ISSUE_INTAKE_SOURCE_BINDING_SCHEMA_VERSION = 1 as const;
+export const ISSUE_INTAKE_SOURCE_BINDING_CONTRACT_VERSION = "mission.issue-intake-source-binding.v1" as const;
 
 type GateRole = "coulson" | "fitz" | "simmons";
 type EvidenceKind = "mission_authorization" | "technical_review" | "product_domain_review" | "final_acceptance";
@@ -129,8 +131,31 @@ export interface ProfileEvidenceV1 {
 
 export interface SignedProfileEvidenceV1 { payload: ProfileEvidenceV1; signatureBase64: string }
 
+export interface IssueIntakeSourceBindingV1 {
+  schemaVersion: 1;
+  contractVersion: typeof ISSUE_INTAKE_SOURCE_BINDING_CONTRACT_VERSION;
+  repositoryId: string;
+  hostRepositoryId: string;
+  repositoryNameWithOwner: string;
+  hostIssueId: string;
+  issueNumber: number;
+  issueUrl: string;
+  issueRevisionId: string;
+  updatedAt: string;
+  criteriaDigest: string;
+  profileId: MissionProfileId;
+  profileVersion: 1;
+  branch: string;
+  headRevision: string;
+  preparedWorktreeReceiptDigest: string;
+  configBytesDigest: string;
+  trustedBindingRegistryBytesDigest: string;
+  briefRevisionId: string;
+}
+
 export type ProfileAwareMissionEntryV1 =
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "mission.begun"; timestamp: EvidenceTimestamp; payload: { brief: ProfileAwareMissionBriefV1; trustedBindings: TrustedHumanBinding[]; requirements: ProfileRequirementV1[] } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "mission.begun"; timestamp: EvidenceTimestamp; payload: { brief: ProfileAwareMissionBriefV1; trustedBindings: TrustedHumanBinding[]; requirements: ProfileRequirementV1[]; issueIntakeSourceBinding: IssueIntakeSourceBindingV1 } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "governance.decided"; timestamp: EvidenceTimestamp; payload: { evidence: SignedProfileEvidenceV1 } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "implementation.authorized"; timestamp: EvidenceTimestamp; payload: { authority: SignedImplementationAuthorityV1 } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "implementation.authority_revoked"; timestamp: EvidenceTimestamp; payload: { revocation: SignedImplementationAuthorityRevocationV1 } }
@@ -201,9 +226,12 @@ export interface ProfileAwareProjectionWithDaisyCoordinationV1 extends ProfileAw
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/;
 const DIGEST = /^sha256:(?:[a-f0-9]{64}|[A-Za-z0-9_-]{43})$/;
+const BYTE_DIGEST = /^(?:sha256:)?[a-f0-9]{64}$/;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 const ROLES = new Set<GateRole>(["coulson", "fitz", "simmons"]);
 const KINDS = new Set<EvidenceKind>(["mission_authorization", "technical_review", "product_domain_review", "final_acceptance"]);
+const RISK_FIELDS = ["production", "destructive", "migration", "credentialsOrSecurity", "externalCommunication", "merge", "deploy", "release", "hillHighRisk"] as const;
+const ISSUE_INTAKE_MODE: MissionModeActivation = { modeId: "delivery", modeVersion: "1.0.0", seatId: "hill", activationSource: "issue-intake" };
 
 const valid = <T,>(value: T) => ({ state: "valid" as const, value });
 const invalid = (code: string, ...errors: string[]) => ({ state: "invalid" as const, code, errors });
@@ -256,6 +284,38 @@ function revision(content: ProfileAwareMissionBriefContentV1): string {
 }
 function requirementId(brief: ProfileAwareMissionBriefV1, kind: EvidenceKind): string { return `req:${brief.missionId}:${brief.revisionId}:${kind}`; }
 
+function issueIntakeSourceBindingFields(value: unknown): value is IssueIntakeSourceBindingV1 {
+  return exact(value, [
+    "schemaVersion", "contractVersion", "repositoryId", "hostRepositoryId", "repositoryNameWithOwner",
+    "hostIssueId", "issueNumber", "issueUrl", "issueRevisionId", "updatedAt", "criteriaDigest",
+    "profileId", "profileVersion", "branch", "headRevision", "preparedWorktreeReceiptDigest",
+    "configBytesDigest", "trustedBindingRegistryBytesDigest", "briefRevisionId",
+  ]);
+}
+
+export function validateIssueIntakeSourceBindingV1(input: unknown, brief?: ProfileAwareMissionBriefV1): ProfileAwareResult<IssueIntakeSourceBindingV1> {
+  if (!issueIntakeSourceBindingFields(input)) return invalid("binding_invalid", "Issue-intake source binding fields are not closed.");
+  const value = input as IssueIntakeSourceBindingV1;
+  const repository = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u;
+  const url = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/[1-9][0-9]*$/u;
+  const errors: string[] = [];
+  if (value.schemaVersion !== 1 || value.contractVersion !== ISSUE_INTAKE_SOURCE_BINDING_CONTRACT_VERSION || !repository.test(value.repositoryId) || !ID.test(value.hostRepositoryId) || !repository.test(value.repositoryNameWithOwner) || !ID.test(value.hostIssueId) || !Number.isSafeInteger(value.issueNumber) || value.issueNumber < 1 || !url.test(value.issueUrl) || !ID.test(value.issueRevisionId) || !timestamp({ value: value.updatedAt, provenance: "hostTrusted" }) || !DIGEST.test(value.criteriaDigest) || !MISSION_PROFILE_LOOKUP(value.profileId) || value.profileVersion !== 1 || typeof value.branch !== "string" || value.branch.length === 0 || value.branch.length > 256 || !/^[0-9a-f]{40,64}$/u.test(value.headRevision) || !BYTE_DIGEST.test(value.preparedWorktreeReceiptDigest) || !BYTE_DIGEST.test(value.configBytesDigest) || !BYTE_DIGEST.test(value.trustedBindingRegistryBytesDigest) || !DIGEST.test(value.briefRevisionId)) {
+    errors.push("Issue-intake source binding identity or digest is invalid.");
+  }
+  if (brief !== undefined && (value.repositoryId.length > 201 || value.profileId !== brief.profileId || value.profileVersion !== brief.profileVersion || value.briefRevisionId !== brief.revisionId || computeIssueIntakeMissionIdForBinding(value.hostRepositoryId, value.hostIssueId) !== brief.missionId || brief.subjectId !== `github:${value.repositoryNameWithOwner}/issue/${value.issueNumber}` || value.updatedAt !== brief.createdAt.value || value.issueUrl !== `https://github.com/${value.repositoryNameWithOwner}/issues/${value.issueNumber}`)) {
+    errors.push("Issue-intake source binding does not match the compiled brief.");
+  }
+  return errors.length > 0 ? invalid("binding_invalid", ...errors) : valid(value);
+}
+
+function computeIssueIntakeMissionIdForBinding(hostRepositoryId: string, hostIssueId: string): string {
+  return `mission:issue-intake:${createHash("sha256").update(canonicalJson(["shield.mission.issue-intake.v1", hostRepositoryId, hostIssueId])).digest("base64url")}`;
+}
+
+export function isCanonicalIssueIntakeModeActivationV1(value: unknown): value is MissionModeActivation[] {
+  return Array.isArray(value) && value.length === 1 && canonicalJson(value[0]) === canonicalJson(ISSUE_INTAKE_MODE);
+}
+
 export function createProfileAwareMissionBrief(input: ProfileAwareMissionBriefContentV1): ProfileAwareMissionBriefV1 {
   const profile = getMissionProfileV1(input.profileId);
   if (input.profileVersion !== profile.version || input.requiredExecutionGateRoleIds.join(",") !== profile.requiredExecutionGateRoleIds.join(",")) throw new Error("Profile gates are not canonical.");
@@ -274,9 +334,11 @@ export function validateProfileAwareMissionBrief(input: unknown): ProfileAwareRe
   if (value.profileVersion !== 1 || !profile || value.profileId !== profile.profileId) errors.push("Profile-aware brief profile is invalid.");
   if (!Array.isArray(value.requiredExecutionGateRoleIds) || value.requiredExecutionGateRoleIds.join(",") !== profile?.requiredExecutionGateRoleIds.join(",")) errors.push("Profile-aware brief execution gates are not frozen canonically.");
   if (!Array.isArray(value.requiredFinalAcceptanceGateRoleIds) || value.requiredFinalAcceptanceGateRoleIds.length !== 1 || value.requiredFinalAcceptanceGateRoleIds[0] !== "coulson") errors.push("Final acceptance gate must be Coulson.");
+  if (!exact(value.riskFlags, RISK_FIELDS) || RISK_FIELDS.some((field) => typeof value.riskFlags?.[field] !== "boolean")) errors.push("Profile-aware brief risk flags are not closed booleans.");
   if (!Array.isArray(value.participants) || value.participants.length === 0) {
     errors.push("Profile-aware brief participants are invalid.");
   } else {
+    const participantIds = new Set<string>();
     for (const [index, participant] of value.participants.entries()) {
       if (!exact(participant, ["seatId"])) {
         errors.push(`participants[${index}] is malformed.`);
@@ -286,9 +348,19 @@ export function validateProfileAwareMissionBrief(input: unknown): ProfileAwareRe
         const projected = routingProjection(participant.seatId);
         if (projected.state === "invalid" || (projected.value.route === "dispatch_seat" && projected.value.role.v03Enabled !== true)) {
           errors.push(`participants[${index}].seatId is not a valid dispatchable V0.3 role.`);
+        } else if (participantIds.has(participant.seatId)) {
+          errors.push(`participants[${index}].seatId is duplicated.`);
+        } else {
+          participantIds.add(participant.seatId);
         }
       }
     }
+    const required = new Set(profile?.requiredExecutionGateRoleIds ?? []);
+    required.add("coulson");
+    for (const role of required) if (!participantIds.has(role)) errors.push(`Profile-aware brief requires participant: ${role}.`);
+    if (typeof value.requireSimmons !== "boolean") errors.push("Profile-aware brief requireSimmons must be boolean.");
+    const expectedRequireSimmons = value.profileId === "product_sensitive";
+    if (value.requireSimmons !== expectedRequireSimmons || (value.requireSimmons && !participantIds.has("simmons"))) errors.push("Profile-aware brief requireSimmons is inconsistent with its profile or participants.");
   }
   if (!Array.isArray(value.activatedModes)) {
     errors.push("Profile-aware brief activated modes are invalid.");
@@ -335,10 +407,27 @@ export function createProfileRequirementsV1(brief: ProfileAwareMissionBriefV1): 
   ];
 }
 
-export function createProfileAwareMissionBegunEntry(brief: ProfileAwareMissionBriefV1, bindings: TrustedHumanBinding[], timestampValue = brief.createdAt): ProfileAwareMissionEntryV1 {
+export function createProfileAwareMissionBegunEntry(brief: ProfileAwareMissionBriefV1, bindings: TrustedHumanBinding[], timestampValue = brief.createdAt, issueIntakeSourceBinding?: IssueIntakeSourceBindingV1): ProfileAwareMissionEntryV1 {
   const checked = validateProfileAwareMissionBrief(brief);
   if (checked.state === "invalid") throw new Error(checked.errors.join(" "));
-  return { schemaVersion: 9, entryId: `entry:${brief.missionId}:0`, missionId: brief.missionId, sequence: 0, type: "mission.begun", timestamp: timestampValue, payload: { brief, trustedBindings: bindings, requirements: createProfileRequirementsV1(brief) } };
+  if (issueIntakeSourceBinding !== undefined) {
+    const checkedBinding = validateIssueIntakeSourceBindingV1(issueIntakeSourceBinding, brief);
+    if (checkedBinding.state === "invalid") throw new Error(checkedBinding.errors.join(" "));
+    if (!isCanonicalIssueIntakeModeActivationV1(brief.activatedModes)) throw new Error("Issue-intake missions require the canonical Hill Delivery activation.");
+  }
+  const payload = { brief, trustedBindings: bindings, requirements: createProfileRequirementsV1(brief) };
+  return issueIntakeSourceBinding === undefined
+    ? { schemaVersion: 9, entryId: `entry:${brief.missionId}:0`, missionId: brief.missionId, sequence: 0, type: "mission.begun", timestamp: timestampValue, payload }
+    : { schemaVersion: 9, entryId: `entry:${brief.missionId}:0`, missionId: brief.missionId, sequence: 0, type: "mission.begun", timestamp: timestampValue, payload: { ...payload, issueIntakeSourceBinding } };
+}
+
+export function createIssueIntakeMissionBegunEntryV1(input: {
+  brief: ProfileAwareMissionBriefV1;
+  trustedBindings: TrustedHumanBinding[];
+  issueIntakeSourceBinding: IssueIntakeSourceBindingV1;
+  timestamp?: EvidenceTimestamp;
+}): ProfileAwareMissionEntryV1 {
+  return createProfileAwareMissionBegunEntry(input.brief, input.trustedBindings, input.timestamp ?? input.brief.createdAt, input.issueIntakeSourceBinding);
 }
 
 export function createProfileAwareGovernanceDecisionEntryV1(input: {
@@ -386,6 +475,7 @@ export function createProfileAwareGovernanceDecisionEntryV1(input: {
 export function profileAwareMissionIntakeV1(input: {
   brief: ProfileAwareMissionBriefContentV1;
   trustedBindings: TrustedHumanBinding[];
+  issueIntakeSourceBinding?: IssueIntakeSourceBindingV1;
 }): ProfileAwareResult<{ brief: ProfileAwareMissionBriefV1; entry: ProfileAwareMissionEntryV1; requirements: ProfileRequirementV1[] }> {
   let brief: ProfileAwareMissionBriefV1;
   try { brief = createProfileAwareMissionBrief(input.brief); }
@@ -396,7 +486,7 @@ export function profileAwareMissionIntakeV1(input: {
   for (const role of requiredRoles) {
     if (input.trustedBindings.filter((binding) => binding.seatId === role).length !== 1) return invalid("binding_missing", `Profile-aware intake requires exactly one ${role} binding.`);
   }
-  const entry = createProfileAwareMissionBegunEntry(brief, input.trustedBindings);
+  const entry = createProfileAwareMissionBegunEntry(brief, input.trustedBindings, brief.createdAt, input.issueIntakeSourceBinding);
   return valid({ brief, entry, requirements: createProfileRequirementsV1(brief) });
 }
 
@@ -1104,11 +1194,17 @@ function replayProfileAwareMissionJournalUnchecked(entries: unknown): ProfileAwa
   if (briefResult.state === "invalid") return briefResult;
   const brief = briefResult.value;
   if (begun.missionId !== brief.missionId || begun.entryId !== `entry:${brief.missionId}:0` || !timestamp(begun.timestamp) || canonicalJson(begun.timestamp) !== canonicalJson(brief.createdAt)) return invalid("mission_mismatch", "Profile-aware begin identity is invalid.");
-  if (!exact(begun.payload, ["brief", "trustedBindings", "requirements"])) return invalid("malformed", "Profile-aware begin payload is not closed.");
+  const issueBindingPresent = plain(begun.payload) && Object.hasOwn(begun.payload, "issueIntakeSourceBinding");
+  if (!exact(begun.payload, issueBindingPresent ? ["brief", "trustedBindings", "requirements", "issueIntakeSourceBinding"] : ["brief", "trustedBindings", "requirements"])) return invalid("malformed", "Profile-aware begin payload is not closed.");
   const bindingRegistry = validateTrustedBindingRegistry({ schemaVersion: 1, bindings: begun.payload.trustedBindings });
   if (bindingRegistry.state === "invalid") return invalid("binding_invalid", ...bindingRegistry.errors);
   const requirements = createProfileRequirementsV1(brief);
   if (canonicalJson(begun.payload.requirements) !== canonicalJson(requirements)) return invalid("tampered_requirements", "Profile requirements are not frozen canonically.");
+  if (issueBindingPresent) {
+    const checkedSourceBinding = validateIssueIntakeSourceBindingV1((begun.payload as { issueIntakeSourceBinding: unknown }).issueIntakeSourceBinding, brief);
+    if (checkedSourceBinding.state === "invalid") return checkedSourceBinding;
+    if (!isCanonicalIssueIntakeModeActivationV1(brief.activatedModes)) return invalid("mode_invalid", "Issue-intake missions require the canonical Hill Delivery activation.");
+  }
   const entryIds = new Set([begun.entryId]);
   const evidenceIds = new Set<string>();
   const evidence: ProfileEvidenceV1[] = [];

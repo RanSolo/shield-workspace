@@ -6,6 +6,8 @@ import {
   MISSION_INTAKE_CONTRACT_VERSION,
   MISSION_INTAKE_MAX_ARTIFACT_PATH_LENGTH,
   MISSION_INTAKE_MAX_OBJECTIVE_LENGTH,
+  compileIssueIntakeV1,
+  computeIssueIntakeMissionIdV1,
   missionIntakeV1,
 } from "../dist/mission-intake-v1.mjs";
 
@@ -250,6 +252,42 @@ test("fails closed for inherited, accessor-backed, proxy, and sparse input", () 
   const sparse = request();
   sparse.runtimeObservations = new Array(1);
   assert.deepEqual(missionIntakeV1(sparse).reasonCodes, ["INVALID_REQUEST"]);
+});
+
+test("issue intake compilation is deterministic, bounded, profile-aware, and Hill-delivery bound", () => {
+  const input = {
+    repositoryId: "RanSolo/shield-workspace",
+    issueObservation: {
+      hostRepositoryId: "R_kgDOshield",
+      repositoryNameWithOwner: "RanSolo/shield-workspace",
+      hostIssueId: "I_kwDOissue",
+      issueNumber: 368,
+      issueUrl: "https://github.com/RanSolo/shield-workspace/issues/368",
+      title: "Implement bounded issue intake",
+      body: "## Acceptance criteria\n- [ ] durable replay",
+      state: "OPEN",
+      labels: [],
+      updatedAt: "2026-08-22T10:00:00Z",
+      issueRevisionId: "sha256:issue-revision",
+      acceptanceCriteria: { items: ["durable replay"] },
+    },
+    profileId: "standard",
+    branch: "agent/issue-368",
+    headRevision: HEAD,
+    preparedWorktreeReceiptDigest: `sha256:${"a".repeat(64)}`,
+    configBytes: "{\"schemaVersion\":3}\n",
+    trustedBindingRegistryBytes: "{\"schemaVersion\":1}\n",
+    trustedBindings: [{ seatId: "coulson" }],
+  };
+  const first = compileIssueIntakeV1(input);
+  const second = compileIssueIntakeV1(structuredClone(input));
+  assert.deepEqual(first, second);
+  assert.equal(first.state, "valid");
+  assert.equal(first.value.brief.missionId, computeIssueIntakeMissionIdV1("R_kgDOshield", "I_kwDOissue"));
+  assert.deepEqual(first.value.brief.activatedModes, [{ modeId: "delivery", modeVersion: "1.0.0", seatId: "hill", activationSource: "issue-intake" }]);
+  assert.deepEqual(first.value.brief.participants.map(({ seatId }) => seatId), ["hill", "fury", "may", "coulson"]);
+  assert.equal(first.value.entry.payload.issueIntakeSourceBinding.briefRevisionId, first.value.brief.revisionId);
+  assert.ok(first.value.brief.missionId.length < 100);
 });
 
 test("enforces effective objective and artifact path boundaries", () => {

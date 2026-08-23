@@ -5,6 +5,9 @@ import {
   createGitHubFollowUpCandidate,
   createGitHubHumanEvidenceCandidate,
   deliverGitHubCommunication,
+  extractGitHubAcceptanceCriteriaV1,
+  GITHUB_ISSUE_GRAPHQL_QUERY_V1,
+  observeGitHubIssueV1,
   integrateFeatureIntegrationPullRequestV2,
   observeFeatureIntegrationCommitMethodProofV2,
   observeFeatureIntegrationPullRequestProofV2,
@@ -86,6 +89,104 @@ function v2Runner(responses) {
   return run;
 }
 const v2ok = (value) => ({ status: 0, stdout: JSON.stringify(value), stderr: "", errorCode: null });
+
+function issueResponse(overrides = {}) {
+  const { repository: repositoryOverrides = {}, ...issueOverrides } = overrides;
+  return {
+    data: {
+      repository: {
+        id: "R_kgDOExample",
+        nameWithOwner: "RanSolo/shield-workspace",
+        ...repositoryOverrides,
+        issue: {
+          id: "I_kwDOExample",
+          number: 341,
+          url: "https://github.com/RanSolo/shield-workspace/issues/341",
+          title: "Profile-aware issue intake",
+          body: "## Acceptance criteria\n- [ ] Observe the issue once.\n- [x] Preserve the issue identity.\n",
+          state: "OPEN",
+          updatedAt: "2026-08-22T12:00:00Z",
+          labels: { nodes: [{ name: "zeta" }, { name: "alpha" }] },
+          ...issueOverrides,
+        },
+      },
+    },
+  };
+}
+
+function issueRunner(response) {
+  const calls = [];
+  const run = (executable, args, options) => {
+    calls.push({ executable, args, options });
+    return { exitCode: 0, stdout: Buffer.from(response), stderr: Buffer.alloc(0) };
+  };
+  run.calls = calls;
+  return run;
+}
+
+test("GitHub issue observer uses one exact authority-none GraphQL read and stable criteria binding", () => {
+  const run = issueRunner(JSON.stringify(issueResponse()));
+  const result = observeGitHubIssueV1({
+    repositoryId: "RanSolo/shield-workspace",
+    issueNumber: 341,
+    sourceRef: "github:RanSolo/shield-workspace/issues/341",
+  }, { run, cwd: "/workspace", now: () => "2026-08-22T12:01:00Z" });
+  assert.equal(result.state, "observed");
+  assert.equal(run.calls.length, 1);
+  assert.deepEqual(run.calls[0].args, [
+    "api", "graphql", "-f", `query=${GITHUB_ISSUE_GRAPHQL_QUERY_V1}`,
+    "-f", "owner=RanSolo", "-f", "repo=shield-workspace", "-F", "number=341",
+  ]);
+  assert.equal(run.calls[0].options.shell, false);
+  assert.equal(run.calls[0].options.input, null);
+  assert.equal(run.calls[0].options.encoding, "buffer");
+  assert.deepEqual(run.calls[0].options.env, { PATH: process.env.PATH ?? "", LANG: "C", LC_ALL: "C" });
+  assert.equal(result.observation.authority, "none");
+  assert.deepEqual(result.observation.labels, ["alpha", "zeta"]);
+  assert.deepEqual(result.observation.acceptanceCriteria.items, [
+    "Observe the issue once.", "Preserve the issue identity.",
+  ]);
+  assert.match(result.observation.issueRevisionId, /^sha256:[A-Za-z0-9_-]{43}$/u);
+  assert.match(result.observation.acceptanceCriteria.digest, /^sha256:[0-9a-f]{64}$/u);
+});
+
+test("GitHub issue observer rejects malformed bytes and JSON before identity or criteria handling", () => {
+  const malformedBytes = issueRunner(Buffer.from([0xc3, 0x28]));
+  assert.deepEqual(observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", { run: malformedBytes }), {
+    state: "blocked", reason: "invalid_utf8",
+  });
+  const malformedJson = issueRunner(Buffer.from('{"data":}'));
+  assert.deepEqual(observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", { run: malformedJson }), {
+    state: "blocked", reason: "malformed_response",
+  });
+  const duplicateKey = issueRunner(Buffer.from('{"data":{"repository":{"id":"R_kgDOExample","id":"other"}}}'));
+  assert.deepEqual(observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", { run: duplicateKey }), {
+    state: "blocked", reason: "malformed_response",
+  });
+});
+
+test("GitHub issue observer rejects foreign identity, unavailable issues, and malformed criteria", () => {
+  for (const issue of [
+    { repository: { nameWithOwner: "Other/repository" } },
+    { url: "https://github.com/RanSolo/shield-workspace/issues/342" },
+    { id: "I_kwDOExample", state: "CLOSED" },
+  ]) {
+    const result = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+      run: issueRunner(JSON.stringify(issueResponse(issue))),
+    });
+    assert.equal(result.state, "blocked");
+  }
+  const missing = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    run: issueRunner(JSON.stringify({ data: { repository: { id: "R_kgDOExample", nameWithOwner: "RanSolo/shield-workspace", issue: null } } })),
+  });
+  assert.deepEqual(missing, { state: "blocked", reason: "issue_not_found" });
+  assert.deepEqual(extractGitHubAcceptanceCriteriaV1("## Acceptance criteria\n- one\n## Acceptance criteria\n- two\n"), {
+    state: "blocked", reason: "acceptance_criteria_invalid",
+  });
+  assert.deepEqual(extractGitHubAcceptanceCriteriaV1("## Acceptance criteria\n- parent\n  - nested\n"), {
+    state: "blocked", reason: "acceptance_criteria_invalid",
+  });
+});
 
 test("V2 GitHub proof adapters return closed PR, target, and squash ancestry observations", async () => {
   const firstSource = "a".repeat(40), source = "b".repeat(40), merged = "c".repeat(40), tree = "d".repeat(40);
