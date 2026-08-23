@@ -328,6 +328,56 @@ async function profileAwareFixture() {
   return { ...current, brief, entry, journalPath: path };
 }
 
+async function nativeIssueIntakeFixture() {
+  const current = await fixture();
+  const configBytes = await readFile(join(current.root, ".shield", "config.json"), "utf8");
+  const trustedBindingRegistryBytes = await readFile(join(current.root, ".shield", "trusted-human-bindings.json"), "utf8");
+  const compiled = compileIssueIntakeV1({
+    repositoryId: "RanSolo/fixture",
+    issueObservation: {
+      hostRepositoryId: "R_repo_372",
+      repositoryNameWithOwner: "RanSolo/fixture",
+      hostIssueId: "I_issue_372",
+      issueNumber: 372,
+      issueUrl: "https://github.com/RanSolo/fixture/issues/372",
+      title: "Native issue-intake preparation",
+      updatedAt: "2026-08-22T12:00:00Z",
+      issueRevisionId: "rev:issue-372",
+      acceptanceCriteria: { items: ["route authorization"] },
+    },
+    profileId: "standard",
+    branch: "main",
+    headRevision: "a".repeat(40),
+    preparedWorktreeReceiptDigest: `sha256:${"b".repeat(64)}`,
+    configBytes,
+    trustedBindingRegistryBytes,
+    trustedBindings: [current.coulson.binding, current.fitz.binding],
+  });
+  assert.equal(compiled.state, "valid");
+  const missionId = compiled.value.brief.missionId;
+  const missionJournalPath = journalPath(current.root, missionId);
+  await mkdir(join(current.root, ".shield", "journals"), { recursive: true });
+  const initialBytes = `${JSON.stringify(compiled.value.entry)}\n`;
+  await writeFile(missionJournalPath, initialBytes);
+  return { ...current, compiled: compiled.value, missionId, missionJournalPath, initialBytes };
+}
+
+async function runMissionCliCaptured(args, dependencies) {
+  const stdout = [];
+  const stderr = [];
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  process.stdout.write = (chunk) => { stdout.push(String(chunk)); return true; };
+  process.stderr.write = (chunk) => { stderr.push(String(chunk)); return true; };
+  try {
+    const status = await runMissionCli(args, dependencies);
+    return { status, stdout: stdout.join(""), stderr: stderr.join("") };
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+  }
+}
+
 function profileBriefContent(missionId, profileId, requireSimmons) {
   const requiredExecutionGateRoleIds = profileId === "standard"
     ? ["coulson"]
@@ -2212,36 +2262,8 @@ test("prepare-next returns protected graph evidence unchanged before model selec
 });
 
 test("prepare-next routes a fresh issue-intake journal before protected or legacy preparation and blocks journal readback drift", async () => {
-  const current = await fixture();
-  const configBytes = await readFile(join(current.root, ".shield", "config.json"), "utf8");
-  const trustedBindingRegistryBytes = await readFile(join(current.root, ".shield", "trusted-human-bindings.json"), "utf8");
-  const compiled = compileIssueIntakeV1({
-    repositoryId: "RanSolo/fixture",
-    issueObservation: {
-      hostRepositoryId: "R_repo_372",
-      repositoryNameWithOwner: "RanSolo/fixture",
-      hostIssueId: "I_issue_372",
-      issueNumber: 372,
-      issueUrl: "https://github.com/RanSolo/fixture/issues/372",
-      title: "Native issue-intake preparation",
-      updatedAt: "2026-08-22T12:00:00Z",
-      issueRevisionId: "rev:issue-372",
-      acceptanceCriteria: { items: ["route authorization"] },
-    },
-    profileId: "standard",
-    branch: "main",
-    headRevision: "a".repeat(40),
-    preparedWorktreeReceiptDigest: `sha256:${"b".repeat(64)}`,
-    configBytes,
-    trustedBindingRegistryBytes,
-    trustedBindings: [current.coulson.binding, current.fitz.binding],
-  });
-  assert.equal(compiled.state, "valid");
-  const missionId = compiled.value.brief.missionId;
-  const missionJournalPath = journalPath(current.root, missionId);
-  await mkdir(join(current.root, ".shield", "journals"), { recursive: true });
-  const initialBytes = `${JSON.stringify(compiled.value.entry)}\n`;
-  await writeFile(missionJournalPath, initialBytes);
+  const current = await nativeIssueIntakeFixture();
+  const { initialBytes, missionId, missionJournalPath } = current;
 
   const firstBefore = await readFile(missionJournalPath, "utf8");
   let prepareCalls = 0;
@@ -2274,7 +2296,7 @@ test("prepare-next routes a fresh issue-intake journal before protected or legac
     process.stdout.write = originalStdoutWrite;
   }
 
-  const advanced = { ...compiled.value.entry, entryId: `entry:${missionId}:1`, sequence: 1 };
+  const advanced = { ...current.compiled.entry, entryId: `entry:${missionId}:1`, sequence: 1 };
   const advancedBytes = `${initialBytes}${JSON.stringify(advanced)}\n`;
   const blockedOutput = [];
   process.stdout.write = (chunk) => { blockedOutput.push(String(chunk)); return true; };
@@ -2295,6 +2317,131 @@ test("prepare-next routes a fresh issue-intake journal before protected or legac
     assert.equal(await readFile(missionJournalPath, "utf8"), advancedBytes);
   } finally {
     process.stdout.write = originalStdoutWrite;
+  }
+});
+
+test("prepare-next binds each native snapshot to one no-follow handle and rejects replacement or symlink swaps", async () => {
+  for (const scenario of ["replacement", "symlink"]) {
+    const current = await nativeIssueIntakeFixture();
+    let swapped = false;
+    let prepareCalls = 0;
+    let legacyCalls = 0;
+    const result = await runMissionCliCaptured(
+      ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
+      {
+        prepareSession: async () => { prepareCalls += 1; throw new Error("protected preparation must not run"); },
+        continueLegacyReviewedTransition: async () => { legacyCalls += 1; throw new Error("legacy continuation must not run"); },
+        afterNativeIssueIntakeJournalHandleRead: async () => {
+          if (swapped) return;
+          swapped = true;
+          if (scenario === "replacement") {
+            const replacementPath = `${current.missionJournalPath}.replacement`;
+            await writeFile(replacementPath, current.initialBytes);
+            await rename(replacementPath, current.missionJournalPath);
+          } else {
+            const originalPath = `${current.missionJournalPath}.original`;
+            await rename(current.missionJournalPath, originalPath);
+            await symlink(originalPath, current.missionJournalPath);
+          }
+        },
+      },
+    );
+    assert.equal(result.status, 1, scenario);
+    assert.equal(result.stderr, "", scenario);
+    const blocked = JSON.parse(result.stdout);
+    assert.equal(blocked.state, "blocked", scenario);
+    assert.equal(blocked.reasonCode, "native_issue_intake_journal_invalid", scenario);
+    assert.equal(blocked.code, "journal_identity_changed", scenario);
+    assert.equal(blocked.authority, "none", scenario);
+    assert.equal(prepareCalls, 0, scenario);
+    assert.equal(legacyCalls, 0, scenario);
+    if (scenario === "replacement") assert.equal(await readFile(current.missionJournalPath, "utf8"), current.initialBytes);
+    else assert.equal((await lstat(current.missionJournalPath)).isSymbolicLink(), true);
+  }
+});
+
+test("prepare-next blocks a projection that does not match the exact bound journal bytes", async () => {
+  const current = await nativeIssueIntakeFixture();
+  let parseCalls = 0;
+  let downstreamCalls = 0;
+  const result = await runMissionCliCaptured(
+    ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
+    {
+      prepareSession: async () => { downstreamCalls += 1; throw new Error("protected preparation must not run"); },
+      continueLegacyReviewedTransition: async () => { downstreamCalls += 1; throw new Error("legacy continuation must not run"); },
+      parseNativeIssueIntakeJournalBytes: (journalBytes, missionId) => {
+        const entries = journalBytes.trimEnd().split("\n").map((line) => JSON.parse(line));
+        const replay = replayProfileAwareMissionJournal(entries);
+        assert.equal(replay.state, "valid");
+        assert.equal(replay.value.missionId, missionId);
+        parseCalls += 1;
+        return {
+          state: "valid",
+          value: {
+            kind: "profile-aware",
+            entries,
+            projection: parseCalls === 2 ? { ...replay.value, authorization: "authorized" } : replay.value,
+          },
+        };
+      },
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  const blocked = JSON.parse(result.stdout);
+  assert.equal(blocked.state, "blocked");
+  assert.equal(blocked.reasonCode, "native_issue_intake_readback_changed");
+  assert.equal(blocked.authority, "none");
+  assert.equal(parseCalls, 2);
+  assert.equal(downstreamCalls, 0);
+  assert.equal(await readFile(current.missionJournalPath, "utf8"), current.initialBytes);
+});
+
+test("prepare-next blocks malformed, mixed-schema, and tampered issue-intake journals without downstream calls or mutation", async () => {
+  const cases = [
+    {
+      label: "malformed JSON",
+      expectedCode: "recovery_required",
+      bytes: (current) => `${current.initialBytes}{not-json}\n`,
+    },
+    {
+      label: "mixed schema",
+      expectedCode: "schema_mixed",
+      bytes: (current) => `${current.initialBytes}${JSON.stringify({ ...current.compiled.entry, schemaVersion: 8, entryId: `entry:${current.missionId}:1`, sequence: 1 })}\n`,
+    },
+    {
+      label: "tampered issue source binding",
+      expectedCode: "binding_invalid",
+      bytes: (current) => {
+        const entry = structuredClone(current.compiled.entry);
+        entry.payload.issueIntakeSourceBinding.issueNumber += 1;
+        return `${JSON.stringify(entry)}\n`;
+      },
+    },
+  ];
+  for (const scenario of cases) {
+    const current = await nativeIssueIntakeFixture();
+    const journalBytes = scenario.bytes(current);
+    await writeFile(current.missionJournalPath, journalBytes);
+    let prepareCalls = 0;
+    let legacyCalls = 0;
+    const result = await runMissionCliCaptured(
+      ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
+      {
+        prepareSession: async () => { prepareCalls += 1; throw new Error("protected preparation must not run"); },
+        continueLegacyReviewedTransition: async () => { legacyCalls += 1; throw new Error("legacy continuation must not run"); },
+      },
+    );
+    assert.equal(result.status, 1, scenario.label);
+    assert.equal(result.stderr, "", scenario.label);
+    const blocked = JSON.parse(result.stdout);
+    assert.equal(blocked.state, "blocked", scenario.label);
+    assert.equal(blocked.reasonCode, "native_issue_intake_journal_invalid", scenario.label);
+    assert.equal(blocked.code, scenario.expectedCode, scenario.label);
+    assert.equal(blocked.authority, "none", scenario.label);
+    assert.equal(prepareCalls, 0, scenario.label);
+    assert.equal(legacyCalls, 0, scenario.label);
+    assert.equal(await readFile(current.missionJournalPath, "utf8"), journalBytes, scenario.label);
   }
 });
 
