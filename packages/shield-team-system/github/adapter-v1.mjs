@@ -30,7 +30,7 @@ export const GITHUB_ISSUE_GRAPHQL_QUERY_V1 = `query($owner: String!, $repo: Stri
       body
       state
       updatedAt
-      labels(first: 64) { nodes { name } }
+      labels(first: 65) { nodes { name } }
     }
   }
 }`;
@@ -196,8 +196,11 @@ export function extractGitHubAcceptanceCriteriaV1(body) {
   const matches = headings.filter((heading) => heading.level === 2 && heading.title === "acceptance criteria");
   if (matches.length !== 1) return githubIssueBlocked("acceptance_criteria_invalid");
   const heading = matches[0];
-  const nextHeading = headings.find((candidate) => candidate.index > heading.index);
+  const nextHeading = headings.find((candidate) => candidate.index > heading.index && candidate.level <= 2);
   const section = lines.slice(heading.index + 1, nextHeading?.index ?? lines.length);
+  if (headings.some((candidate) => candidate.index > heading.index && candidate.index < (nextHeading?.index ?? lines.length) && candidate.level > 2)) {
+    return githubIssueBlocked("acceptance_criteria_invalid");
+  }
   const criteria = [];
   for (const line of section) {
     if (line.trim() === "") continue;

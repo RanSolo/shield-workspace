@@ -16,6 +16,7 @@ const { createShieldConfig, formatShieldConfig } = await import("../dist/config.
 const { missionUsage, validateAuthorizeDaisyCoordinationInput } = await import("../dist/mission-cli.mjs");
 const { computeEd25519SigningKeyRef } = await import("../dist/mission-v2.mjs");
 const { createProfileAwareMissionBrief, MISSION_130_JOURNAL_DIGEST } = await import("../dist/profile-aware-mission-v1.mjs");
+const { computeIssueAcceptanceCriteriaDigestV1 } = await import("../dist/mission-intake-v1.mjs");
 const { prepareWorktreeStateV1 } = await import("../dist/worktree-state-v1.mjs");
 const initArgs = [
   "init",
@@ -1723,6 +1724,25 @@ test("profile-aware issue begin uses two hermetic GitHub reads, exact replay use
 
   const human = run(["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--root", current.root], current.root, { PATH: current.fakePath });
   assert.equal(human.status, 0, human.stderr);
+  const humanLines = human.stdout.trimEnd().split("\n");
+  assert.equal(humanLines[1], "Replay: exact");
+  assert.deepEqual(humanLines.slice(2, 17), [
+    "Acceptance criteria:",
+    "  1. preserve the issue identity",
+    "  2. remain authority-neutral",
+    `Criteria digest: ${computeIssueAcceptanceCriteriaDigestV1(["preserve the issue identity", "remain authority-neutral"])}`,
+    "Risk flags:",
+    "  production: false",
+    "  destructive: false",
+    "  migration: false",
+    "  credentialsOrSecurity: false",
+    "  externalCommunication: false",
+    "  merge: false",
+    "  deploy: false",
+    "  release: false",
+    "  hillHighRisk: true",
+    "WARNING: Effect-specific risk flags are unverified assumptions. Any production, destructive, migration, security, communication, merge, deploy, or release effect requires rescope before proceeding.",
+  ]);
   assert.ok(human.stdout.includes(`shield mission prepare-next --mission-id '${created.projection.missionId}' --root '${current.root}'`));
   assert.equal(JSON.parse(await readFile(join(current.root, ".shield", "tmp", "gh-count"), "utf8")), 4);
 });
@@ -1731,4 +1751,29 @@ test("profile-aware issue and brief forms are mutually exclusive before reposito
   const result = run(["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--brief", "missing.json"], process.cwd());
   assert.equal(result.status, 2);
   assert.match(result.stderr, /mutually exclusive/u);
+});
+
+test("profile-aware issue begin fails closed on local configuration drift and host observation drift", async () => {
+  const local = await issueCliFixture();
+  const localGh = join(local.fakePath.split(":", 1)[0], "gh");
+  await writeFile(localGh, "#!/bin/sh\ncount=$(cat \"$PWD/.shield/tmp/gh-count\")\nprintf '%s\\n' $((count + 1)) > \"$PWD/.shield/tmp/gh-count\"\nif [ \"$count\" -eq 0 ]; then printf '\\n' >> \"$PWD/.shield/config.json\"; fi\ncat \"$PWD/.shield/tmp/issue-response.json\"\n");
+  await chmod(localGh, 0o755);
+  const localResult = run(["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--root", local.root, "--json"], local.root, { PATH: local.fakePath });
+  assert.equal(localResult.status, 1, localResult.stderr);
+  assert.match(localResult.stderr, /configuration drifted/u);
+  await assert.rejects(readdir(join(local.root, ".shield", "journals")), { code: "ENOENT" });
+
+  const host = await issueCliFixture();
+  const responsePath = join(host.root, ".shield", "tmp", "issue-response.json");
+  const driftPath = join(host.root, ".shield", "tmp", "issue-response-drift.json");
+  const driftedResponse = JSON.parse(await readFile(responsePath, "utf8"));
+  driftedResponse.data.repository.issue.title = "Host observation drift";
+  await writeFile(driftPath, JSON.stringify(driftedResponse));
+  const hostGh = join(host.fakePath.split(":", 1)[0], "gh");
+  await writeFile(hostGh, "#!/bin/sh\ncount=$(cat \"$PWD/.shield/tmp/gh-count\")\nprintf '%s\\n' $((count + 1)) > \"$PWD/.shield/tmp/gh-count\"\nif [ \"$count\" -eq 0 ]; then cat \"$PWD/.shield/tmp/issue-response.json\"; cp \"$PWD/.shield/tmp/issue-response-drift.json\" \"$PWD/.shield/tmp/issue-response.json\"; else cat \"$PWD/.shield/tmp/issue-response.json\"; fi\n");
+  await chmod(hostGh, 0o755);
+  const hostResult = run(["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--root", host.root, "--json"], host.root, { PATH: host.fakePath });
+  assert.equal(hostResult.status, 1, hostResult.stderr);
+  assert.match(hostResult.stderr, /issue_drifted/u);
+  await assert.rejects(readdir(join(host.root, ".shield", "journals")), { code: "ENOENT" });
 });

@@ -77,7 +77,7 @@ type GitHubIssueObservationV1 = {
   issueUrl: string;
   issueRevisionId: string;
   updatedAt: string;
-  acceptanceCriteria: { digest: string };
+  acceptanceCriteria: { items: readonly string[]; digest: string };
 };
 type GitHubIssueObserverV1 = (input: string, options?: { cwd?: string }) =>
   | { state: "observed"; observation: GitHubIssueObservationV1 }
@@ -837,10 +837,29 @@ function issueNextAction(missionId: string): Readonly<{ command: "shield mission
   return canonicalSnapshot({ command: "shield mission prepare-next" as const, missionId });
 }
 
-function issueBeginHumanOutput(root: string, projection: ProfileAwareProjectionV1, replayed: boolean): string {
+const ISSUE_RISK_FLAG_ORDER = [
+  "production",
+  "destructive",
+  "migration",
+  "credentialsOrSecurity",
+  "externalCommunication",
+  "merge",
+  "deploy",
+  "release",
+  "hillHighRisk",
+] as const;
+
+function issueBeginHumanOutput(root: string, projection: ProfileAwareProjectionV1, replayed: boolean, observation: GitHubIssueObservationV1): string {
+  const riskFlags = projection.brief.riskFlags;
   return [
     `Mission ${projection.missionId} proposed at ${projection.brief.revisionId}.`,
     `Replay: ${replayed ? "exact" : "created"}`,
+    "Acceptance criteria:",
+    ...observation.acceptanceCriteria.items.map((criterion, index) => `  ${index + 1}. ${criterion}`),
+    `Criteria digest: ${observation.acceptanceCriteria.digest}`,
+    "Risk flags:",
+    ...ISSUE_RISK_FLAG_ORDER.map((flag) => `  ${flag}: ${riskFlags[flag]}`),
+    "WARNING: Effect-specific risk flags are unverified assumptions. Any production, destructive, migration, security, communication, merge, deploy, or release effect requires rescope before proceeding.",
     profileAwareStatusText(projection),
     `Next action: shield mission prepare-next --mission-id ${shellQuote(projection.missionId)} --root ${shellQuote(root)}`,
   ].join("\n");
@@ -873,7 +892,7 @@ async function beginIssueIntake(options: ParsedOptions, profileId: MissionProfil
       replayed: initialized.replayed,
       nextAction: issueNextAction(initialized.projection.missionId),
     });
-    output(result, options.flags.has("--json"), issueBeginHumanOutput(root, initialized.projection, initialized.replayed));
+    output(result, options.flags.has("--json"), issueBeginHumanOutput(root, initialized.projection, initialized.replayed, observedA.observation));
     return 0;
   }
 
@@ -903,7 +922,7 @@ async function beginIssueIntake(options: ParsedOptions, profileId: MissionProfil
     replayed: initialized.replayed,
     nextAction: issueNextAction(initialized.projection.missionId),
   });
-  output(result, options.flags.has("--json"), issueBeginHumanOutput(root, initialized.projection, initialized.replayed));
+  output(result, options.flags.has("--json"), issueBeginHumanOutput(root, initialized.projection, initialized.replayed, observedB.observation));
   return 0;
 }
 

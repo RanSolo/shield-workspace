@@ -137,6 +137,7 @@ test("GitHub issue observer uses one exact authority-none GraphQL read and stabl
     "api", "graphql", "-f", `query=${GITHUB_ISSUE_GRAPHQL_QUERY_V1}`,
     "-f", "owner=RanSolo", "-f", "repo=shield-workspace", "-F", "number=341",
   ]);
+  assert.match(run.calls[0].args[3], /labels\(first: 65\)/u);
   assert.equal(run.calls[0].options.shell, false);
   assert.equal(run.calls[0].options.input, null);
   assert.equal(run.calls[0].options.encoding, "buffer");
@@ -186,6 +187,30 @@ test("GitHub issue observer rejects foreign identity, unavailable issues, and ma
   assert.deepEqual(extractGitHubAcceptanceCriteriaV1("## Acceptance criteria\n- parent\n  - nested\n"), {
     state: "blocked", reason: "acceptance_criteria_invalid",
   });
+  assert.deepEqual(extractGitHubAcceptanceCriteriaV1("## Acceptance criteria\n- one\n### Ambiguous subordinate\n- two\n## Follow-up\n"), {
+    state: "blocked", reason: "acceptance_criteria_invalid",
+  });
+  assert.deepEqual(extractGitHubAcceptanceCriteriaV1("## Acceptance criteria\n- one\n### Trailing subordinate\n"), {
+    state: "blocked", reason: "acceptance_criteria_invalid",
+  });
+});
+
+test("GitHub issue observer closes the 64-label boundary and binds label identity", () => {
+  const labels = Array.from({ length: 64 }, (_value, index) => ({ name: `label-${String(index).padStart(2, "0")}` }));
+  const first = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    run: issueRunner(JSON.stringify(issueResponse({ labels: { nodes: labels } }))),
+  });
+  assert.equal(first.state, "observed");
+  const changedLabels = labels.map((label, index) => index === 63 ? { name: "label-drift" } : label);
+  const second = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    run: issueRunner(JSON.stringify(issueResponse({ labels: { nodes: changedLabels } }))),
+  });
+  assert.equal(second.state, "observed");
+  assert.notEqual(first.observation.issueRevisionId, second.observation.issueRevisionId);
+  const tooMany = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    run: issueRunner(JSON.stringify(issueResponse({ labels: { nodes: [...labels, { name: "label-64" }] } }))),
+  });
+  assert.deepEqual(tooMany, { state: "blocked", reason: "issue_identity_mismatch" });
 });
 
 test("V2 GitHub proof adapters return closed PR, target, and squash ancestry observations", async () => {
