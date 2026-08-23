@@ -35,26 +35,28 @@ forbidden attempt.
    identities. The pre-tool hook and `PermissionRequestCustomTool` both use
    the exact bare names `read` and `search`; every other name is
    `unknown` and denied.
-3. Add one internal closed classifier for tool-policy observations. It accepts
-   the callback surface, expected child session ID, actual invocation session
-   ID, managed-settings state, exact permission envelope, tool name, and
-   arguments. It returns `allow` only when:
+3. Add one internal surface-discriminated closed classifier with separate
+   inputs and predicates:
 
-   - the callback sequence matches the captured pinned-SDK sequence;
-   - the invocation session ID equals the bound child session ID;
-   - managed settings are not enabled and
-     `managedApprovalRequired` is not true;
-   - the request is exactly `kind: "custom-tool"` with no mixed-kind fields;
-   - `toolName` is exactly bare `read` or `search`;
-   - arguments are present and validate against the immutable exact-Git-tree
-     artifact map.
+   - **Pre-tool:** validate the sequence prefix, expected versus actual child
+     session ID, exact bare `read | search` name, and map-valid arguments.
+     This surface supplies no permission envelope or managed-settings evidence;
+     do not require or synthesize either.
+   - **Permission:** additionally require
+     `managedSettingsEnabled === false`,
+     `managedApprovalRequired !== true`, an exact
+     `kind: "custom-tool"` envelope with no mixed-kind fields, an exact bare
+     `toolName: "read" | "search"`, and present map-valid arguments.
 
-4. Use the classifier from both `onPreToolUse` and
-   `onPermissionRequest`. For the exact valid custom-tool permission request,
-   return only `{ kind: "approve-once" }`. Never return session, location,
-   permanent, managed-policy, or generic approval. Missing arguments, wrong
-   session, managed approval, unknown envelopes, namespace substitution, and
-   every non-custom permission kind are denied.
+4. Freeze deterministic transitions from the captured pinned-SDK transcript.
+   Each permission callback must match the immediately associated valid
+   pre-tool callback by session, bare tool identity, and argument-shape digest.
+   Duplicate, out-of-order, unmatched, or replayed callbacks deny and set the
+   sticky terminal flag. An exact valid permission callback returns only
+   `{ kind: "approve-once" }`. Never return session, location, permanent,
+   managed-policy, or generic approval. Missing arguments, wrong session,
+   managed approval, unknown envelopes, namespace substitution, and every
+   non-custom permission kind are denied.
 5. Define `shield.copilot-fury.tool-policy-observation.v1` as a closed
    diagnostic structure:
 
@@ -65,12 +67,18 @@ forbidden attempt.
    - argument-shape digest only;
    - expected-session match and managed-approval booleans;
    - fixed maximum of 32 ordered records;
-   - deterministic total-count/truncated metadata.
+   - deterministic safe-integer, saturating total-count/truncated metadata.
 
-   Preserve the first denial even after the cap and keep
-   `unauthorizedToolOrEffectObserved` sticky independently of diagnostic
-   truncation. Validate the structure before completed or failed observations
-   are persisted.
+   Reserve slot 32 for the first denial. Retain the first 31 observations; if
+   any denial occurs, slot 32 contains that first denial. If no denial occurs,
+   retain the first 32 observations. A first denial arriving after 32 allowed
+   observations deterministically displaces the previously retained slot 32.
+   Ignore later records for retention while incrementing `totalCount` until
+   `Number.MAX_SAFE_INTEGER`, where it saturates. Set `truncated` whenever
+   an observed record is not retained. Keep
+   `unauthorizedToolOrEffectObserved` sticky independently of diagnostics.
+   Validate the structure before completed or failed observations are
+   persisted.
 6. Keep a denied attempt terminal: output from a session with any forbidden or
    malformed call remains unusable.
 7. Replace the current independent callback mocks with a pinned-SDK sequence
@@ -78,8 +86,10 @@ forbidden attempt.
    handler. Cover valid read/search; wrong session; managed settings and
    `managedApprovalRequired`; mixed-kind and unknown envelopes; missing or
    malformed arguments; `custom:` callback-name substitution; out-of-map
-   paths; every non-custom permission kind; MCP; cap/truncation; first-denial
-   retention; and terminal denied-attempt behavior.
+   paths; every non-custom permission kind; MCP; duplicate, out-of-order,
+   unmatched, and replayed callbacks; exact slot-32 displacement;
+   safe-integer saturation; cap/truncation; first-denial retention; and
+   terminal denied-attempt behavior.
 8. Preserve historical compatibility explicitly. Existing V1/V2/V3 evidence
    does not require the new diagnostic field. Add fixed pre-change
    evidence/receipt byte-and-digest fixtures proving replay performs no
