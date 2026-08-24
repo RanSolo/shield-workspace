@@ -9,7 +9,7 @@
   "parentPlanPath": "docs/missions/issue-384-fury-tool-policy-plan.md",
   "parentPlanRawSha256": "13a94ff84acda3d4d56ca396507d3482bdc7ff4eddc1205032409fff89b88812",
   "transitionKind": "fresh_authorize_wheels_up",
-  "boundedOutcome": "Add bounded redacted production callback observations without widening Fury tool policy, exact-bind one-use recovery of the observed Issue #383 failed receipt, and replay the successor without repeated execution.",
+  "boundedOutcome": "May performs the bounded read/search admission correction using only the approved filesystem_write and process_execute effects; afterward, the existing authority-none production dispatch host performs one fresh #383 successor validation over its already configured Copilot transport, without granting Fury model-facing network, MCP, write, shell, Git, or other implementation capabilities, and replays exact results without repeated execution.",
   "approvedRelativePaths": [
     "docs/missions/issue-384-fury-tool-policy-plan.md",
     "docs/missions/issue-384-transition-plan.json",
@@ -52,6 +52,6 @@
     "release",
     "final_acceptance"
   ],
-  "id": "transition-plan:CIPFYNu1owpBohE74DFlVeNalgh7XFDcPScQ1Ju4b1s",
-  "digest": "sha256:CIPFYNu1owpBohE74DFlVeNalgh7XFDcPScQ1Ju4b1s"
+  "id": "transition-plan:S2_hIQrn2ZxJuTimzFpVX_q_nLq5u3TOJmbc2PtAKNw",
+  "digest": "sha256:S2_hIQrn2ZxJuTimzFpVX_q_nLq5u3TOJmbc2PtAKNw"
 }
