@@ -6,6 +6,7 @@
 - Planning base: `90791997d05e98ddbf37cd613d6901c1564e3432`
 - Subject: `github:RanSolo/shield-workspace/issue/392`
 - Prior evidence only: receipt `receipt:11XT3a0TgQgw32nH2WfNwIMBoYZJjlM4`, observed on #387 HEAD `3dc4d781969a8bd2cba10f5efab2743e06e7e3d4`.
+- Exact SDK evidence: `/private/tmp/shield-387-lane-rebind/.shield/runtime/copilot-fury/11XT3a0TgQgw32nH2WfNwIMBoYZJjlM4/session-state/843939e1-3039-4c0d-9803-bd779bce41c9/events.jsonl`; event 115 contains the mixed batch and event 116 contains the ranged-read `admission_argument_shape_denied` followed by sticky sibling denials.
 
 ## Bounded outcome
 
