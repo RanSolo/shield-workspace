@@ -351,7 +351,7 @@ async function fixture({ repositoryCard = true } = {}) {
   return { root, userCopilotHome, request, plan, journalDigest: `sha256:${sha256(journalBytes)}` };
 }
 
-function executor(plan, verdict = "PASS") {
+function executor(plan, verdict = "PASS", observationOverrides = {}) {
   const calls = { preflight: 0, execute: 0, close: 0, configurations: [] };
   return {
     calls,
@@ -394,6 +394,7 @@ function executor(plan, verdict = "PASS") {
             unauthorizedToolOrEffectObserved: false,
             policyDecisions: [],
             executionObservation: executionObservation(input),
+            ...observationOverrides,
           },
         };
       },
@@ -2198,18 +2199,23 @@ test("production callback observations reject proxy, accessor, cycle, and over-d
   Object.defineProperty(accessor, "path", { enumerable: true, get() { throw new Error("accessor must not run"); } });
   const cycle = { path: "package.json" };
   cycle.self = cycle;
-  const overDepth = { a: { b: { c: { d: "rejected" } } } };
+  const overDepthPrimitive = { a: { b: { c: "rejected" } } };
+  const overDepthFunction = { a: { b: { c: () => undefined } } };
+  const overDepthContainer = { a: { b: { c: { d: "rejected" } } } };
   for (const [label, toolCall] of [
     ["proxy", { toolName: "write", toolArgs: proxyFunction }],
     ["accessor", { toolName: "read", toolArgs: accessor }],
     ["cycle", { toolName: "write", toolArgs: cycle }],
-    ["depth", { toolName: "write", toolArgs: overDepth }],
+    ["depth-primitive", { toolName: "write", toolArgs: overDepthPrimitive }],
+    ["depth-function", { toolName: "write", toolArgs: overDepthFunction }],
+    ["depth-container", { toolName: "write", toolArgs: overDepthContainer }],
   ]) {
     const current = await fixture();
     const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [toolCall] }));
     assert.equal(result.state, "failed", `${label}: ${JSON.stringify(result)}`);
     assert.equal(result.observations.callbackObservation.records[0].reason, "shape_rejected", label);
     assert.equal(result.observations.callbackObservation.records[0].decision, "deny", label);
+    assert.equal(result.observations.callbackObservation.records[0].argumentShape.kind, "rejected", label);
   }
 });
 
@@ -2219,16 +2225,25 @@ test("production callback observations preserve a denial before the cap as the f
     { toolName: "write", toolArgs: { path: "package.json" } },
     ...Array.from({ length: 16 }, () => ({ toolName: "read", toolArgs: { path: "package.json" } })),
   ];
-  const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: calls }));
+  const harness = productionSdkHarness({ preToolUseCalls: calls, outputText: productionPassOutput(current) });
+  const result = await dispatchCopilotFuryPlanReviewV1(current.request, {
+    executor: createCopilotFuryPlanExecutorV1({
+      async loadSdk() { return harness.module; },
+      async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+    }),
+    userCopilotHome: current.userCopilotHome,
+  });
   assert.equal(result.state, "failed", JSON.stringify(result));
-  const observation = result.observations.callbackObservation;
+  const evidence = JSON.parse(await readFile(join(current.root, result.evidencePath), "utf8"));
+  const observation = evidence.observations.callbackObservation;
   assert.equal(observation.totalCount, 34);
   assert.equal(observation.truncated, true);
   assert.equal(observation.records.length, 32);
   assert.equal(observation.records.at(-1).ordinal, 1);
   assert.equal(observation.records.at(-1).decision, "deny");
   assert.equal(observation.records.at(-1).reason, "tool_or_arguments_denied");
-  assert.ok(observation.records.slice(1, -1).every((record) => record.ordinal > observation.records.at(-1).ordinal));
+  assert.equal(observation.records.filter(({ ordinal }) => ordinal === 1).length, 1);
+  assert.deepEqual(observation.records.slice(0, -1).map(({ ordinal }) => ordinal), Array.from({ length: 31 }, (_, index) => index + 2));
 });
 
 test("production callback observations preserve a denial after the cap as the final retained record", async () => {
@@ -2237,16 +2252,59 @@ test("production callback observations preserve a denial after the cap as the fi
     ...Array.from({ length: 16 }, () => ({ toolName: "read", toolArgs: { path: "package.json" } })),
     { toolName: "write", toolArgs: { path: "package.json" } },
   ];
-  const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: calls }));
+  const harness = productionSdkHarness({ preToolUseCalls: calls, outputText: productionPassOutput(current) });
+  const result = await dispatchCopilotFuryPlanReviewV1(current.request, {
+    executor: createCopilotFuryPlanExecutorV1({
+      async loadSdk() { return harness.module; },
+      async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+    }),
+    userCopilotHome: current.userCopilotHome,
+  });
   assert.equal(result.state, "failed", JSON.stringify(result));
-  const observation = result.observations.callbackObservation;
+  const evidence = JSON.parse(await readFile(join(current.root, result.evidencePath), "utf8"));
+  const observation = evidence.observations.callbackObservation;
   assert.equal(observation.totalCount, 34);
   assert.equal(observation.truncated, true);
   assert.equal(observation.records.length, 32);
   assert.equal(observation.records.at(-1).ordinal, 33);
   assert.equal(observation.records.at(-1).decision, "deny");
   assert.equal(observation.records.at(-1).reason, "tool_or_arguments_denied");
-  assert.ok(observation.records.every((record, index) => index === 31 || record.ordinal < observation.records.at(-1).ordinal));
+  assert.deepEqual(observation.records.slice(0, -1).map(({ ordinal }) => ordinal), Array.from({ length: 31 }, (_, index) => index + 1));
+});
+
+test("dispatcher validator accepts and persists the explicit terminal denial sentinel", async () => {
+  const current = await fixture();
+  const callbackRecord = (ordinal, decision = "allow", reason = "exact_tool_allowed") => ({
+    surface: "pre_tool",
+    ordinal,
+    callbackIdentity: { sessionId: "present", toolCallId: "absent" },
+    tool: "read",
+    permissionKind: "unknown",
+    argumentShape: { kind: "object", keys: ["path"], entries: [{ kind: "string" }] },
+    expectedSessionMatch: "match",
+    decision,
+    reason,
+  });
+  const callbackObservation = {
+    version: "shield.copilot-fury.callback-observation.v1",
+    totalCount: 34,
+    truncated: true,
+    records: [
+      ...Array.from({ length: 31 }, (_, index) => callbackRecord(index + 2)),
+      callbackRecord(1, "deny", "tool_or_arguments_denied"),
+    ],
+  };
+  const fake = executor(current.plan, "PASS", { callbackObservation });
+  const result = await dispatchCopilotFuryPlanReviewV1(current.request, {
+    executor: fake.value,
+    userCopilotHome: current.userCopilotHome,
+  });
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  const evidence = JSON.parse(await readFile(join(current.root, result.evidencePath), "utf8"));
+  assert.deepEqual(evidence.observations.callbackObservation.records.map(({ ordinal }) => ordinal), [
+    ...Array.from({ length: 31 }, (_, index) => index + 2),
+    1,
+  ]);
 });
 
 test("production hook and handler read a map-bound virtual transition absent from exact HEAD", async () => {

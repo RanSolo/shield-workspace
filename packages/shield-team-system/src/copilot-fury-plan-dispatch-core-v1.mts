@@ -2506,6 +2506,7 @@ function callbackExpectedSessionMatch(value: unknown, expectedSessionId: string)
 }
 
 function callbackArgumentShape(value: unknown, depth = 0, seen = new Set<object>()): CopilotFuryCallbackArgumentShapeV1 {
+  if (depth > 2) throw new Error("shape_rejected");
   if (value === null) return { kind: "null" };
   if ((typeof value === "object" && value !== null || typeof value === "function") && isProxy(value)) throw new Error("shape_rejected");
   if (typeof value === "string") return { kind: "string" };
@@ -2515,7 +2516,7 @@ function callbackArgumentShape(value: unknown, depth = 0, seen = new Set<object>
   if (typeof value === "bigint") return { kind: "bigint" };
   if (typeof value === "symbol") return { kind: "symbol" };
   if (typeof value === "function") return { kind: "function" };
-  if (typeof value !== "object" || isProxy(value) || depth > 2 || seen.has(value)) throw new Error("shape_rejected");
+  if (typeof value !== "object" || isProxy(value) || seen.has(value)) throw new Error("shape_rejected");
   seen.add(value);
   try {
     const keys = Reflect.ownKeys(value);
@@ -2554,6 +2555,12 @@ function createCallbackObservationRecorder(expectedSessionId: string) {
   let totalCount = 0;
   let truncated = false;
   let firstDenial: CopilotFuryCallbackObservationRecordV1 | null = null;
+  const retainFirstDenialAsTerminalSentinel = () => {
+    if (firstDenial === null) return;
+    const preceding = records.filter((candidate) => candidate !== firstDenial).slice(0, 31);
+    records.length = 0;
+    records.push(...preceding, firstDenial);
+  };
   const record = (input: Readonly<{
     surface: CopilotFuryCallbackSurfaceV1;
     identitySource?: unknown;
@@ -2582,7 +2589,7 @@ function createCallbackObservationRecorder(expectedSessionId: string) {
     if (records.length < 32) records.push(record);
     else {
       truncated = true;
-      if (firstDenial !== null) records[31] = firstDenial;
+      retainFirstDenialAsTerminalSentinel();
     }
   };
   return Object.freeze({
@@ -3090,10 +3097,11 @@ export async function probeCopilotFuryDispatchCapabilityV1(
 }
 
 function validCallbackArgumentShape(value: unknown, depth = 0): value is CopilotFuryCallbackArgumentShapeV1 {
+  if (depth > 2) return false;
   if (!safePlain(value) || typeof value.kind !== "string") return false;
   const primitiveKinds = ["string", "number", "boolean", "null", "undefined", "bigint", "symbol", "function", "rejected"];
   if (primitiveKinds.includes(value.kind)) return exact(value, ["kind"]);
-  if (value.kind !== "object" && value.kind !== "array" || depth > 2 || !Array.isArray(value.entries) || value.entries.length > 8 || !value.entries.every((entry) => validCallbackArgumentShape(entry, depth + 1))) return false;
+  if (value.kind !== "object" && value.kind !== "array" || !Array.isArray(value.entries) || value.entries.length > 8 || !value.entries.every((entry) => validCallbackArgumentShape(entry, depth + 1))) return false;
   if (value.kind === "array") return exact(value, ["kind", "entries"]);
   if (!Array.isArray(value.keys) || value.keys.length !== value.entries.length || value.keys.length > 8 || value.keys.some((key) => key !== "path" && key !== "query" && key !== "unknown")) return false;
   return exact(value, ["kind", "keys", "entries"]);
@@ -3106,14 +3114,18 @@ function validCallbackObservation(value: unknown): value is CopilotFuryCallbackO
   const records = data.records;
   if (data.version !== COPILOT_FURY_CALLBACK_OBSERVATION_VERSION || !Number.isSafeInteger(totalCount) || (totalCount as number) < 0 || typeof data.truncated !== "boolean" || !Array.isArray(records) || records.length > 32 || records.length > (totalCount as number)) return false;
   let previousOrdinal = 0;
-  for (const candidate of records) {
+  const seenOrdinals = new Set<number>();
+  for (const [index, candidate] of records.entries()) {
     if (!safePlain(candidate) || !exact(candidate, ["surface", "ordinal", "callbackIdentity", "tool", "permissionKind", "argumentShape", "expectedSessionMatch", "decision", "reason"])) return false;
     const record = candidate as Plain;
     const callbackIdentity = record.callbackIdentity;
-    if (!Number.isSafeInteger(record.ordinal) || (record.ordinal as number) <= previousOrdinal || (record.ordinal as number) > (totalCount as number) || !safePlain(callbackIdentity) || !exact(callbackIdentity, ["sessionId", "toolCallId"])) return false;
+    const ordinal = record.ordinal as number;
+    const terminalSentinel = data.truncated === true && index === records.length - 1 && (record.decision === "deny" || record.decision === "reject") && ordinal <= previousOrdinal;
+    if (!Number.isSafeInteger(ordinal) || ordinal <= 0 || ordinal > (totalCount as number) || seenOrdinals.has(ordinal) || (!terminalSentinel && ordinal <= previousOrdinal) || !safePlain(callbackIdentity) || !exact(callbackIdentity, ["sessionId", "toolCallId"])) return false;
     const identity = callbackIdentity as Plain;
     if (!["pre_tool", "permission", "handler"].includes(record.surface as string) || !["present", "absent"].includes(identity.sessionId as string) || !["present", "absent"].includes(identity.toolCallId as string) || !["read", "search", "unknown"].includes(record.tool as string) || (!CALLBACK_PERMISSION_KINDS.has(record.permissionKind as CopilotFuryCallbackPermissionKindV1) && record.permissionKind !== "unknown") || !validCallbackArgumentShape(record.argumentShape) || !["match", "mismatch", "absent"].includes(record.expectedSessionMatch as string) || !["allow", "deny", "reject", "invoked", "not_invoked"].includes(record.decision as string) || !["exact_tool_allowed", "tool_or_arguments_denied", "permission_rejected", "mcp_denied", "handler_invoked", "pre_tool_denied", "shape_rejected"].includes(record.reason as string)) return false;
-    previousOrdinal = record.ordinal as number;
+    seenOrdinals.add(ordinal);
+    previousOrdinal = ordinal;
   }
   return true;
 }
