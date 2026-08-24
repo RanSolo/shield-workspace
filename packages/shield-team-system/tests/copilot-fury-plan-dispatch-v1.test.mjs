@@ -534,6 +534,29 @@ function executor(plan, verdict = "PASS", observationOverrides = {}) {
   };
 }
 
+function admissionFailureFixture(reason = "admission_argument_shape_denied") {
+  const argumentShape = { kind: "object", keys: ["path", "unknown"], entries: [{ kind: "string" }, { kind: "number" }] };
+  const admissionFailure = { schemaVersion: 1, reason, ordinal: 1, tool: "read", argumentShape, recovery: "fresh_corrected_successor_required" };
+  const callbackObservation = {
+    version: 1,
+    totalCount: 1,
+    truncated: false,
+    records: [{
+      surface: "pre_tool",
+      ordinal: 1,
+      callbackIdentity: { sessionId: "present", toolCallId: "present" },
+      tool: "read",
+      permissionKind: "unknown",
+      argumentShape,
+      expectedSessionMatch: "match",
+      decision: "deny",
+      reason,
+      admission: { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true },
+    }],
+  };
+  return { admissionFailure, callbackObservation };
+}
+
 function productionConfiguration(current) {
   return {
     packageName: "@github/copilot-sdk",
@@ -1684,6 +1707,60 @@ test("failed, cancelled, and interrupted lifecycles replay without another model
     assert.equal(replay.calls.preflight, 0);
     assert.equal(replay.calls.execute, 0);
   }
+});
+
+test("fresh admission failures reject malformed and conflicting projections before persistence", async () => {
+  for (const [label, mutate] of [
+    ["malformed-reason", (failure) => ({ ...failure, reason: "admission_future_denied" })],
+    ["conflicting-projection", (failure) => ({ ...failure, reason: "admission_tool_denied" })],
+  ]) {
+    const current = await fixture();
+    const expected = admissionFailureFixture();
+    const returned = mutate(expected.admissionFailure);
+    const terminalExecutor = {
+      async preflight() { return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
+      async execute() {
+        return { state: "failed", code: "FURY_TOOL_ADMISSION_DENIED", errors: ["Fury tool admission denied; create a fresh corrected successor."], admissionFailure: returned, observations: { admissionFailure: expected.admissionFailure, callbackObservation: expected.callbackObservation } };
+      },
+    };
+    const first = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: terminalExecutor, userCopilotHome: current.userCopilotHome });
+    assert.equal(first.state, "failed", `${label}: ${JSON.stringify(first)}`);
+    assert.equal(first.code, "DISPATCH_FAILED", label);
+    assert.match(first.errors.join(" "), /admission_failure_malformed/u, label);
+    const evidence = JSON.parse(await readFile(join(current.root, first.evidencePath), "utf8"));
+    assert.equal(Object.hasOwn(evidence.observations, "admissionFailure"), false, label);
+    const replay = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: executor(current.plan).value, userCopilotHome: current.userCopilotHome });
+    assert.equal(replay.replayed, true, `${label}: ${JSON.stringify(replay)}`);
+    assert.equal(Object.hasOwn(replay, "admissionFailure"), false, label);
+  }
+});
+
+test("replay rejects malformed or conflicting new admission evidence and preserves legacy no-synthesis", async () => {
+  for (const [label, mutate] of [
+    ["malformed-reason", (failure, callbackObservation) => ({ admissionFailure: { ...failure, reason: "admission_future_denied" }, callbackObservation })],
+    ["conflicting-callback", (failure, callbackObservation) => ({ admissionFailure: failure, callbackObservation: { ...callbackObservation, records: [{ ...callbackObservation.records[0], reason: "admission_tool_denied" }] } })],
+  ]) {
+    const current = await fixture();
+    const request = v1Request(current);
+    const expected = admissionFailureFixture();
+    const ledger = historicalV1Ledger(current, request, "failed", {
+      mutateEvidence(evidence) {
+        const changed = mutate(expected.admissionFailure, expected.callbackObservation);
+        return { ...evidence, dispositionCode: "FURY_TOOL_ADMISSION_DENIED", errors: ["Fury tool admission denied; create a fresh corrected successor."], observations: { admissionFailure: changed.admissionFailure, callbackObservation: changed.callbackObservation } };
+      },
+    });
+    const replay = await dispatchCopilotFuryPlanReviewV1(request, { executor: executor(current.plan).value, userCopilotHome: current.userCopilotHome, readDispatchLedger: ledger.readDispatchLedger });
+    assert.equal(replay.state, "invalid", `${label}: ${JSON.stringify(replay)}`);
+    assert.match(replay.errors.join(" "), /replayed_admission_failure_malformed/u, label);
+  }
+
+  const legacy = await fixture();
+  const legacyRequest = v1Request(legacy);
+  const legacyLedger = historicalV1Ledger(legacy, legacyRequest, "failed");
+  const legacyReplay = await dispatchCopilotFuryPlanReviewV1(legacyRequest, { executor: executor(legacy.plan).value, userCopilotHome: legacy.userCopilotHome, readDispatchLedger: legacyLedger.readDispatchLedger });
+  assert.equal(legacyReplay.state, "failed", JSON.stringify(legacyReplay));
+  assert.equal(Object.hasOwn(legacyReplay, "admissionFailure"), false);
+  assert.deepEqual(legacyReplay.errors, ["historical failed"]);
 });
 
 test("claim failure and unsafe evidence ancestry prevent model execution", async () => {

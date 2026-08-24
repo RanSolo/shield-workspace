@@ -395,6 +395,13 @@ export type CopilotFuryAdmissionReasonV1 = Extract<CopilotFuryCallbackReasonV1,
   | "admission_read_path_denied" | "admission_read_target_denied" | "admission_search_query_denied"
   | "admission_search_path_denied" | "admission_search_scope_denied" | "admission_validation_internal_denied">;
 
+const ADMISSION_FAILURE_REASONS: ReadonlySet<CopilotFuryAdmissionReasonV1> = new Set([
+  "admission_capacity_exceeded", "admission_session_denied", "admission_tool_denied",
+  "admission_argument_decode_denied", "admission_argument_shape_denied", "admission_read_path_denied",
+  "admission_read_target_denied", "admission_search_query_denied", "admission_search_path_denied",
+  "admission_search_scope_denied", "admission_validation_internal_denied",
+]);
+
 export type CopilotFuryAdmissionFailureV1 = Readonly<{
   schemaVersion: 1;
   reason: CopilotFuryAdmissionReasonV1;
@@ -3473,22 +3480,46 @@ function validAdmissionDiagnostic(value: unknown): value is CopilotFuryAdmission
 function validAdmissionFailure(value: unknown): value is CopilotFuryAdmissionFailureV1 {
   return safePlain(value) && exact(value, ["schemaVersion", "reason", "ordinal", "tool", "argumentShape", "recovery"])
     && value.schemaVersion === 1
-    && typeof value.reason === "string" && value.reason.startsWith("admission_") && value.reason !== "admission_sticky_denied"
+    && typeof value.reason === "string" && ADMISSION_FAILURE_REASONS.has(value.reason as CopilotFuryAdmissionReasonV1)
     && Number.isSafeInteger(value.ordinal) && (value.ordinal as number) > 0
     && ["read", "search", "unknown"].includes(value.tool as string)
     && validCallbackArgumentShape(value.argumentShape)
     && value.recovery === ADMISSION_FAILURE_RECOVERY;
 }
 
+function firstAdmissionFailureCallback(value: unknown): CopilotFuryCallbackObservationRecordV1 | undefined {
+  if (!validCallbackObservation(value)) return undefined;
+  return value.records.find((record) => record.decision === "deny" && ADMISSION_FAILURE_REASONS.has(record.reason as CopilotFuryAdmissionReasonV1));
+}
+
+function admissionFailureFromCallback(record: CopilotFuryCallbackObservationRecordV1): CopilotFuryAdmissionFailureV1 {
+  return deepFreeze({ schemaVersion: 1, reason: record.reason as CopilotFuryAdmissionReasonV1, ordinal: record.ordinal, tool: record.tool, argumentShape: record.argumentShape, recovery: ADMISSION_FAILURE_RECOVERY });
+}
+
+function validateAdmissionFailureAgreement(
+  code: unknown,
+  errors: unknown,
+  observations: unknown,
+  returned: unknown,
+  errorCode: "admission_failure_malformed" | "replayed_admission_failure_malformed",
+): CopilotFuryAdmissionFailureV1 | undefined {
+  const observationObject = safePlain(observations) ? observations : null;
+  const hasReturned = returned !== undefined;
+  const hasObserved = observationObject !== null && Object.hasOwn(observationObject, "admissionFailure");
+  const callback = observationObject === null ? undefined : firstAdmissionFailureCallback(observationObject.callbackObservation);
+  const hasSignal = hasReturned || hasObserved || code === ADMISSION_FAILURE_CODE || callback !== undefined;
+  if (!hasSignal) return undefined;
+  const observed = observationObject?.admissionFailure;
+  if (!validAdmissionFailure(returned) || !validAdmissionFailure(observed) || !validCallbackObservation(observationObject?.callbackObservation) || callback === undefined ||
+      code !== ADMISSION_FAILURE_CODE || canonicalJson(errors) !== canonicalJson([ADMISSION_FAILURE_MESSAGE])) throw new Error(errorCode);
+  const projected = admissionFailureFromCallback(callback);
+  if (canonicalJson(returned) !== canonicalJson(observed) || canonicalJson(returned) !== canonicalJson(projected)) throw new Error(errorCode);
+  return returned;
+}
+
 function replayAdmissionFailure(evidence: Plain): CopilotFuryAdmissionFailureV1 | undefined {
   if (Object.hasOwn(evidence, "admissionFailure")) throw new Error("replayed_admission_failure_malformed");
-  const value = safePlain(evidence.observations) ? evidence.observations.admissionFailure : undefined;
-  if (value === undefined) {
-    if (evidence.dispositionCode === ADMISSION_FAILURE_CODE) throw new Error("replayed_admission_failure_missing");
-    return undefined;
-  }
-  if (!validAdmissionFailure(value) || evidence.dispositionCode !== ADMISSION_FAILURE_CODE || canonicalJson(evidence.errors) !== canonicalJson([ADMISSION_FAILURE_MESSAGE])) throw new Error("replayed_admission_failure_malformed");
-  return value;
+  return validateAdmissionFailureAgreement(evidence.dispositionCode, evidence.errors, evidence.observations, safePlain(evidence.observations) ? evidence.observations.admissionFailure : undefined, "replayed_admission_failure_malformed");
 }
 
 function validCallbackObservation(value: unknown): value is CopilotFuryCallbackObservationV1 {
@@ -3724,7 +3755,13 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       execution = { state: "failed", code: COPILOT_FURY_PLAN_PHASE_CONTRACT_ERROR_CODE_V2, errors: ["Fury exhausted the bounded repair lifecycle without producing a valid architecture-plan result."], observations: execution.observations };
     }
     if (execution.state !== "completed") originalDisposition = { code: execution.code, errors: [...execution.errors] };
-    const admissionFailure = execution.state === "completed" ? undefined : execution.admissionFailure ?? execution.observations.admissionFailure;
+    const admissionFailure = validateAdmissionFailureAgreement(
+      execution.state === "completed" ? undefined : execution.code,
+      execution.state === "completed" ? [] : execution.errors,
+      execution.observations,
+      execution.state === "completed" ? undefined : execution.admissionFailure,
+      "admission_failure_malformed",
+    );
     terminalUncertain = true;
     await suppliedDependencies.beforeTerminalRevalidation?.();
     const terminalObservation = await verifyLiveBinding(request, source, observation, planFile, card, reviewArtifactMap, suppliedDependencies.userCopilotHome);
