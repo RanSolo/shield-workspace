@@ -254,7 +254,7 @@ test("durable replay rejects stale identity deterministically without execution"
   });
   assert.equal(result.state, "invalid", JSON.stringify(result));
   assert.equal(result.code, "PRECLAIM_VALIDATION_FAILED");
-  assert.deepEqual(result.errors, ["durable_session_identity_drift"]);
+  assert.deepEqual(result.errors, ["durable_session_immutable_binding_mismatch"]);
 });
 
 test("durable replay rejects conflicting duplicate terminal evidence deterministically without execution", async () => {
@@ -272,6 +272,23 @@ test("durable replay rejects conflicting duplicate terminal evidence determinist
   assert.equal(result.state, "invalid", JSON.stringify(result));
   assert.equal(result.code, "PRECLAIM_VALIDATION_FAILED");
   assert.deepEqual(result.errors, ["durable_session_terminal_evidence_ambiguous"]);
+});
+
+test("durable replay rejects contradictory observer discriminator before execution", async () => {
+  const current = await fixture();
+  const request = v1Request(current);
+  const startedLedger = historicalV1Ledger(current, request, "started");
+  const completedLedger = historicalV1Ledger(current, request, "completed");
+  const result = await dispatchCopilotFuryPlanReviewV1(request, {
+    executor: { async preflight() { throw new Error("must not preflight"); }, async execute() { throw new Error("must not execute"); } },
+    userCopilotHome: current.userCopilotHome,
+    readDispatchLedger: startedLedger.readDispatchLedger,
+    async claimDispatchPacket() { return { state: "valid", logPath: join(current.root, ".shield", "dispatch-receipts.jsonl"), byteLength: 0, packetDigest: startedLedger.packetDigest(), receipt: startedLedger.projection, claimStatus: "already_claimed" }; },
+    async durableSessionObserver({ receipt }) { return { state: "pending", receipt: completedLedger.projection }; },
+  });
+  assert.equal(result.state, "invalid", JSON.stringify(result));
+  assert.equal(result.code, "PRECLAIM_VALIDATION_FAILED");
+  assert.deepEqual(result.errors, ["durable_session_discriminator_mismatch"]);
 });
 
 function architectureResult(current, overrides = {}) {

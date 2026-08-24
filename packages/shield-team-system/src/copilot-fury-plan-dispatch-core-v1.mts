@@ -2537,21 +2537,23 @@ function validateObservedReceiptBinding(
   packetDigest: string,
 ): void {
   const identityKeys = [
+    "schemaVersion", "contractVersion", "startedAt",
     "receiptId", "dispatchId", "parentMissionId", "parentMissionRevision", "parentSessionId",
     "childTaskId", "childSessionId", "accountableSeatId", "repositoryId", "repositoryWorkspaceId",
     "repositoryRevision", "subjectId", "subjectRevision", "artifactId", "artifactRevision",
     "configuredRuntime", "requestedRuntime", "toolExecution",
   ] as const;
   for (const key of identityKeys) {
-    if (canonicalJson(observed[key]) !== canonicalJson(original[key])) throw new Error("durable_session_identity_drift");
+    if (canonicalJson(observed[key]) !== canonicalJson(original[key])) throw new Error("durable_session_immutable_binding_mismatch");
   }
+  if (canonicalJson(observed.inputEvidenceRefs) !== canonicalJson(original.inputEvidenceRefs)) throw new Error("durable_session_immutable_binding_mismatch");
   if (observed.parentMissionId !== request.missionId || observed.parentMissionRevision !== request.missionRevision ||
       observed.parentSessionId !== request.parentSessionId || observed.accountableSeatId !== "fury" ||
       observed.repositoryId !== request.repositoryId || observed.repositoryWorkspaceId !== request.repositoryWorkspaceId ||
       observed.repositoryRevision !== request.headRevision || observed.subjectId !== request.subjectId ||
       observed.subjectRevision !== request.subjectRevision || observed.artifactRevision !== request.subjectRevision ||
       !observed.inputEvidenceRefs.some((ref) => ref.endsWith(`:${packetDigest}`))) {
-    throw new Error("durable_session_request_binding_mismatch");
+    throw new Error("durable_session_immutable_binding_mismatch");
   }
   if (!["started", "resumed", "completed", "failed", "cancelled"].includes(observed.state)) throw new Error("durable_session_state_invalid");
   if ((observed.state === "completed" || observed.state === "failed" || observed.state === "cancelled") &&
@@ -2581,6 +2583,8 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1OrV2, sou
   let receipt = claim.receipt;
   if ((receipt.state === "started" || receipt.state === "resumed") && durableSessionObserver !== undefined) {
     const observed = await durableSessionObserver({ repositoryRoot: request.repositoryRoot, request, receipt, packetDigest: claim.packetDigest });
+    if ((observed.state === "pending" || observed.state === "uncertain") && !["started", "resumed"].includes(observed.receipt.state)) throw new Error("durable_session_discriminator_mismatch");
+    if (observed.state === "terminal" && !["completed", "failed", "cancelled"].includes(observed.receipt.state)) throw new Error("durable_session_discriminator_mismatch");
     validateObservedReceiptBinding(request, receipt, observed.receipt, claim.packetDigest);
     if (observed.state === "pending") return deepFreeze({ contractVersion: request.contractVersion, authority: "none" as const, state: "recovery_required" as const, code: "DISPATCH_PENDING", errors: ["The exact dispatch receipt remains active; retry the same receipt without reinvoking Fury."], missionId: request.missionId, receiptId: receipt.receiptId, evidencePath: null, replayed: true, handoff: null });
     if (observed.state === "uncertain") return deepFreeze({ contractVersion: request.contractVersion, authority: "none" as const, state: "recovery_required" as const, code: "DISPATCH_UNCERTAIN", errors: ["The exact dispatch session state is uncertain; retry the same receipt after host recovery."], missionId: request.missionId, receiptId: receipt.receiptId, evidencePath: null, replayed: true, handoff: null });
