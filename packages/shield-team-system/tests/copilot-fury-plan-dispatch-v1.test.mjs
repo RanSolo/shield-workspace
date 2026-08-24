@@ -2243,11 +2243,6 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal(JSON.parse(harness.calls.toolResults[0].result).content, "{\"private\":true}\n");
   assert.deepEqual(JSON.parse(harness.calls.toolResults[1].result).matches.map(({ path }) => path), ["package.json"]);
   const exactPath = join(current.root, "package.json");
-  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review" })).kind, "reject");
-  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review", managedApprovalRequired: true })).kind, "reject");
-  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review", requestSandboxBypass: true })).kind, "reject");
-  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "write", fileName: exactPath, diff: "", intention: "mutate", canOfferSessionApproval: false })).kind, "reject");
-  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: "./package.json", intention: "alias" })).kind, "reject");
   const readTool = harness.calls.sessionConfig.tools.find((tool) => tool.name === "read");
   const searchTool = harness.calls.sessionConfig.tools.find((tool) => tool.name === "search");
   const invokeTool = async (tool, args, toolCallId) => {
@@ -2259,7 +2254,6 @@ test("production executor binds loaded SDK and producer identity and confines pe
   };
   await invokeTool(readTool, { path: exactPath }, "direct-read-precheck");
   await invokeTool(searchTool, { query: "Fury" }, "direct-search-precheck");
-  assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ sessionId: harness.calls.sessionConfig.sessionId, toolName: "write", toolArgs: { path: exactPath } }, { sessionId: harness.calls.sessionConfig.sessionId })).permissionDecision, "deny");
   await writeFile(exactPath, "{\"private\":false,\"replacement\":\"one\"}\n");
   git(current.root, ["add", "package.json"]);
   git(current.root, ["commit", "-qm", "replacement object one"]);
@@ -2286,6 +2280,12 @@ test("production executor binds loaded SDK and producer identity and confines pe
   }
   const aliasPath = join(current.root, "package-alias.json");
   await symlink(exactPath, aliasPath);
+  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review" })).kind, "reject");
+  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review", managedApprovalRequired: true })).kind, "reject");
+  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review", requestSandboxBypass: true })).kind, "reject");
+  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "write", fileName: exactPath, diff: "", intention: "mutate", canOfferSessionApproval: false })).kind, "reject");
+  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: "./package.json", intention: "alias" })).kind, "reject");
+  assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ sessionId: harness.calls.sessionConfig.sessionId, toolName: "write", toolArgs: { path: exactPath } }, { sessionId: harness.calls.sessionConfig.sessionId })).permissionDecision, "deny");
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: aliasPath, intention: "alias" })).kind, "reject");
   assert.equal(harness.calls.disconnect, 1);
   assert.equal(harness.calls.stop, 1);
