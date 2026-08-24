@@ -538,7 +538,7 @@ function admissionFailureFixture(reason = "admission_argument_shape_denied") {
   const argumentShape = { kind: "object", keys: ["path", "unknown"], entries: [{ kind: "string" }, { kind: "number" }] };
   const admissionFailure = { schemaVersion: 1, reason, ordinal: 1, tool: "read", argumentShape, recovery: "fresh_corrected_successor_required" };
   const callbackObservation = {
-    version: 1,
+    version: "shield.copilot-fury.callback-observation.v1",
     totalCount: 1,
     truncated: false,
     records: [{
