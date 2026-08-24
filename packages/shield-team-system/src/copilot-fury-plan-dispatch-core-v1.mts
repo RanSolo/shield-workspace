@@ -192,6 +192,10 @@ const MAX_REVIEW_ARTIFACT_BYTES = 8 * MAX_INPUT_BYTES;
 const MAX_TOOL_ARGUMENT_BYTES = 8192;
 const MAX_TOOL_ARGUMENT_CONTAINER_DEPTH = 2;
 const MAX_PENDING_TOOL_ADMISSIONS = 16;
+const MAX_RANGED_READ_LINES = 400;
+const ADMISSION_FAILURE_CODE = "FURY_TOOL_ADMISSION_DENIED" as const;
+const ADMISSION_FAILURE_MESSAGE = "Fury tool admission denied; create a fresh corrected successor." as const;
+const ADMISSION_FAILURE_RECOVERY = "fresh_corrected_successor_required" as const;
 const GIT_CONTEXT_VARIABLES = Object.freeze([
   "GIT_COMMON_DIR", "GIT_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_WORK_TREE",
 ] as const);
@@ -385,11 +389,20 @@ type CopilotFuryCallbackReasonV1 =
   | "permission_rejected" | "mcp_denied"
   | "handler_invoked" | "pre_tool_denied" | "shape_rejected";
 
-type CopilotFuryAdmissionReasonV1 = Extract<CopilotFuryCallbackReasonV1,
+export type CopilotFuryAdmissionReasonV1 = Extract<CopilotFuryCallbackReasonV1,
   "admission_sticky_denied" | "admission_capacity_exceeded" | "admission_session_denied"
   | "admission_tool_denied" | "admission_argument_decode_denied" | "admission_argument_shape_denied"
   | "admission_read_path_denied" | "admission_read_target_denied" | "admission_search_query_denied"
   | "admission_search_path_denied" | "admission_search_scope_denied" | "admission_validation_internal_denied">;
+
+export type CopilotFuryAdmissionFailureV1 = Readonly<{
+  schemaVersion: 1;
+  reason: CopilotFuryAdmissionReasonV1;
+  ordinal: number;
+  tool: CopilotFuryCallbackToolIdentityV1;
+  argumentShape: CopilotFuryCallbackArgumentShapeV1;
+  recovery: typeof ADMISSION_FAILURE_RECOVERY;
+}>;
 
 type CopilotFuryAdmissionDiagnosticV1 = Readonly<{
   callbackSessionMatch: boolean;
@@ -455,6 +468,7 @@ export interface CopilotFuryExecutorObservationsV1 {
   readonly modelChangeObserved: false;
   readonly agentSubstitutionObserved: false;
   readonly unauthorizedToolOrEffectObserved: false;
+  readonly admissionFailure?: CopilotFuryAdmissionFailureV1;
   readonly policyDecisions: readonly Readonly<{ tool: CopilotFuryCallbackToolIdentityV1; decision: "allow" | "deny" }>[];
   readonly callbackObservation?: CopilotFuryCallbackObservationV1;
   readonly executionObservation?: CopilotFuryExecutionObservationV1;
@@ -462,7 +476,7 @@ export interface CopilotFuryExecutorObservationsV1 {
 
 export type CopilotFuryExecutorRunResultV1 = Readonly<
   | { state: "completed"; outputText: string; observations: CopilotFuryExecutorObservationsV1 }
-  | { state: "failed" | "cancelled" | "interrupted"; code: string; errors: readonly string[]; observations: Partial<CopilotFuryExecutorObservationsV1> }
+  | { state: "failed" | "cancelled" | "interrupted"; code: string; errors: readonly string[]; observations: Partial<CopilotFuryExecutorObservationsV1>; admissionFailure?: CopilotFuryAdmissionFailureV1 }
 >;
 
 export interface CopilotFuryExecutorRunInputV1 {
@@ -577,7 +591,7 @@ type CommonDispatchResultV1 = Readonly<{
 export type CopilotFuryPlanDispatchResultV1 =
   | (CommonDispatchResultV1 & Readonly<{ state: "completed"; disposition: "PASS"; handoff: CopilotFuryPlanDispatchHandoffV1 }>)
   | (CommonDispatchResultV1 & Readonly<{ state: "completed"; disposition: "REVISE"; findings: readonly CopilotFuryPlanFindingV1[]; handoff: null }>)
-  | (CommonDispatchResultV1 & Readonly<{ state: "failed" | "cancelled"; code: string; errors: readonly string[]; handoff: null }>)
+  | (CommonDispatchResultV1 & Readonly<{ state: "failed" | "cancelled"; code: string; errors: readonly string[]; admissionFailure?: CopilotFuryAdmissionFailureV1; handoff: null }>)
   | (CommonDispatchResultV1 & Readonly<{ state: "recovery_required"; code: string; errors: readonly string[]; handoff: null }>)
   | Readonly<{ contractVersion: typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION | typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2; authority: "none"; state: "blocked" | "invalid"; code: string; errors: readonly string[]; receiptId: string | null; evidencePath: null; replayed: false; handoff: null }>;
 
@@ -1412,7 +1426,12 @@ const TOOL_READ_PARAMETERS = Object.freeze({
   type: "object",
   additionalProperties: false,
   required: ["path"],
-  properties: { path: { type: "string", description: "Repository-relative or canonical absolute file path." } },
+  dependentRequired: { line_start: ["line_end"], line_end: ["line_start"] },
+  properties: {
+    path: { type: "string", description: "Repository-relative or canonical absolute file path." },
+    line_start: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: "Optional 1-based inclusive start line; must be paired with line_end." },
+    line_end: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: "Optional 1-based inclusive end line; must be paired with line_start, line_end >= line_start, and span <= 400." },
+  },
 });
 const TOOL_SEARCH_PARAMETERS = Object.freeze({
   type: "object",
@@ -1452,7 +1471,7 @@ function validateExecutionToolBinding(binding: CopilotFuryExecutionToolBindingPr
 type ValidatedReviewArtifactToolCall = Readonly<{
   state: "valid";
   value: Readonly<
-    | { kind: "read"; entry: CopilotFuryReviewArtifactMapEntryV1; projection: Readonly<{ path: string }> }
+    | { kind: "read"; entry: CopilotFuryReviewArtifactMapEntryV1; projection: Readonly<Record<string, unknown>>; lineStart?: number; lineEnd?: number }
     | { kind: "search"; query: string; entries: readonly CopilotFuryReviewArtifactMapEntryV1[]; projection: Readonly<{ query: string } | { query: string; path: string }> }
   >;
 } | { state: "invalid"; reason: CopilotFuryAdmissionReasonV1 }>;
@@ -1471,6 +1490,14 @@ function customToolArgumentShapeError(message: string): boolean {
   ].includes(message);
 }
 
+function rangedReadContent(bytes: string, lineStart: number, lineEnd: number): string {
+  const terminalLf = bytes.endsWith("\n");
+  const lines = bytes.split("\n");
+  if (terminalLf) lines.pop();
+  const selected = lines.slice(lineStart - 1, lineEnd);
+  return `${selected.join("\n")}${terminalLf || lineEnd < lines.length ? "\n" : ""}`;
+}
+
 function validateReviewArtifactToolCall(repositoryRoot: string, artifactMap: CopilotFuryReviewArtifactMapV1, toolName: string, args: unknown): ValidatedReviewArtifactToolCall {
   let decoded: unknown;
   try {
@@ -1484,11 +1511,20 @@ function validateReviewArtifactToolCall(repositoryRoot: string, artifactMap: Cop
     if (!safePlain(decoded)) return invalidReviewArtifactToolCall("admission_argument_shape_denied");
     const entries = artifactMap.entries;
     if (toolName === "read") {
-      if (!exact(decoded, ["path"])) return invalidReviewArtifactToolCall("admission_argument_shape_denied");
+      const ranged = exact(decoded, ["path", "line_start", "line_end"]);
+      if (!ranged && !exact(decoded, ["path"])) return invalidReviewArtifactToolCall("admission_argument_shape_denied");
       let path: string;
       try { path = exactGitTreePath(repositoryRoot, decoded.path); } catch { return invalidReviewArtifactToolCall("admission_read_path_denied"); }
       const entry = entries.find((candidate) => candidate.path === path);
-      return entry === undefined ? invalidReviewArtifactToolCall("admission_read_target_denied") : { state: "valid", value: { kind: "read", entry, projection: Object.freeze({ path: entry.path }) } };
+      if (entry === undefined) return invalidReviewArtifactToolCall("admission_read_target_denied");
+      if (!ranged) return { state: "valid", value: { kind: "read", entry, projection: Object.freeze({ path: entry.path }) } };
+      const lineStart = decoded.line_start as number;
+      const lineEnd = decoded.line_end as number;
+      if (!Number.isSafeInteger(lineStart) || !Number.isSafeInteger(lineEnd) || lineStart < 1 || lineEnd < lineStart || lineEnd - lineStart + 1 > MAX_RANGED_READ_LINES) return invalidReviewArtifactToolCall("admission_argument_shape_denied");
+      const lines = entry.bytes.split("\n");
+      if (entry.bytes.endsWith("\n")) lines.pop();
+      if (lineStart > lines.length || lineEnd > lines.length) return invalidReviewArtifactToolCall("admission_argument_shape_denied");
+      return { state: "valid", value: { kind: "read", entry, lineStart, lineEnd, projection: Object.freeze({ path: entry.path, line_start: lineStart, line_end: lineEnd }) } };
     }
     if (toolName !== "search") return invalidReviewArtifactToolCall("admission_tool_denied");
     if (!exact(decoded, ["query"]) && !exact(decoded, ["query", "path"])) return invalidReviewArtifactToolCall("admission_argument_shape_denied");
@@ -1527,7 +1563,9 @@ function reviewArtifactTools(
         throw new Error("review_artifact_read_arguments_invalid");
       }
       onHandler?.("read", validated.value.projection, invocation);
-      return canonicalJson({ repositoryRevision: revision, path: validated.value.entry.path, content: validated.value.entry.bytes });
+      return validated.value.lineStart === undefined || validated.value.lineEnd === undefined
+        ? canonicalJson({ repositoryRevision: revision, path: validated.value.entry.path, content: validated.value.entry.bytes })
+        : canonicalJson({ repositoryRevision: revision, path: validated.value.entry.path, line_start: validated.value.lineStart, line_end: validated.value.lineEnd, content: rangedReadContent(validated.value.entry.bytes, validated.value.lineStart, validated.value.lineEnd) });
     },
   };
   const searchTool: Tool = {
@@ -1961,6 +1999,8 @@ function taskPrompt(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: Transit
       "Evaluate only planned scope, authority, sequence, repository and artifact bindings, API feasibility, exclusions, determinism, replay and identity separation, compatibility, and test strategy.",
       "Do not require completed May implementation, Mack validation, publication evidence, final acceptance, or later human evidence. This technical review grants no authority.",
       "Use only the host-backed read and search tools. Do not invoke or describe bash, shell, filesystem, or Git commands. The runtime filesystem is not the repository authority.",
+      "read schema: {path:string, line_start?:safe integer >=1, line_end?:safe integer >=1}; line_start and line_end must appear together, line_start <= line_end, inclusive span <=400, and both must be within EOF. Unranged read returns {repositoryRevision,path,content}; ranged read returns {repositoryRevision,path,line_start,line_end,content}, with UTF-8 LF line semantics and no synthetic terminal empty line.",
+      "search schema: {query:string length 1..1024, path?:string}; unknown keys and all excluded tools are denied.",
       "The host tools read the exact bound Git tree. If a tool is needed, call read or search directly; do not infer repository unavailability from the runtime environment.",
       `reviewPhase=${request.reviewPhase}`,
       `repositoryRoot=${request.repositoryRoot}`,
@@ -1986,6 +2026,8 @@ function taskPrompt(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: Transit
   return [
     "Review the exact transition plan at the bound repository revision. Return only one compact JSON object; no Markdown or prose.",
     "Use only the host-backed read and search tools. Do not invoke or describe bash, shell, filesystem, or Git commands. The runtime filesystem is not the repository authority.",
+    "read schema: {path:string, line_start?:safe integer >=1, line_end?:safe integer >=1}; line_start and line_end must appear together, line_start <= line_end, inclusive span <=400, and both must be within EOF. Unranged read returns {repositoryRevision,path,content}; ranged read returns {repositoryRevision,path,line_start,line_end,content}, with UTF-8 LF line semantics and no synthetic terminal empty line.",
+    "search schema: {query:string length 1..1024, path?:string}; unknown keys and all excluded tools are denied.",
     "The host tools read the exact bound Git tree. If a tool is needed, call read or search directly; do not infer repository unavailability from the runtime environment.",
     `repositoryRoot=${request.repositoryRoot}`,
     `repositoryId=${request.repositoryId}`,
@@ -2636,7 +2678,8 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1OrV2, sou
   if (receipt.state === "failed" || receipt.state === "cancelled") {
     if (evidence.outcome !== receipt.state) throw new Error("dispatch_evidence_outcome_invalid");
     const dispositionCode = typeof evidence.dispositionCode === "string" && id(evidence.dispositionCode) ? evidence.dispositionCode : String(evidence.outcome).toUpperCase();
-    return deepFreeze({ ...common, state: receipt.state, code: dispositionCode, errors: Array.isArray(evidence.errors) ? evidence.errors.filter((value): value is string => typeof value === "string") : [], evidencePath, handoff: null });
+    const admissionFailure = replayAdmissionFailure(evidence);
+    return deepFreeze({ ...common, state: receipt.state, code: dispositionCode, errors: Array.isArray(evidence.errors) ? evidence.errors.filter((value): value is string => typeof value === "string") : [], ...(admissionFailure === undefined ? {} : { admissionFailure }), evidencePath, handoff: null });
   }
   if (evidence.outcome === "REVISE") {
     const planFile = await revalidateResolvedTransitionPlanSource(request, source);
@@ -2827,6 +2870,10 @@ function createCallbackObservationRecorder(expectedSessionId: string) {
   };
   return Object.freeze({
     record,
+    admissionFailure: (): CopilotFuryAdmissionFailureV1 | undefined => {
+      const first = records.find((candidate) => candidate.decision === "deny" && candidate.reason.startsWith("admission_") && candidate.reason !== "admission_sticky_denied");
+      return first === undefined ? undefined : deepFreeze({ schemaVersion: 1, reason: first.reason as CopilotFuryAdmissionReasonV1, ordinal: first.ordinal, tool: first.tool, argumentShape: first.argumentShape, recovery: ADMISSION_FAILURE_RECOVERY });
+    },
     snapshot: (): CopilotFuryCallbackObservationV1 => deepFreeze({ version: COPILOT_FURY_CALLBACK_OBSERVATION_VERSION, totalCount, truncated, records: [...records] }),
   });
 }
@@ -2940,8 +2987,8 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
     let unauthorizedToolOrEffectObserved = false;
     let admissionDenied = false;
     let confirmedCancellation = false;
-    const pendingAdmissions = new Map<string, Readonly<{ tool: "read" | "search"; projection: Readonly<Record<string, string>> }>>();
-    const admissionKey = (tool: "read" | "search", projection: Readonly<Record<string, string>>): string => canonicalJson({ tool, projection });
+    const pendingAdmissions = new Map<string, Readonly<{ tool: "read" | "search"; projection: Readonly<Record<string, unknown>> }>>();
+    const admissionKey = (tool: "read" | "search", projection: Readonly<Record<string, unknown>>): string => canonicalJson({ tool, projection });
     const allowed = new Set<string>(input.toolBinding.modelFacingToolNames);
     const recordDeniedTool = (tool: string) => {
       policyDecisions.push({ tool: callbackToolIdentity(tool), decision: "deny" });
@@ -2955,7 +3002,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
       input.reviewArtifactMap,
       recordDeniedTool,
       (tool, args, invocation) => {
-        const key = admissionKey(tool as "read" | "search", args as Readonly<Record<string, string>>);
+        const key = admissionKey(tool as "read" | "search", args as Readonly<Record<string, unknown>>);
         const pending = pendingAdmissions.get(key);
         if (pending === undefined || invocation.sessionId !== input.configuration.sessionId || invocation.toolName !== tool || canonicalJson(pending.projection) !== canonicalJson(args)) {
           recordDeniedTool(tool);
@@ -3092,7 +3139,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
               }
               callbackObservation.record({ surface: "handler", tool, permissionKind: "unknown", arguments: hookInput.toolArgs, decision: "not_invoked", reason: "pre_tool_denied" });
             }
-            else if (!duplicate && key !== null) pendingAdmissions.set(key, admission as Readonly<{ tool: "read" | "search"; projection: Readonly<Record<string, string>> }>);
+            else if (!duplicate && key !== null) pendingAdmissions.set(key, admission as Readonly<{ tool: "read" | "search"; projection: Readonly<Record<string, unknown>> }>);
             return { permissionDecision: decision, permissionDecisionReason: decision === "deny" ? "Tool is outside the fixed read-only Fury surface." : "Tool is in the fixed read-only Fury surface.", ...(decision === "allow" ? { modifiedArgs: admission?.projection } : {}) };
           },
           onPreMcpToolCall: async (hookInput) => {
@@ -3173,16 +3220,20 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
       pendingAdmissions.clear();
       const message = error instanceof Error ? error.message : "Copilot execution failed.";
       const interrupted = /timeout|disconnect|connection|socket|closed unexpectedly/iu.test(message);
+      const admissionFailure = callbackObservation.admissionFailure();
+      const admissionDenied = admissionFailure !== undefined;
       return {
-        state: confirmedCancellation ? "cancelled" : interrupted ? "interrupted" : "failed",
-        code: message === "FURY_TOOL_BINDING_DRIFT" ? "FURY_TOOL_BINDING_DRIFT" : confirmedCancellation ? "COPILOT_CANCELLED" : interrupted ? "COPILOT_INTERRUPTED" : "COPILOT_EXECUTION_FAILED",
-        errors: [message],
+        state: admissionDenied ? "failed" : confirmedCancellation ? "cancelled" : interrupted ? "interrupted" : "failed",
+        code: admissionDenied ? ADMISSION_FAILURE_CODE : message === "FURY_TOOL_BINDING_DRIFT" ? "FURY_TOOL_BINDING_DRIFT" : confirmedCancellation ? "COPILOT_CANCELLED" : interrupted ? "COPILOT_INTERRUPTED" : "COPILOT_EXECUTION_FAILED",
+        errors: admissionDenied ? [ADMISSION_FAILURE_MESSAGE] : [message],
+        ...(admissionFailure === undefined ? {} : { admissionFailure }),
         observations: {
           modelChangeObserved,
           agentSubstitutionObserved,
           unauthorizedToolOrEffectObserved,
           policyDecisions: [...policyDecisions],
           callbackObservation: callbackObservation.snapshot(),
+          ...(admissionFailure === undefined ? {} : { admissionFailure }),
         },
       };
     } finally { await session?.disconnect().catch(() => undefined); }
@@ -3419,6 +3470,27 @@ function validAdmissionDiagnostic(value: unknown): value is CopilotFuryAdmission
     && typeof value.validationAttempted === "boolean";
 }
 
+function validAdmissionFailure(value: unknown): value is CopilotFuryAdmissionFailureV1 {
+  return safePlain(value) && exact(value, ["schemaVersion", "reason", "ordinal", "tool", "argumentShape", "recovery"])
+    && value.schemaVersion === 1
+    && typeof value.reason === "string" && value.reason.startsWith("admission_") && value.reason !== "admission_sticky_denied"
+    && Number.isSafeInteger(value.ordinal) && (value.ordinal as number) > 0
+    && ["read", "search", "unknown"].includes(value.tool as string)
+    && validCallbackArgumentShape(value.argumentShape)
+    && value.recovery === ADMISSION_FAILURE_RECOVERY;
+}
+
+function replayAdmissionFailure(evidence: Plain): CopilotFuryAdmissionFailureV1 | undefined {
+  if (Object.hasOwn(evidence, "admissionFailure")) throw new Error("replayed_admission_failure_malformed");
+  const value = safePlain(evidence.observations) ? evidence.observations.admissionFailure : undefined;
+  if (value === undefined) {
+    if (evidence.dispositionCode === ADMISSION_FAILURE_CODE) throw new Error("replayed_admission_failure_missing");
+    return undefined;
+  }
+  if (!validAdmissionFailure(value) || evidence.dispositionCode !== ADMISSION_FAILURE_CODE || canonicalJson(evidence.errors) !== canonicalJson([ADMISSION_FAILURE_MESSAGE])) throw new Error("replayed_admission_failure_malformed");
+  return value;
+}
+
 function validCallbackObservation(value: unknown): value is CopilotFuryCallbackObservationV1 {
   if (!safePlain(value) || !exact(value, ["version", "totalCount", "truncated", "records"])) return false;
   const data = value as Plain;
@@ -3445,7 +3517,7 @@ function validCallbackObservation(value: unknown): value is CopilotFuryCallbackO
 function validExecutorObservations(observations: CopilotFuryExecutorObservationsV1, request: CopilotFuryPlanDispatchRequestV1OrV2, childSessionId: string, artifactMapDigest: string): boolean {
   const executionObservation = observations.executionObservation;
   const toolBindingObserved = executionObservation !== undefined && executionObservation.version === COPILOT_FURY_EXECUTION_OBSERVATION_VERSION && executionObservation.sdkVersion === COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION && sameArray(executionObservation.registeredToolNames, EXECUTION_MODEL_TOOLS) && sameArray(executionObservation.sessionAvailableTools, EXECUTION_AVAILABLE_TOOLS) && sameArray(executionObservation.customAgentTools, EXECUTION_AGENT_TOOLS) && sameArray(executionObservation.modelFacingToolNames, EXECUTION_MODEL_TOOLS) && sameArray(executionObservation.runtimeMetadataNames, EXECUTION_MODEL_TOOLS) && Array.isArray(executionObservation.sessionExcludedTools) && executionObservation.sessionExcludedTools.length === EXECUTION_EXCLUDED_TOOLS.length && executionObservation.sessionExcludedTools.every((value, index) => value === EXECUTION_EXCLUDED_TOOLS[index]) && DIGEST.test(executionObservation.runtimeMetadataDigest) && executionObservation.artifactMapDigest === artifactMapDigest;
-  return toolBindingObserved && (observations.callbackObservation === undefined || validCallbackObservation(observations.callbackObservation)) && observations.sessionStartObserved === true && observations.sessionId === childSessionId && observations.selectedAgent === "fury" && observations.model === request.requestedModel && observations.assistantModel === request.requestedModel && observations.runtimeId === request.requestedRuntime && observations.executorId === request.requestedExecutor && observations.loadedSdkPackageVersion === COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION && observations.sessionProducer === request.requestedExecutor && typeof observations.sessionProducerVersion === "string" && observations.sessionProducerVersion.length > 0 && observations.sessionProducerVersion.length <= 255 && observations.modelChangeObserved === false && observations.agentSubstitutionObserved === false && observations.unauthorizedToolOrEffectObserved === false;
+  return toolBindingObserved && observations.admissionFailure === undefined && (observations.callbackObservation === undefined || validCallbackObservation(observations.callbackObservation)) && observations.sessionStartObserved === true && observations.sessionId === childSessionId && observations.selectedAgent === "fury" && observations.model === request.requestedModel && observations.assistantModel === request.requestedModel && observations.runtimeId === request.requestedRuntime && observations.executorId === request.requestedExecutor && observations.loadedSdkPackageVersion === COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION && observations.sessionProducer === request.requestedExecutor && typeof observations.sessionProducerVersion === "string" && observations.sessionProducerVersion.length > 0 && observations.sessionProducerVersion.length <= 255 && observations.modelChangeObserved === false && observations.agentSubstitutionObserved === false && observations.unauthorizedToolOrEffectObserved === false;
 }
 
 export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source: InternalResolvedTransitionPlanSourceV1, suppliedDependencies: CopilotFuryPlanDispatchDependenciesV1 = {}): Promise<CopilotFuryPlanDispatchResultV1> {
@@ -3652,6 +3724,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       execution = { state: "failed", code: COPILOT_FURY_PLAN_PHASE_CONTRACT_ERROR_CODE_V2, errors: ["Fury exhausted the bounded repair lifecycle without producing a valid architecture-plan result."], observations: execution.observations };
     }
     if (execution.state !== "completed") originalDisposition = { code: execution.code, errors: [...execution.errors] };
+    const admissionFailure = execution.state === "completed" ? undefined : execution.admissionFailure ?? execution.observations.admissionFailure;
     terminalUncertain = true;
     await suppliedDependencies.beforeTerminalRevalidation?.();
     const terminalObservation = await verifyLiveBinding(request, source, observation, planFile, card, reviewArtifactMap, suppliedDependencies.userCopilotHome);
@@ -3686,7 +3759,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       const evidenceReadback = await parseEvidenceFile(request.repositoryRoot, evidencePath);
       if (recoveryBinding !== null) validateSuccessorEvidence(evidenceReadback, terminalReadback, recoveryBinding);
       if (evidenceReadback.evidenceDigest !== evidence.evidenceDigest || evidenceReadback.receiptId !== terminal.receiptId || evidenceReadback.packetDigest !== claim.value.packetDigest || terminalReadback.outputEvidenceRefs === null || !terminalReadback.outputEvidenceRefs.includes(evidence.evidenceDigest)) throw new Error("terminal_readback_mismatch");
-      return deepFreeze({ contractVersion: request.contractVersion, authority: "none", missionId: request.missionId, state: execution.state, code: execution.code, errors: [...execution.errors], receiptId: claim.value.receipt.receiptId, evidencePath, replayed: false, handoff: null });
+      return deepFreeze({ contractVersion: request.contractVersion, authority: "none", missionId: request.missionId, state: execution.state, code: execution.code, errors: [...execution.errors], ...(admissionFailure === undefined ? {} : { admissionFailure }), receiptId: claim.value.receipt.receiptId, evidencePath, replayed: false, handoff: null });
     }
     if (!validExecutorObservations(execution.observations, request, configuration.sessionId, reviewArtifactMap.digest)) throw new Error("executor_observation_mismatch");
     const result = parseClosedResultText(execution.outputText, request, plan);

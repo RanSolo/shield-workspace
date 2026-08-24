@@ -2490,6 +2490,65 @@ test("production admission rejects hostile JSON, byte, depth, path, key, and nam
   }
 });
 
+test("production ranged reads are paired, bounded, LF-deterministic, redacted, and replay-safe", async () => {
+  const current = await fixture();
+  const rangedPath = "ranged-read-fixture.txt";
+  await writeFile(join(current.root, rangedPath), "alpha\nbeta\ngamma\n", "utf8");
+  git(current.root, ["add", rangedPath]);
+  git(current.root, ["commit", "-qm", "add ranged read fixture"]);
+  current.request = { ...current.request, headRevision: git(current.root, ["rev-parse", "HEAD"]) };
+  const harness = productionSdkHarness({
+    preToolUseCalls: [
+      { toolName: "read", toolArgs: { path: rangedPath } },
+      { toolName: "read", toolArgs: { path: rangedPath, line_start: 1, line_end: 2 } },
+    ],
+    outputText: productionPassOutput(current),
+  });
+  const result = await runProductionExecutor(current, harness);
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  assert.deepEqual(harness.calls.sessionConfig.tools.find(({ name }) => name === "read").parameters.properties.line_start, { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: "Optional 1-based inclusive start line; must be paired with line_end." });
+  assert.equal(JSON.parse(harness.calls.toolResults[0].result).content, "alpha\nbeta\ngamma\n");
+  assert.deepEqual(JSON.parse(harness.calls.toolResults[1].result), { repositoryRevision: current.request.headRevision, path: rangedPath, line_start: 1, line_end: 2, content: "alpha\nbeta\n" });
+
+  for (const toolArgs of [
+    { path: rangedPath, line_start: 1 },
+    { path: rangedPath, line_end: 2 },
+    { path: rangedPath, line_start: 2, line_end: 1 },
+    { path: rangedPath, line_start: 1, line_end: 401 },
+    { path: rangedPath, line_start: 1, line_end: 4 },
+    { path: rangedPath, line_start: 1, line_end: 2, secret: "do-not-retain" },
+  ]) {
+    const denied = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [{ toolName: "read", toolArgs }] }));
+    assert.equal(denied.state, "failed", JSON.stringify(denied));
+    assert.equal(denied.code, "FURY_TOOL_ADMISSION_DENIED");
+    assert.deepEqual(denied.errors, ["Fury tool admission denied; create a fresh corrected successor."]);
+    assert.equal(denied.admissionFailure.schemaVersion, 1);
+    assert.equal(denied.admissionFailure.reason, "admission_argument_shape_denied");
+    assert.equal(denied.admissionFailure.ordinal, 1);
+    assert.equal(denied.admissionFailure.tool, "read");
+    assert.equal(denied.admissionFailure.recovery, "fresh_corrected_successor_required");
+    assert.equal(JSON.stringify(denied).includes("do-not-retain"), false);
+    assert.equal(JSON.stringify(denied).includes(rangedPath), false);
+  }
+
+  const resolved = await resolveCommittedTransitionPlanSourceV1(current.request);
+  assert.equal(resolved.state, "valid", JSON.stringify(resolved));
+  const firstHarness = productionSdkHarness({ preToolUseCalls: [{ toolName: "read", toolArgs: { path: rangedPath, line_start: 1 } }] });
+  const first = await dispatchCopilotFuryPlanReviewCoreV1(current.request, resolved.source, {
+    executor: createCopilotFuryPlanExecutorV1({ async loadSdk() { return firstHarness.module; }, async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; } }),
+  });
+  assert.equal(first.state, "failed", JSON.stringify(first));
+  assert.equal(first.code, "FURY_TOOL_ADMISSION_DENIED");
+  assert.deepEqual(first.admissionFailure, { schemaVersion: 1, reason: "admission_argument_shape_denied", ordinal: 1, tool: "read", argumentShape: { kind: "object", keys: ["path", "unknown"], entries: [{ kind: "string" }, { kind: "number" }] }, recovery: "fresh_corrected_successor_required" });
+  const secondHarness = productionSdkHarness({ outputText: productionPassOutput(current) });
+  const replay = await dispatchCopilotFuryPlanReviewCoreV1(current.request, resolved.source, {
+    executor: createCopilotFuryPlanExecutorV1({ async loadSdk() { return secondHarness.module; }, async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; } }),
+  });
+  assert.equal(replay.replayed, true, JSON.stringify(replay));
+  assert.deepEqual(replay.admissionFailure, first.admissionFailure);
+  assert.equal(secondHarness.calls.createSession, 0);
+});
+
 test("production admission callback diagnostics classify bounded denial branches without sensitive values", async () => {
   const cases = [
     ["callback-session", { toolName: "read", toolArgs: { path: "package.json" }, sessionId: "wrong-session" }, "admission_session_denied", { callbackSessionMatch: false, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: false }],
