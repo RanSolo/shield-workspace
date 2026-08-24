@@ -2658,6 +2658,7 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1OrV2, sou
       if (expectedPacket === undefined) throw new Error("historical_v1_replay_expectation_missing");
       validateHistoricalV1EvidenceBinding(evidence, request, receipt, claim.packetDigest, expectedPacket, recovery);
     }
+    replayAdmissionFailure(evidence);
     if (evidence.evidenceDigest !== evidenceDigest || evidence.receiptId !== receipt.receiptId || evidence.packetDigest !== claim.packetDigest || evidence.outcome !== "interrupted" || evidence.dispositionCode !== receipt.originalDisposition.code || canonicalJson(evidence.errors) !== canonicalJson(receipt.originalDisposition.errors)) throw new Error("interrupted_recovery_binding_mismatch");
     return deepFreeze({ ...common, state: "recovery_required" as const, code: receipt.originalDisposition.code, errors: [...receipt.originalDisposition.errors], evidencePath, handoff: null });
   }
@@ -2682,10 +2683,10 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1OrV2, sou
   }
   if (recovery !== null) validateSuccessorEvidence(evidence, receipt, recovery);
   if (receipt.outputEvidenceRefs === null || !receipt.outputEvidenceRefs.includes(evidence.evidenceDigest as string)) throw new Error("dispatch_evidence_receipt_binding_mismatch");
+  const admissionFailure = replayAdmissionFailure(evidence);
   if (receipt.state === "failed" || receipt.state === "cancelled") {
     if (evidence.outcome !== receipt.state) throw new Error("dispatch_evidence_outcome_invalid");
     const dispositionCode = typeof evidence.dispositionCode === "string" && id(evidence.dispositionCode) ? evidence.dispositionCode : String(evidence.outcome).toUpperCase();
-    const admissionFailure = replayAdmissionFailure(evidence);
     return deepFreeze({ ...common, state: receipt.state, code: dispositionCode, errors: Array.isArray(evidence.errors) ? evidence.errors.filter((value): value is string => typeof value === "string") : [], ...(admissionFailure === undefined ? {} : { admissionFailure }), evidencePath, handoff: null });
   }
   if (evidence.outcome === "REVISE") {
@@ -2836,11 +2837,13 @@ function createCallbackObservationRecorder(expectedSessionId: string) {
   let totalCount = 0;
   let truncated = false;
   let firstDenial: CopilotFuryCallbackObservationRecordV1 | null = null;
+  let firstAdmissionFailure: CopilotFuryCallbackObservationRecordV1 | null = null;
   const retainFirstDenialAsTerminalSentinel = () => {
-    if (firstDenial === null) return;
-    const preceding = records.filter((candidate) => candidate !== firstDenial).slice(0, 31);
+    const sentinel = firstAdmissionFailure ?? firstDenial;
+    if (sentinel === null) return;
+    const preceding = records.filter((candidate) => candidate !== sentinel).slice(0, 31);
     records.length = 0;
-    records.push(...preceding, firstDenial);
+    records.push(...preceding, sentinel);
   };
   const record = (input: Readonly<{
     surface: CopilotFuryCallbackSurfaceV1;
@@ -2869,6 +2872,7 @@ function createCallbackObservationRecorder(expectedSessionId: string) {
     });
     totalCount = totalCount === Number.MAX_SAFE_INTEGER ? totalCount : totalCount + 1;
     if (firstDenial === null && (record.decision === "deny" || record.decision === "reject")) firstDenial = record;
+    if (firstAdmissionFailure === null && record.decision === "deny" && ADMISSION_FAILURE_REASONS.has(record.reason as CopilotFuryAdmissionReasonV1)) firstAdmissionFailure = record;
     if (records.length < 32) records.push(record);
     else {
       truncated = true;
@@ -2878,7 +2882,7 @@ function createCallbackObservationRecorder(expectedSessionId: string) {
   return Object.freeze({
     record,
     admissionFailure: (): CopilotFuryAdmissionFailureV1 | undefined => {
-      const first = records.find((candidate) => candidate.decision === "deny" && candidate.reason.startsWith("admission_") && candidate.reason !== "admission_sticky_denied");
+      const first = records.reduce<CopilotFuryCallbackObservationRecordV1 | undefined>((candidate, record) => record.decision === "deny" && ADMISSION_FAILURE_REASONS.has(record.reason as CopilotFuryAdmissionReasonV1) && (candidate === undefined || record.ordinal < candidate.ordinal) ? record : candidate, undefined);
       return first === undefined ? undefined : deepFreeze({ schemaVersion: 1, reason: first.reason as CopilotFuryAdmissionReasonV1, ordinal: first.ordinal, tool: first.tool, argumentShape: first.argumentShape, recovery: ADMISSION_FAILURE_RECOVERY });
     },
     snapshot: (): CopilotFuryCallbackObservationV1 => deepFreeze({ version: COPILOT_FURY_CALLBACK_OBSERVATION_VERSION, totalCount, truncated, records: [...records] }),
@@ -3489,7 +3493,7 @@ function validAdmissionFailure(value: unknown): value is CopilotFuryAdmissionFai
 
 function firstAdmissionFailureCallback(value: unknown): CopilotFuryCallbackObservationRecordV1 | undefined {
   if (!validCallbackObservation(value)) return undefined;
-  return value.records.find((record) => record.decision === "deny" && ADMISSION_FAILURE_REASONS.has(record.reason as CopilotFuryAdmissionReasonV1));
+  return value.records.reduce<CopilotFuryCallbackObservationRecordV1 | undefined>((candidate, record) => record.decision === "deny" && ADMISSION_FAILURE_REASONS.has(record.reason as CopilotFuryAdmissionReasonV1) && (candidate === undefined || record.ordinal < candidate.ordinal) ? record : candidate, undefined);
 }
 
 function admissionFailureFromCallback(record: CopilotFuryCallbackObservationRecordV1): CopilotFuryAdmissionFailureV1 {
@@ -3497,6 +3501,7 @@ function admissionFailureFromCallback(record: CopilotFuryCallbackObservationReco
 }
 
 function validateAdmissionFailureAgreement(
+  terminalState: unknown,
   code: unknown,
   errors: unknown,
   observations: unknown,
@@ -3510,7 +3515,7 @@ function validateAdmissionFailureAgreement(
   const hasSignal = hasReturned || hasObserved || code === ADMISSION_FAILURE_CODE || callback !== undefined;
   if (!hasSignal) return undefined;
   const observed = observationObject?.admissionFailure;
-  if (!validAdmissionFailure(returned) || !validAdmissionFailure(observed) || !validCallbackObservation(observationObject?.callbackObservation) || callback === undefined ||
+  if (terminalState !== "failed" || !validAdmissionFailure(returned) || !validAdmissionFailure(observed) || !validCallbackObservation(observationObject?.callbackObservation) || callback === undefined ||
       code !== ADMISSION_FAILURE_CODE || canonicalJson(errors) !== canonicalJson([ADMISSION_FAILURE_MESSAGE])) throw new Error(errorCode);
   const projected = admissionFailureFromCallback(callback);
   if (canonicalJson(returned) !== canonicalJson(observed) || canonicalJson(returned) !== canonicalJson(projected)) throw new Error(errorCode);
@@ -3519,7 +3524,7 @@ function validateAdmissionFailureAgreement(
 
 function replayAdmissionFailure(evidence: Plain): CopilotFuryAdmissionFailureV1 | undefined {
   if (Object.hasOwn(evidence, "admissionFailure")) throw new Error("replayed_admission_failure_malformed");
-  return validateAdmissionFailureAgreement(evidence.dispositionCode, evidence.errors, evidence.observations, safePlain(evidence.observations) ? evidence.observations.admissionFailure : undefined, "replayed_admission_failure_malformed");
+  return validateAdmissionFailureAgreement(evidence.outcome, evidence.dispositionCode, evidence.errors, evidence.observations, safePlain(evidence.observations) ? evidence.observations.admissionFailure : undefined, "replayed_admission_failure_malformed");
 }
 
 function validCallbackObservation(value: unknown): value is CopilotFuryCallbackObservationV1 {
@@ -3756,6 +3761,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     }
     if (execution.state !== "completed") originalDisposition = { code: execution.code, errors: [...execution.errors] };
     const admissionFailure = validateAdmissionFailureAgreement(
+      execution.state,
       execution.state === "completed" ? undefined : execution.code,
       execution.state === "completed" ? [] : execution.errors,
       execution.observations,
