@@ -18,9 +18,7 @@
   ],
   "publicationPaths": [
     "docs/missions/issue-384-fury-tool-policy-plan.md",
-    "docs/missions/issue-384-transition-plan.json",
-    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
-    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs"
+    "docs/missions/issue-384-transition-plan.json"
   ],
   "approvedActionIds": [
     "action:issue-384:implement",
@@ -54,6 +52,6 @@
     "release",
     "final_acceptance"
   ],
-  "id": "transition-plan:Zl2XFEK_FDMQ13PAu8RwL5HcZflnk9zwUm4YWq2WZXk",
-  "digest": "sha256:Zl2XFEK_FDMQ13PAu8RwL5HcZflnk9zwUm4YWq2WZXk"
+  "id": "transition-plan:CIPFYNu1owpBohE74DFlVeNalgh7XFDcPScQ1Ju4b1s",
+  "digest": "sha256:CIPFYNu1owpBohE74DFlVeNalgh7XFDcPScQ1Ju4b1s"
 }
