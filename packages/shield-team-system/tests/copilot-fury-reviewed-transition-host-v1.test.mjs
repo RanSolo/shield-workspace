@@ -1126,6 +1126,8 @@ test("a dispatch beyond the bounded host wait stays pending and eventually repla
   const pending = JSON.parse(observer.stdout);
   assert.equal(pending.state, "blocked", JSON.stringify(pending));
   assert.equal(pending.code, "DISPATCH_PENDING", JSON.stringify(pending));
+  assert.match(pending.receiptId, /^receipt:/, JSON.stringify(pending));
+  assert.equal(pending.errors[0], "The exact dispatch receipt remains active after the bounded host wait; retry the same receipt without reinvoking Fury.");
   assert.equal(graphExists(current), false);
   assert.equal((await readFile(counter, "utf8")).trim().split("\n").length, 1);
 

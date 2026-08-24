@@ -565,7 +565,7 @@ export type CopilotFuryPlanDispatchResultV1 =
   | (CommonDispatchResultV1 & Readonly<{ state: "completed"; disposition: "REVISE"; findings: readonly CopilotFuryPlanFindingV1[]; handoff: null }>)
   | (CommonDispatchResultV1 & Readonly<{ state: "failed" | "cancelled"; code: string; errors: readonly string[]; handoff: null }>)
   | (CommonDispatchResultV1 & Readonly<{ state: "recovery_required"; code: string; errors: readonly string[]; handoff: null }>)
-  | Readonly<{ contractVersion: typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION | typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2; authority: "none"; state: "blocked" | "invalid"; code: string; errors: readonly string[]; receiptId: null; evidencePath: null; replayed: false; handoff: null }>;
+  | Readonly<{ contractVersion: typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION | typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2; authority: "none"; state: "blocked" | "invalid"; code: string; errors: readonly string[]; receiptId: string | null; evidencePath: null; replayed: false; handoff: null }>;
 
 type StableFile = Readonly<{ path: string; bytes: string; identity: string; rawSha256: string }>;
 export type InternalLegacyDerivedTransitionPlanProvenanceV1 = Readonly<{
@@ -2558,8 +2558,18 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1OrV2, sou
     if (evidence.evidenceDigest !== evidenceDigest || evidence.receiptId !== receipt.receiptId || evidence.packetDigest !== claim.packetDigest || evidence.outcome !== "interrupted" || evidence.dispositionCode !== receipt.originalDisposition.code || canonicalJson(evidence.errors) !== canonicalJson(receipt.originalDisposition.errors)) throw new Error("interrupted_recovery_binding_mismatch");
     return deepFreeze({ ...common, state: "recovery_required" as const, code: receipt.originalDisposition.code, errors: [...receipt.originalDisposition.errors], evidencePath, handoff: null });
   }
-  if (receipt.state === "started" || receipt.state === "resumed" || receipt.state === "interrupted") {
-    return deepFreeze({ ...common, state: "recovery_required" as const, code: "RECOVERY_REQUIRED", errors: ["Existing dispatch is nonterminal and cannot be reinvoked."], evidencePath: null, handoff: null });
+  if (receipt.state === "started" || receipt.state === "resumed") {
+    return deepFreeze({
+      ...common,
+      state: "recovery_required" as const,
+      code: "DISPATCH_PENDING",
+      errors: ["The exact dispatch receipt remains active; retry the same receipt without reinvoking Fury."],
+      evidencePath: null,
+      handoff: null,
+    });
+  }
+  if (receipt.state === "interrupted") {
+    return deepFreeze({ ...common, state: "recovery_required" as const, code: "RECOVERY_REQUIRED", errors: ["Existing interrupted dispatch has no verifiable recovery evidence."], evidencePath: null, handoff: null });
   }
   const evidencePath = await terminalEvidencePathFromReceipt(request, receipt, claim.packetDigest);
   const evidence = await parseEvidenceFile(request.repositoryRoot, evidencePath);
