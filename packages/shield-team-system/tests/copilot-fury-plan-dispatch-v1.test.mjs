@@ -198,6 +198,77 @@ function historicalV1Ledger(current, request, state, { mutateReceipt = (value) =
   return { identity, projection, packetDigest: () => packetDigest, evidence: () => evidence, readDispatchLedger: async () => ({ state: "valid", value: { logPath: join(current.root, ".shield", "dispatch-receipts.jsonl"), entries: [], projections: [projection] } }) };
 }
 
+test("exact replay reobserves durable pending and late terminal states without reinvocation", async () => {
+  for (const state of ["started", "completed", "failed", "cancelled"]) {
+    const current = await fixture();
+    const request = v1Request(current);
+    const observedLedger = historicalV1Ledger(current, request, state);
+    const startedLedger = state === "started" ? observedLedger : historicalV1Ledger(current, request, "started");
+    const calls = { execute: 0 };
+    const executor = {
+      async preflight() { throw new Error("replay must not preflight"); },
+      async execute() { calls.execute += 1; throw new Error("replay must not execute"); },
+    };
+    const result = await dispatchCopilotFuryPlanReviewV1(request, {
+      executor,
+      userCopilotHome: current.userCopilotHome,
+      readDispatchLedger: startedLedger.readDispatchLedger,
+      async claimDispatchPacket() {
+        return { state: "valid", logPath: join(current.root, ".shield", "dispatch-receipts.jsonl"), byteLength: 0, packetDigest: startedLedger.packetDigest(), receipt: startedLedger.projection, claimStatus: "already_claimed" };
+      },
+      async durableSessionObserver({ receipt }) {
+        if (state === "started") return { state: "pending", receipt };
+        return { state: "terminal", receipt: observedLedger.projection };
+      },
+    });
+    assert.equal(calls.execute, 0, `${state}: executor was reinvoked`);
+    if (state === "started") {
+      assert.equal(result.state, "recovery_required", JSON.stringify(result));
+      assert.equal(result.code, "DISPATCH_PENDING");
+      assert.equal(result.receiptId, startedLedger.projection.receiptId);
+    } else if (state === "completed") {
+      assert.equal(result.state, "completed", JSON.stringify(result));
+      assert.equal(result.disposition, "REVISE");
+    } else {
+      assert.equal(result.state, state, JSON.stringify(result));
+    }
+  }
+});
+
+test("durable replay rejects stale identity deterministically without execution", async () => {
+  const current = await fixture();
+  const request = v1Request(current);
+  const startedLedger = historicalV1Ledger(current, request, "started");
+  const terminalLedger = historicalV1Ledger(current, request, "completed");
+  const result = await dispatchCopilotFuryPlanReviewV1(request, {
+    executor: { async preflight() { throw new Error("must not preflight"); }, async execute() { throw new Error("must not execute"); } },
+    userCopilotHome: current.userCopilotHome,
+    readDispatchLedger: startedLedger.readDispatchLedger,
+    async claimDispatchPacket() { return { state: "valid", logPath: join(current.root, ".shield", "dispatch-receipts.jsonl"), byteLength: 0, packetDigest: startedLedger.packetDigest(), receipt: startedLedger.projection, claimStatus: "already_claimed" }; },
+    async durableSessionObserver({ receipt }) { return { state: "terminal", receipt: { ...terminalLedger.projection, artifactRevision: "sha256:stale" } }; },
+  });
+  assert.equal(result.state, "invalid", JSON.stringify(result));
+  assert.equal(result.code, "PRECLAIM_VALIDATION_FAILED");
+  assert.deepEqual(result.errors, ["durable_session_identity_drift"]);
+});
+
+test("durable replay rejects duplicate terminal evidence deterministically without execution", async () => {
+  const current = await fixture();
+  const request = v1Request(current);
+  const startedLedger = historicalV1Ledger(current, request, "started");
+  const terminalLedger = historicalV1Ledger(current, request, "completed");
+  const result = await dispatchCopilotFuryPlanReviewV1(request, {
+    executor: { async preflight() { throw new Error("must not preflight"); }, async execute() { throw new Error("must not execute"); } },
+    userCopilotHome: current.userCopilotHome,
+    readDispatchLedger: startedLedger.readDispatchLedger,
+    async claimDispatchPacket() { return { state: "valid", logPath: join(current.root, ".shield", "dispatch-receipts.jsonl"), byteLength: 0, packetDigest: startedLedger.packetDigest(), receipt: startedLedger.projection, claimStatus: "already_claimed" }; },
+    async durableSessionObserver({ receipt }) { return { state: "terminal", receipt: { ...terminalLedger.projection, outputEvidenceRefs: [...(terminalLedger.projection.outputEvidenceRefs ?? []), ...(terminalLedger.projection.outputEvidenceRefs?.slice(0, 1) ?? [])] } }; },
+  });
+  assert.equal(result.state, "invalid", JSON.stringify(result));
+  assert.equal(result.code, "PRECLAIM_VALIDATION_FAILED");
+  assert.deepEqual(result.errors, ["durable_session_terminal_evidence_ambiguous"]);
+});
+
 function architectureResult(current, overrides = {}) {
   return { schemaVersion: 2, contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: current.plan.id, reviewedArtifactRevision: current.plan.digest, verdict: "PASS", findings: [], reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2, repositoryRevision: current.request.headRevision, ...overrides };
 }
