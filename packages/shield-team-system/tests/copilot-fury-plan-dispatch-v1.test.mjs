@@ -2417,11 +2417,19 @@ test("production pending admissions tolerate duplicate SDK hooks and bounded dis
 
   const overflowHarness = productionSdkHarness({
     batchPreToolUse: true,
-    preToolUseCalls: Array.from({ length: 17 }, (_, index) => ({ toolName: "search", toolArgs: JSON.stringify({ query: `private-${index}`, path: "package.json" }) })),
+    preToolUseCalls: [
+      ...Array.from({ length: 17 }, (_, index) => ({ toolName: "search", toolArgs: JSON.stringify({ query: `private-${index}`, path: "package.json" }) })),
+      { toolName: "read", toolArgs: JSON.stringify({ path: "package.json" }) },
+    ],
   });
   const overflow = await runProductionExecutor(current, overflowHarness);
   assert.equal(overflow.state, "failed", JSON.stringify(overflow));
   assert.equal(overflow.observations.unauthorizedToolOrEffectObserved, true);
+  assert.deepEqual(overflowHarness.calls.toolResults, []);
+  assert.deepEqual(overflow.observations.callbackObservation.records.filter(({ surface }) => surface === "pre_tool").slice(-2).map(({ tool, decision }) => ({ tool, decision })), [
+    { tool: "search", decision: "deny" },
+    { tool: "read", decision: "deny" },
+  ]);
 });
 
 test("production callback observations reject permissions and redact callback payloads", async () => {

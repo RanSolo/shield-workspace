@@ -2812,6 +2812,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
     let modelChangeObserved = false;
     let agentSubstitutionObserved = false;
     let unauthorizedToolOrEffectObserved = false;
+    let admissionDenied = false;
     let confirmedCancellation = false;
     const pendingAdmissions = new Map<string, Readonly<{ tool: "read" | "search"; projection: Readonly<Record<string, string>> }>>();
     const admissionKey = (tool: "read" | "search", projection: Readonly<Record<string, string>>): string => canonicalJson({ tool, projection });
@@ -2819,6 +2820,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
     const recordDeniedTool = (tool: string) => {
       policyDecisions.push({ tool: callbackToolIdentity(tool), decision: "deny" });
       unauthorizedToolOrEffectObserved = true;
+      admissionDenied = true;
       pendingAdmissions.clear();
     };
     const immutableTools = reviewArtifactTools(
@@ -2902,6 +2904,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
           const decision = "deny" as const;
           policyDecisions.push({ tool, decision });
           unauthorizedToolOrEffectObserved = true;
+          admissionDenied = true;
           pendingAdmissions.clear();
           callbackObservation.record({ surface: "permission", identitySource: invocation, toolCallSource: request, tool, permissionKind: callbackPermissionKind(request.kind), arguments: request, decision: "reject", reason: "permission_rejected" });
           return { kind: "reject" as const, feedback: "Only the host-backed exact-Git-tree read and search tools are available; SDK path/effect permissions are denied." };
@@ -2918,12 +2921,13 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
               : null;
             const key = admission === null ? null : admissionKey(admission.tool, admission.projection);
             const duplicate = key !== null && pendingAdmissions.has(key);
-            const decision = admission !== null && (duplicate || pendingAdmissions.size < MAX_PENDING_TOOL_ADMISSIONS) ? "allow" as const : "deny" as const;
+            const decision = !admissionDenied && admission !== null && (duplicate || pendingAdmissions.size < MAX_PENDING_TOOL_ADMISSIONS) ? "allow" as const : "deny" as const;
             const tool = callbackToolIdentity(name);
             policyDecisions.push({ tool, decision });
             callbackObservation.record({ surface: "pre_tool", identitySource: hookInput, toolCallSource: hookInput, tool, permissionKind: "unknown", arguments: hookInput.toolArgs, decision, reason: decision === "deny" ? "tool_or_arguments_denied" : "exact_tool_allowed" });
             if (decision === "deny") {
               unauthorizedToolOrEffectObserved = true;
+              admissionDenied = true;
               pendingAdmissions.clear();
               callbackObservation.record({ surface: "handler", tool, permissionKind: "unknown", arguments: hookInput.toolArgs, decision: "not_invoked", reason: "pre_tool_denied" });
             }
@@ -2932,6 +2936,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
           },
           onPreMcpToolCall: async (hookInput) => {
             unauthorizedToolOrEffectObserved = true;
+            admissionDenied = true;
             pendingAdmissions.clear();
             policyDecisions.push({ tool: "unknown", decision: "deny" });
             callbackObservation.record({ surface: "pre_tool", identitySource: hookInput, toolCallSource: hookInput, tool: "unknown", permissionKind: "mcp", arguments: hookInput.arguments, decision: "deny", reason: "mcp_denied" });
