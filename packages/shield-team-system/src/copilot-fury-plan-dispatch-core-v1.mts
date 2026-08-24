@@ -2934,14 +2934,17 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
               : null;
             const key = admission === null ? null : admissionKey(admission.tool, admission.projection);
             const duplicate = key !== null && pendingAdmissions.has(key);
-            const decision = !admissionDenied && admission !== null && (duplicate || pendingAdmissions.size < MAX_PENDING_TOOL_ADMISSIONS) ? "allow" as const : "deny" as const;
+            const capacityExceeded = admission !== null && !duplicate && pendingAdmissions.size >= MAX_PENDING_TOOL_ADMISSIONS;
+            const decision = !admissionDenied && admission !== null && !capacityExceeded ? "allow" as const : "deny" as const;
             const tool = callbackToolIdentity(name);
             policyDecisions.push({ tool, decision });
             callbackObservation.record({ surface: "pre_tool", identitySource: hookInput, toolCallSource: hookInput, tool, permissionKind: "unknown", arguments: hookInput.toolArgs, decision, reason: decision === "deny" ? "tool_or_arguments_denied" : "exact_tool_allowed" });
             if (decision === "deny") {
               unauthorizedToolOrEffectObserved = true;
-              admissionDenied = true;
-              pendingAdmissions.clear();
+              if (admission === null || admissionDenied) {
+                admissionDenied = true;
+                pendingAdmissions.clear();
+              }
               callbackObservation.record({ surface: "handler", tool, permissionKind: "unknown", arguments: hookInput.toolArgs, decision: "not_invoked", reason: "pre_tool_denied" });
             }
             else if (!duplicate && key !== null) pendingAdmissions.set(key, admission as Readonly<{ tool: "read" | "search"; projection: Readonly<Record<string, string>> }>);

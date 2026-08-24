@@ -2431,10 +2431,31 @@ test("production pending admissions tolerate duplicate SDK hooks and bounded dis
   const overflow = await runProductionExecutor(current, overflowHarness);
   assert.equal(overflow.state, "failed", JSON.stringify(overflow));
   assert.equal(overflow.observations.unauthorizedToolOrEffectObserved, true);
-  assert.deepEqual(overflowHarness.calls.toolResults, []);
+  assert.deepEqual(overflowHarness.calls.toolResults.map(({ name }) => name), Array.from({ length: 16 }, () => "search"));
   assert.deepEqual(overflow.observations.callbackObservation.records.filter(({ surface }) => surface === "pre_tool").slice(-2).map(({ tool, decision }) => ({ tool, decision })), [
-    { tool: "search", decision: "deny" },
     { tool: "read", decision: "deny" },
+    { tool: "search", decision: "deny" },
+  ]);
+
+  const recoveryHarness = productionSdkHarness({
+    preToolUseCalls: [
+      {
+        toolName: "read",
+        toolArgs: { path: "package.json" },
+        beforeHandlerCalls: Array.from({ length: 16 }, (_, index) => ({ toolName: "search", toolArgs: { query: `private-${index}`, path: "package.json" } })),
+      },
+      ...Array.from({ length: 15 }, (_, index) => ({ toolName: "search", toolArgs: { query: `private-${index}`, path: "package.json" } })),
+      { toolName: "search", toolArgs: { query: "later-valid", path: "package.json" } },
+    ],
+    outputText: productionPassOutput(current),
+  });
+  const recovery = await runProductionExecutor(current, recoveryHarness);
+  assert.equal(recovery.state, "failed", JSON.stringify(recovery));
+  assert.equal(recovery.observations.unauthorizedToolOrEffectObserved, true);
+  assert.deepEqual(recoveryHarness.calls.toolResults.map(({ name }) => name), ["read", ...Array.from({ length: 16 }, () => "search")]);
+  assert.deepEqual(recovery.observations.policyDecisions.slice(-2), [
+    { tool: "search", decision: "allow" },
+    { tool: "search", decision: "allow" },
   ]);
 });
 
