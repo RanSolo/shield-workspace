@@ -2384,7 +2384,7 @@ test("production admission rejects hostile JSON, byte, depth, path, key, and nam
 test("production admission callback diagnostics classify bounded denial branches without sensitive values", async () => {
   const cases = [
     ["callback-session", { toolName: "read", toolArgs: { path: "package.json" }, sessionId: "wrong-session" }, "admission_session_denied", { callbackSessionMatch: false, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: false }],
-    ["invocation-session", { toolName: "read", toolArgs: { path: "package.json" }, invocation: { sessionId: "wrong-session", toolCallId: "wrong-call" } }, "admission_session_denied", { callbackSessionMatch: true, invocationSessionMatch: false, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: false }],
+    ["invocation-session", { toolName: "read", toolArgs: { path: "package.json" }, invocation: { sessionId: "wrong-session", toolCallId: "wrong-call" } }, "exact_tool_allowed", { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true }],
     ["non-allowlisted-tool", { toolName: "write", toolArgs: { path: "package.json" } }, "admission_tool_denied", { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: false }],
     ["decode", { toolName: "read", toolArgs: "{" }, "admission_argument_decode_denied", { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true }],
     ["shape", { toolName: "read", toolArgs: { path: "package.json", extra: true } }, "admission_argument_shape_denied", { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true }],
@@ -2549,7 +2549,7 @@ test("production callback observations reject permissions and redact callback pa
   assert.equal(observation.version, "shield.copilot-fury.callback-observation.v1");
   assert.deepEqual(observation.records.map(({ surface, tool, permissionKind, decision, reason }) => ({ surface, tool, permissionKind, decision, reason })), [
     { surface: "permission", tool: "unknown", permissionKind: "read", decision: "reject", reason: "permission_rejected" },
-    { surface: "pre_tool", tool: "unknown", permissionKind: "unknown", decision: "deny", reason: "shape_rejected" },
+    { surface: "pre_tool", tool: "unknown", permissionKind: "unknown", decision: "deny", reason: "admission_sticky_denied" },
     { surface: "handler", tool: "unknown", permissionKind: "unknown", decision: "not_invoked", reason: "shape_rejected" },
   ]);
   assert.deepEqual(observation.records[0].callbackIdentity, { sessionId: "present", toolCallId: "present" });
@@ -2581,7 +2581,7 @@ test("production callback observations reject proxy, accessor, cycle, and over-d
     const current = await fixture();
     const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [toolCall] }));
     assert.equal(result.state, "failed", `${label}: ${JSON.stringify(result)}`);
-    assert.equal(result.observations.callbackObservation.records[0].reason, "shape_rejected", label);
+    assert.equal(result.observations.callbackObservation.records[0].reason, "admission_tool_denied", label);
     assert.equal(result.observations.callbackObservation.records[0].decision, "deny", label);
     assert.equal(result.observations.callbackObservation.records[0].argumentShape.kind, "rejected", label);
   }
@@ -2609,7 +2609,7 @@ test("production callback observations preserve a denial before the cap as the f
   assert.equal(observation.records.length, 32);
   assert.equal(observation.records.at(-1).ordinal, 1);
   assert.equal(observation.records.at(-1).decision, "deny");
-  assert.equal(observation.records.at(-1).reason, "tool_or_arguments_denied");
+  assert.equal(observation.records.at(-1).reason, "admission_tool_denied");
   assert.equal(observation.records.filter(({ ordinal }) => ordinal === 1).length, 1);
   assert.deepEqual(observation.records.slice(0, -1).map(({ ordinal }) => ordinal), Array.from({ length: 31 }, (_, index) => index + 2));
 });
@@ -2636,7 +2636,7 @@ test("production callback observations preserve a denial after the cap as the fi
   assert.equal(observation.records.length, 32);
   assert.equal(observation.records.at(-1).ordinal, 33);
   assert.equal(observation.records.at(-1).decision, "deny");
-  assert.equal(observation.records.at(-1).reason, "tool_or_arguments_denied");
+  assert.equal(observation.records.at(-1).reason, "admission_tool_denied");
   assert.deepEqual(observation.records.slice(0, -1).map(({ ordinal }) => ordinal), Array.from({ length: 31 }, (_, index) => index + 1));
 });
 
