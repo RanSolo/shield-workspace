@@ -455,6 +455,7 @@ export interface CopilotFuryPlanExecutorV1 {
 export interface CopilotFuryPlanDispatchDependenciesV1 {
   readonly executor?: CopilotFuryPlanExecutorV1;
   readonly userCopilotHome?: string;
+  readonly repositoryRootOverride?: string;
   readonly beforeClaim?: () => void | Promise<void>;
   readonly afterClaimBeforeExecution?: () => void | Promise<void>;
   readonly beforeTerminalRevalidation?: () => void | Promise<void>;
@@ -3126,7 +3127,10 @@ function validExecutorObservations(observations: CopilotFuryExecutorObservations
 export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source: InternalResolvedTransitionPlanSourceV1, suppliedDependencies: CopilotFuryPlanDispatchDependenciesV1 = {}): Promise<CopilotFuryPlanDispatchResultV1> {
   const validatedRequest = validateCopilotFuryPlanDispatchRequestV1OrV2(input);
   if (validatedRequest.state === "invalid") return invalid(validatedRequest.code, ...validatedRequest.errors);
-  const request = validatedRequest.value;
+  const packetRequest = validatedRequest.value;
+  const request = suppliedDependencies.repositoryRootOverride === undefined
+    ? packetRequest
+    : deepFreeze({ ...packetRequest, repositoryRoot: suppliedDependencies.repositoryRootOverride });
   const dependencies = {
     claimDispatchPacket: suppliedDependencies.claimDispatchPacket ?? claimSeatDispatchPacketV1,
     appendDispatchReceipt: suppliedDependencies.appendDispatchReceipt ?? appendSeatDispatchReceiptEntryV1,
@@ -3182,11 +3186,11 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     const existing = projections.filter((candidate) => candidate.receiptId === predecessorIdentity.receiptId);
     if (existing.length > 1) return invalidFor(request, "duplicate_start", "Existing packet claim is ambiguous.");
     packetConfiguration = sdkConfiguration(request, deriveCopilotSdkSessionIdV1(predecessorIdentity.childSessionId));
-    packetBytes = new TextEncoder().encode(canonicalJson(packetBody(request, plan, card, observation, packetConfiguration)));
+    packetBytes = new TextEncoder().encode(canonicalJson(packetBody(packetRequest, plan, card, observation, packetConfiguration)));
     packetDigest = digestBase64Url(packetBytes);
     if (existing.length === 1 && request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION) {
       const legacyPacketConfiguration = sdkConfiguration(request, predecessorIdentity.childSessionId);
-      const legacyPacketBytes = new TextEncoder().encode(canonicalJson(packetBody(request, plan, card, observation, legacyPacketConfiguration)));
+      const legacyPacketBytes = new TextEncoder().encode(canonicalJson(packetBody(packetRequest, plan, card, observation, legacyPacketConfiguration)));
       const legacyPacketDigest = digestBase64Url(legacyPacketBytes);
       const legacyBinding = `evidence:packet-binding:seat-dispatch-v1:${predecessorIdentity.claimKey}:${legacyPacketDigest}`;
       if (existing[0].inputEvidenceRefs.includes(legacyBinding)) {
@@ -3219,6 +3223,16 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       claimStartedAt = recovery.startedAt;
       packetBytes = recovery.packetBytes;
       packetDigest = recovery.packetDigest;
+      const successor = projections.find((candidate) => candidate.receiptId === identity.receiptId);
+      if (successor !== undefined && successor.state !== "started" && successor.state !== "resumed") {
+        return await replayExisting(request, source, {
+          logPath: ledgerBefore.state === "valid" ? ledgerBefore.value.logPath : join(request.repositoryRoot, ".shield", "dispatch-receipts.jsonl"),
+          byteLength: 0,
+          packetDigest,
+          receipt: successor,
+          claimStatus: "already_claimed",
+        }, recoveryBinding, { plan, packetId: identity.packetId, packetBytes });
+      }
     }
     if (existing.length === 0 && projections.some((candidate) => candidate.inputEvidenceRefs.some((ref) => ref.startsWith(bindingPrefix)))) return invalidFor(request, "packet_claim_conflict", "Existing packet binding conflicts with the exact request.");
     if (request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION && existing.length === 0) {
@@ -3297,7 +3311,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     const timestamp = new Date(Math.max(Date.parse(request.timestamp.value) + 1, Date.now())).toISOString();
     if (execution.state !== "completed") {
       const outcome = execution.state;
-      const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, packetConfiguration, executionConfiguration: configuration, outcome, dispositionCode: execution.code, modelResult: null, observations: execution.observations, errors: execution.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null }, recovery: recoveryBinding }));
+      const evidence = evidenceWithDigest(evidenceBody({ request: packetRequest, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, packetConfiguration, executionConfiguration: configuration, outcome, dispositionCode: execution.code, modelResult: null, observations: execution.observations, errors: execution.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null }, recovery: recoveryBinding }));
       const evidenceBytes = `${canonicalJson(evidence)}\n`;
       const evidencePath = await writeContentAddressedArtifact(evidenceDirectory, "dispatch-evidence", evidence.evidenceDigest, evidenceBytes);
       if (execution.state === "interrupted") {
@@ -3364,7 +3378,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       reviewArtifactBytes = `${canonicalJson(review)}\n`;
       reviewArtifactPath = await writeContentAddressedArtifact(evidenceDirectory, "transition-plan-review", review.reviewDigest, reviewArtifactBytes);
     }
-    const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, packetConfiguration, executionConfiguration: configuration, outcome: result.value.verdict, dispositionCode: null, modelResult: result.value, observations: execution.observations, errors: [], artifacts: { transitionPlanPath, reviewArtifactPath }, recovery: recoveryBinding }));
+    const evidence = evidenceWithDigest(evidenceBody({ request: packetRequest, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, packetConfiguration, executionConfiguration: configuration, outcome: result.value.verdict, dispositionCode: null, modelResult: result.value, observations: execution.observations, errors: [], artifacts: { transitionPlanPath, reviewArtifactPath }, recovery: recoveryBinding }));
     const evidencePath = await writeContentAddressedArtifact(evidenceDirectory, "dispatch-evidence", evidence.evidenceDigest, `${canonicalJson(evidence)}\n`);
     const refs = result.value.verdict === "PASS" && review !== null
       ? [review.reviewId, review.reviewDigest, review.reviewedArtifactId, review.reviewedArtifactRevision, evidence.evidenceDigest]
@@ -3429,7 +3443,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       }
       const outcome = terminalUncertain ? "interrupted" as const : "failed" as const;
       const disposition = terminalUncertain ? originalDisposition : { code: "DISPATCH_FAILED", errors: [message] };
-      const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest, receiptId: claimedReceipt.receiptId, card, observation, packetConfiguration, executionConfiguration: configuration, outcome, dispositionCode: disposition.code, modelResult: null, observations: {}, errors: disposition.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null }, recovery: recoveryBinding }));
+      const evidence = evidenceWithDigest(evidenceBody({ request: packetRequest, plan, packetId, packetDigest, receiptId: claimedReceipt.receiptId, card, observation, packetConfiguration, executionConfiguration: configuration, outcome, dispositionCode: disposition.code, modelResult: null, observations: {}, errors: disposition.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null }, recovery: recoveryBinding }));
       const evidencePath = await writeContentAddressedArtifact(directory, "dispatch-evidence", evidence.evidenceDigest, `${canonicalJson(evidence)}\n`);
       const timestamp = new Date(Math.max(Date.parse(request.timestamp.value) + 1, Date.now())).toISOString();
       const receipt = terminalUncertain

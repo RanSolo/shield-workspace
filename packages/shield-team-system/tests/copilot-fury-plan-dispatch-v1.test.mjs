@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -42,6 +42,8 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_TERMINAL_ENTRY_DIGEST,
   buildCopilotFuryReviewArtifactMapV1,
   createCopilotFuryExecutionToolBindingV1,
+  dispatchCopilotFuryPlanReviewCoreV1,
+  resolveCommittedTransitionPlanSourceV1,
   validateCopilotFuryReviewArtifactMapV1,
 } from "../dist/copilot-fury-plan-dispatch-core-v1.mjs";
 import { replaySeatDispatchReceiptsV1 } from "../dist/seat-dispatch-receipt-v1.mjs";
@@ -722,7 +724,7 @@ test("historical V1 rejects receipt and complete packet substitutions and preser
   }
 });
 
-test("actual #383 ledger/evidence fixture binds recovery and production dispatch replays one terminal execution", async () => {
+test("actual #383 fixture drives one production recovery execution and zero-effect successor replay", async () => {
   assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId);
   assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_TERMINAL_ENTRY_DIGEST, ISSUE_383_RECOVERY_FIXTURE.terminalEntryDigest);
   assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST, ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest);
@@ -745,7 +747,6 @@ test("actual #383 ledger/evidence fixture binds recovery and production dispatch
   assert.equal(evidence.outcome, "failed");
   assert.equal(evidence.dispositionCode, ISSUE_383_RECOVERY_FIXTURE.dispositionCode);
   assert.deepEqual(evidence.errors, [...ISSUE_383_RECOVERY_FIXTURE.errors]);
-
   for (const [label, field, candidate] of [
     ["receipt", "receiptId", { ...predecessor, receiptId: "receipt:substitute" }],
     ["terminal entry", "lastEntryDigest", { ...predecessor, lastEntryDigest: "sha256:substitute" }],
@@ -786,33 +787,66 @@ test("actual #383 ledger/evidence fixture binds recovery and production dispatch
     );
   }
 
-  const current = await fixture();
-  const firstExecutor = executor(current.plan);
-  const failedSuccessor = {
-    ...firstExecutor.value,
+  const isolatedRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-copilot-fury-recovery-")));
+  await cp(bootstrapRoot, isolatedRoot, { recursive: true, preserveTimestamps: true });
+  const sourceLedgerPath = join(bootstrapRoot, ".shield", "dispatch-receipts.jsonl");
+  const installedLedgerPath = join(isolatedRoot, ".shield", "dispatch-receipts.jsonl");
+  await copyFile(sourceLedgerPath, installedLedgerPath);
+  const sourceEvidencePath = join(bootstrapRoot, ".shield", "audit", "copilot-fury-plan-dispatch", "df64de777e8ca9a7a553f6d80377cf324da893dbb6cac69a57f15705e6db3b84", "dispatch-evidence-ZQ2YCXxtHe-bA3F1CvdiVorSWOEblvTKL4kWSnqBKHM.json");
+  const installedEvidenceDirectory = join(isolatedRoot, ".shield", "audit", "copilot-fury-plan-dispatch", "df64de777e8ca9a7a553f6d80377cf324da893dbb6cac69a57f15705e6db3b84");
+  await mkdir(installedEvidenceDirectory, { recursive: true, mode: 0o700 });
+  await copyFile(sourceEvidencePath, join(installedEvidenceDirectory, "dispatch-evidence-ZQ2YCXxtHe-bA3F1CvdiVorSWOEblvTKL4kWSnqBKHM.json"));
+  assert.equal(await readFile(installedLedgerPath, "utf8"), await readFile(sourceLedgerPath, "utf8"));
+  assert.equal(await readFile(join(installedEvidenceDirectory, "dispatch-evidence-ZQ2YCXxtHe-bA3F1CvdiVorSWOEblvTKL4kWSnqBKHM.json"), "utf8"), await readFile(sourceEvidencePath, "utf8"));
+
+  const request = evidence.packet.request;
+  const isolatedRequest = { ...request, repositoryRoot: isolatedRoot };
+  const resolved = await resolveCommittedTransitionPlanSourceV1(isolatedRequest);
+  assert.equal(resolved.state, "valid", JSON.stringify(resolved));
+  const makeRecoveryExecutor = (effects) => ({
+    async preflight() {
+      effects.preflight += 1;
+      return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: request.requestedRuntime, executorId: request.requestedExecutor };
+    },
     async execute() {
-      firstExecutor.calls.execute += 1;
+      effects.execute += 1;
+      effects.session += 1;
+      effects.tool += 1;
       return { state: "failed", code: ISSUE_383_RECOVERY_FIXTURE.dispositionCode, errors: [...ISSUE_383_RECOVERY_FIXTURE.errors], observations: {} };
     },
-  };
-  const first = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: failedSuccessor, userCopilotHome: current.userCopilotHome });
+  });
+  const firstEffects = { preflight: 0, execute: 0, session: 0, tool: 0 };
+  const first = await dispatchCopilotFuryPlanReviewCoreV1(request, resolved.source, {
+    repositoryRootOverride: isolatedRoot,
+    executor: makeRecoveryExecutor(firstEffects),
+  });
   assert.equal(first.state, "failed", JSON.stringify(first));
   assert.equal(first.replayed, false);
-  assert.equal(firstExecutor.calls.preflight, 1);
-  assert.equal(firstExecutor.calls.execute, 1);
-  const ledgerPath = join(current.root, ".shield", "dispatch-receipts.jsonl");
-  const ledgerAfterFirst = await readFile(ledgerPath, "utf8");
-  const persistenceRoot = join(current.root, ".shield", "runtime", "copilot-fury");
+  assert.equal(first.receiptId, eligibility.successor.receiptId);
+  assert.deepEqual(firstEffects, { preflight: 1, execute: 1, session: 1, tool: 1 });
+  const ledgerAfterFirst = await readFile(installedLedgerPath, "utf8");
+  const successorReplay = replaySeatDispatchReceiptsV1(ledgerAfterFirst.trim().split("\n").map((line) => JSON.parse(line)));
+  assert.equal(successorReplay.state, "valid", JSON.stringify(successorReplay));
+  const successor = successorReplay.projections.find(({ receiptId }) => receiptId === eligibility.successor.receiptId);
+  assert.ok(successor);
+  assert.equal(successor.state, "failed");
+  assert.deepEqual(successor.outputEvidenceRefs?.length, 1);
+  const successorEvidence = JSON.parse(await readFile(join(isolatedRoot, first.evidencePath), "utf8"));
+  assert.equal(successorEvidence.recovery.predecessorReceiptId, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId);
+  assert.equal(successorEvidence.recovery.successorExecutionIdentity.receiptId, eligibility.successor.receiptId);
+  const persistenceRoot = join(isolatedRoot, ".shield", "runtime", "copilot-fury");
   const persistenceAfterFirst = await readdir(persistenceRoot);
-  const secondExecutor = executor(current.plan);
-  const second = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: secondExecutor.value, userCopilotHome: current.userCopilotHome });
+  const secondEffects = { preflight: 0, execute: 0, session: 0, tool: 0 };
+  const second = await dispatchCopilotFuryPlanReviewCoreV1(request, resolved.source, {
+    repositoryRootOverride: isolatedRoot,
+    executor: makeRecoveryExecutor(secondEffects),
+  });
   assert.equal(second.state, "failed", JSON.stringify(second));
   assert.equal(second.receiptId, first.receiptId);
   assert.equal(second.replayed, true);
-  assert.equal(secondExecutor.calls.preflight, 0);
-  assert.equal(secondExecutor.calls.execute, 0);
+  assert.deepEqual(secondEffects, { preflight: 0, execute: 0, session: 0, tool: 0 });
   assert.deepEqual(await readdir(persistenceRoot), persistenceAfterFirst);
-  assert.equal(await readFile(ledgerPath, "utf8"), ledgerAfterFirst);
+  assert.equal(await readFile(installedLedgerPath, "utf8"), ledgerAfterFirst);
 });
 
 test("V2 contract exhaustion terminalizes once with no findings and replays without execution", async () => {
@@ -2067,6 +2101,10 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal(harness.calls.initializeAndValidate, 1);
   assert.equal(harness.calls.getCurrentMetadata, 1);
   assert.deepEqual(harness.calls.toolResults.map(({ name }) => name), ["read", "search"]);
+  assert.deepEqual(harness.calls.toolResults.map(({ name, invocation }) => ({ name, invocation })), [
+    { name: "read", invocation: { sessionId: harness.calls.sessionConfig.sessionId, toolCallId: "tool-call-1", toolName: "read", arguments: { path: "package.json" } } },
+    { name: "search", invocation: { sessionId: harness.calls.sessionConfig.sessionId, toolCallId: "tool-call-2", toolName: "search", arguments: { query: "private" } } },
+  ]);
   assert.deepEqual(result.observations.callbackObservation.records.map(({ surface, tool, decision, expectedSessionMatch }) => ({ surface, tool, decision, expectedSessionMatch })), [
     { surface: "pre_tool", tool: "read", decision: "allow", expectedSessionMatch: "match" },
     { surface: "handler", tool: "read", decision: "invoked", expectedSessionMatch: "match" },
