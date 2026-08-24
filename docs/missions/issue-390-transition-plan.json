@@ -1,0 +1,48 @@
+{
+  "schemaId": "mission.transition-plan.v1",
+  "authority": "none",
+  "missionId": "mission:issue-390-fury-recovery",
+  "subjectId": "github:RanSolo/shield-workspace/issue/390",
+  "repositoryId": "RanSolo/shield-workspace",
+  "planningBaseRevision": "b62a18d1047027d80249504cb01659cadcff010c",
+  "parentPlanCommit": "bcbe76dd5f314344478372516e6df7fa3cd8cf08",
+  "parentPlanPath": "docs/missions/issue-390-interrupted-fury-recovery-plan.md",
+  "parentPlanRawSha256": "32f692ee0775fa5eaa35222de18efc1b058a22bd8c13a8058825c855de29a3b0",
+  "transitionKind": "fresh_authorize_wheels_up",
+  "boundedOutcome": "May adds durable authority-none interrupted-session and receipt recovery within the existing Fury dispatch host/core surfaces, preserving the exact receipt, reobserving durable active/completed/failed/cancelled/uncertain state without reinvocation or fabrication, and adding fast deterministic timeout/replay tests; no authority semantics or capability expansion.",
+  "approvedRelativePaths": [
+    "docs/missions/issue-390-interrupted-fury-recovery-plan.md",
+    "docs/missions/issue-390-transition-plan.json",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
+    "packages/shield-team-system/src/copilot-fury-reviewed-transition-host-v1.mts",
+    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs",
+    "packages/shield-team-system/tests/copilot-fury-reviewed-transition-host-v1.test.mjs"
+  ],
+  "publicationPaths": [
+    "docs/missions/issue-390-interrupted-fury-recovery-plan.md",
+    "docs/missions/issue-390-transition-plan.json",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
+    "packages/shield-team-system/src/copilot-fury-reviewed-transition-host-v1.mts",
+    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs",
+    "packages/shield-team-system/tests/copilot-fury-reviewed-transition-host-v1.test.mjs"
+  ],
+  "approvedActionIds": ["action:issue-390:implement", "action:issue-390:validate"],
+  "approvedEffectClasses": ["behavioral_implementation", "verification"],
+  "approvedEffectKeys": ["effect:issue-390:recovery", "effect:issue-390:validation"],
+  "approvedCapabilities": ["filesystem_write", "process_execute"],
+  "validationCommandIds": ["validation:issue-390:affected", "validation:issue-390:focused"],
+  "modelId": "gpt-5.6-luna",
+  "reasoningRuntimeId": "runtime:codex-hosted-may-luna",
+  "toolExecutorId": "executor:codex-hosted-workspace-tools",
+  "exclusions": [
+    "review.comment.publish",
+    "review.pull_request.update_draft",
+    "review.pull_request.mark_ready",
+    "merge",
+    "deployment",
+    "release",
+    "final_acceptance"
+  ],
+  "id": "transition-plan:sEhEFU8WGV4_GpCY-1V_7Jx0oRgflW8bEGe4Vso7xQ4",
+  "digest": "sha256:sEhEFU8WGV4_GpCY-1V_7Jx0oRgflW8bEGe4Vso7xQ4"
+}
