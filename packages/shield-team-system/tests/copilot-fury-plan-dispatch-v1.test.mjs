@@ -2302,6 +2302,10 @@ test("production admission decodes live JSON text and preserves exact object com
       { toolName: "read", toolArgs: { path: "package.json" } },
       { toolName: "search", toolArgs: { query: "private" } },
     ]],
+    ["canonical-root-search", [
+      { toolName: "read", toolArgs: { path: "package.json" } },
+      { toolName: "search", toolArgs: { query: "private", path: current.root } },
+    ]],
   ]) {
     const harness = productionSdkHarness({ preToolUseCalls: calls });
     const result = await runProductionExecutor(current, harness);

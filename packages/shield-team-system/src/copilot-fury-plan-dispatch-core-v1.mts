@@ -88,6 +88,10 @@ export const COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_PACKET_DIGEST = "s
 const COPILOT_FURY_PLAN_DISPATCH_BATCH_ADMISSION_RECOVERABLE_RECEIPT_ID = "receipt:BWD7KctxEGKtaap9IWyX31pDpnF94D6P" as const;
 const COPILOT_FURY_PLAN_DISPATCH_BATCH_ADMISSION_RECOVERABLE_TERMINAL_ENTRY_DIGEST = "sha256:-Ss_SP91X-KqZ4Ng2-k0AFx9902yhKC-FSaoQiLITW4" as const;
 const COPILOT_FURY_PLAN_DISPATCH_BATCH_ADMISSION_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST = "sha256:iagGiK0Atepc3A2AtXgU4I4cJz7XEBRbPJQlHvMzvGE" as const;
+const COPILOT_FURY_PLAN_DISPATCH_ROOT_SEARCH_RECOVERABLE_RECEIPT_ID = "receipt:eRCh0waoL9QxMpsfgofbd5QF7VwwwvYl" as const;
+const COPILOT_FURY_PLAN_DISPATCH_ROOT_SEARCH_RECOVERABLE_TERMINAL_ENTRY_DIGEST = "sha256:B_lydFEM_H-yFnVOYkRvfhw7RF05eGtWiYWJZKr5Ok0" as const;
+const COPILOT_FURY_PLAN_DISPATCH_ROOT_SEARCH_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST = "sha256:TAuUREACAnMgLEGP5oRW1bCmrZw9aOKAKvTy3fmj3kw" as const;
+const COPILOT_FURY_PLAN_DISPATCH_ROOT_SEARCH_RECOVERABLE_PACKET_DIGEST = "sha256:UezqpzyqR4mPkgwQ54qedgphQrwMOqWFBRdGnysF2W0" as const;
 /** @deprecated Retained only for the existing internal export surface. */
 export const COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_SUCCESSOR_RECEIPT_ID = "receipt:3joci3m8iFvPsfeyceBy8b3uH8dfv111" as const;
 /** @deprecated Retained only for the existing internal export surface. */
@@ -136,6 +140,14 @@ const FROZEN_RECOVERY_SIGNATURES = Object.freeze([
       outputEvidenceDigest: COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST,
       packetDigest: COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_PACKET_DIGEST,
     }),
+  }),
+  Object.freeze({
+    receiptId: COPILOT_FURY_PLAN_DISPATCH_ROOT_SEARCH_RECOVERABLE_RECEIPT_ID,
+    terminalEntryDigest: COPILOT_FURY_PLAN_DISPATCH_ROOT_SEARCH_RECOVERABLE_TERMINAL_ENTRY_DIGEST,
+    outputEvidenceDigest: COPILOT_FURY_PLAN_DISPATCH_ROOT_SEARCH_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST,
+    packetDigest: COPILOT_FURY_PLAN_DISPATCH_ROOT_SEARCH_RECOVERABLE_PACKET_DIGEST,
+    requiresUnauthorizedObservation: true,
+    predecessorRecovery: null,
   }),
 ] as const);
 
@@ -1422,7 +1434,8 @@ function validateReviewArtifactToolCall(repositoryRoot: string, artifactMap: Cop
       return entry === undefined ? { state: "invalid" } : { state: "valid", value: { kind: "read", entry, projection: Object.freeze({ path: entry.path }) } };
     }
     if (toolName !== "search" || (!exact(decoded, ["query"]) && !exact(decoded, ["query", "path"])) || typeof decoded.query !== "string" || decoded.query.length < 1 || decoded.query.length > 1024 || (decoded.path !== undefined && typeof decoded.path !== "string")) return { state: "invalid" };
-    const prefix = decoded.path === undefined ? null : exactGitTreePath(repositoryRoot, decoded.path);
+    const canonicalRootSearch = decoded.path !== undefined && isAbsolute(decoded.path) && resolve(decoded.path) === repositoryRoot;
+    const prefix = decoded.path === undefined || canonicalRootSearch ? null : exactGitTreePath(repositoryRoot, decoded.path);
     const scoped = entries.filter((entry) => prefix === null || entry.path === prefix || entry.path.startsWith(`${prefix}/`));
     if (scoped.length === 0) return { state: "invalid" };
     const projection = prefix === null ? Object.freeze({ query: decoded.query }) : Object.freeze({ query: decoded.query, path: prefix });
