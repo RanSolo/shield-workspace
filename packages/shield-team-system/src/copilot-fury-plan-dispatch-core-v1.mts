@@ -85,6 +85,9 @@ export const COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_RECEIPT_ID = "rece
 export const COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_TERMINAL_ENTRY_DIGEST = "sha256:czI_Kiq9sCml_6YN8l2nbIKYhfzbgUp_9SOqfHCgpQ8" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST = "sha256:3j8HM0LmVP3ks0lNJhTlJdK0CYkcRZc7Kw7DE8cjuyg" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_PACKET_DIGEST = "sha256:z1jfC-m15ozX07UHP5hZaUMVNEvvAIIyyWGogi14fdM" as const;
+const COPILOT_FURY_PLAN_DISPATCH_BATCH_ADMISSION_RECOVERABLE_RECEIPT_ID = "receipt:BWD7KctxEGKtaap9IWyX31pDpnF94D6P" as const;
+const COPILOT_FURY_PLAN_DISPATCH_BATCH_ADMISSION_RECOVERABLE_TERMINAL_ENTRY_DIGEST = "sha256:-Ss_SP91X-KqZ4Ng2-k0AFx9902yhKC-FSaoQiLITW4" as const;
+const COPILOT_FURY_PLAN_DISPATCH_BATCH_ADMISSION_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST = "sha256:iagGiK0Atepc3A2AtXgU4I4cJz7XEBRbPJQlHvMzvGE" as const;
 /** @deprecated Retained only for the existing internal export surface. */
 export const COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_SUCCESSOR_RECEIPT_ID = "receipt:3joci3m8iFvPsfeyceBy8b3uH8dfv111" as const;
 /** @deprecated Retained only for the existing internal export surface. */
@@ -106,6 +109,7 @@ const FROZEN_RECOVERY_SIGNATURES = Object.freeze([
     outputEvidenceDigest: COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST,
     packetDigest: COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_PACKET_DIGEST,
     requiresUnauthorizedObservation: false,
+    predecessorRecovery: null,
   }),
   Object.freeze({
     receiptId: COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_RECEIPT_ID,
@@ -113,6 +117,25 @@ const FROZEN_RECOVERY_SIGNATURES = Object.freeze([
     outputEvidenceDigest: COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST,
     packetDigest: COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_PACKET_DIGEST,
     requiresUnauthorizedObservation: true,
+    predecessorRecovery: Object.freeze({
+      receiptId: COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID,
+      terminalEntryDigest: COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_TERMINAL_ENTRY_DIGEST,
+      outputEvidenceDigest: COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST,
+      packetDigest: COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_PACKET_DIGEST,
+    }),
+  }),
+  Object.freeze({
+    receiptId: COPILOT_FURY_PLAN_DISPATCH_BATCH_ADMISSION_RECOVERABLE_RECEIPT_ID,
+    terminalEntryDigest: COPILOT_FURY_PLAN_DISPATCH_BATCH_ADMISSION_RECOVERABLE_TERMINAL_ENTRY_DIGEST,
+    outputEvidenceDigest: COPILOT_FURY_PLAN_DISPATCH_BATCH_ADMISSION_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST,
+    packetDigest: COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_PACKET_DIGEST,
+    requiresUnauthorizedObservation: true,
+    predecessorRecovery: Object.freeze({
+      receiptId: COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_RECEIPT_ID,
+      terminalEntryDigest: COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_TERMINAL_ENTRY_DIGEST,
+      outputEvidenceDigest: COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST,
+      packetDigest: COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_PACKET_DIGEST,
+    }),
   }),
 ] as const);
 
@@ -156,6 +179,7 @@ const MAX_REVIEW_ARTIFACT_ENTRIES = 4096;
 const MAX_REVIEW_ARTIFACT_BYTES = 8 * MAX_INPUT_BYTES;
 const MAX_TOOL_ARGUMENT_BYTES = 8192;
 const MAX_TOOL_ARGUMENT_CONTAINER_DEPTH = 2;
+const MAX_PENDING_TOOL_ADMISSIONS = 16;
 const GIT_CONTEXT_VARIABLES = Object.freeze([
   "GIT_COMMON_DIR", "GIT_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_WORK_TREE",
 ] as const);
@@ -2349,8 +2373,9 @@ async function recoverablePredecessor(
     inputEvidenceRefs: expectedInputEvidenceRefs,
   }, recoverySignature.receiptId);
   if (eligibility.state === "not_allowlisted") return null;
+  const successorRecovery = recoverySignature.predecessorRecovery !== null;
   if (eligibility.state === "invalid") {
-    if (recoverySignature.receiptId === COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_RECEIPT_ID) return null;
+    if (successorRecovery) return null;
     throw new Error("recoverable_predecessor_receipt_binding_mismatch");
   }
   const evidencePath = await terminalEvidencePathFromReceipt(request, receipt, packetDigest);
@@ -2362,27 +2387,26 @@ async function recoverablePredecessor(
   if (evidence.dispositionCode !== RECOVERABLE_FAILURE_CODE || canonicalJson(evidence.errors) !== canonicalJson([RECOVERABLE_FAILURE_MESSAGE])) return null;
   if (receipt.outputEvidenceRefs === null || receipt.outputEvidenceRefs.length !== 1 || receipt.outputEvidenceRefs[0] !== recoverySignature.outputEvidenceDigest) return null;
   if (recoverySignature.requiresUnauthorizedObservation && (!safePlain(evidence.observations) || evidence.observations.unauthorizedToolOrEffectObserved !== true)) return null;
-  const admissionRecovery = recoverySignature.receiptId === COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_RECEIPT_ID;
-  const evidenceContractMatches = admissionRecovery
+  const evidenceContractMatches = successorRecovery
     ? evidence.schemaVersion === 3 && evidence.contractVersion === COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION_V3
     : evidence.schemaVersion === 1 && evidence.contractVersion === COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_CONTRACT_VERSION;
   if (!evidenceContractMatches || evidence.evidenceDigest !== receipt.outputEvidenceRefs[0] || evidence.receiptId !== receipt.receiptId || evidence.packetDigest !== packetDigest || evidence.outcome !== "failed") {
-    if (admissionRecovery) return null;
+    if (successorRecovery) return null;
     throw new Error("recoverable_predecessor_signature_mismatch");
   }
   if (evidence.missionId !== request.missionId || evidence.missionRevision !== request.missionRevision || evidence.subjectId !== request.subjectId || evidence.subjectRevision !== request.subjectRevision || evidence.repositoryId !== request.repositoryId || evidence.repositoryWorkspaceId !== request.repositoryWorkspaceId || evidence.repositoryRevision !== request.headRevision || evidence.transitionPlanRawSha256 !== request.transitionPlanRawSha256) throw new Error("recoverable_predecessor_binding_mismatch");
   if (!safePlain(evidence.packet)) throw new Error("recoverable_predecessor_packet_malformed");
   const reconstructed = new TextEncoder().encode(canonicalJson(evidence.packet));
   if (digestBase64Url(reconstructed) !== packetDigest || Buffer.compare(Buffer.from(reconstructed), Buffer.from(packetBytes)) !== 0) throw new Error("recoverable_predecessor_packet_mismatch");
-  if (admissionRecovery) {
+  if (successorRecovery) {
     const packetRequest = evidence.packet.request;
     if (!safePlain(packetRequest) || typeof packetRequest.repositoryRoot !== "string") return null;
     const priorCore = deepFreeze({
       protocol: COPILOT_FURY_PLAN_DISPATCH_RECOVERY_PROTOCOL,
-      predecessorReceiptId: COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID,
-      predecessorTerminalEntryDigest: COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_TERMINAL_ENTRY_DIGEST,
-      failedEvidenceDigest: COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST,
-      originalPacketDigest: COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_PACKET_DIGEST,
+      predecessorReceiptId: recoverySignature.predecessorRecovery.receiptId,
+      predecessorTerminalEntryDigest: recoverySignature.predecessorRecovery.terminalEntryDigest,
+      failedEvidenceDigest: recoverySignature.predecessorRecovery.outputEvidenceDigest,
+      originalPacketDigest: recoverySignature.predecessorRecovery.packetDigest,
     });
     const expectedPriorRecovery = deepFreeze({
       ...priorCore,
@@ -2790,6 +2814,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
     let unauthorizedToolOrEffectObserved = false;
     let confirmedCancellation = false;
     const pendingAdmissions = new Map<string, Readonly<{ tool: "read" | "search"; projection: Readonly<Record<string, string>> }>>();
+    const admissionKey = (tool: "read" | "search", projection: Readonly<Record<string, string>>): string => canonicalJson({ tool, projection });
     const allowed = new Set<string>(input.toolBinding.modelFacingToolNames);
     const recordDeniedTool = (tool: string) => {
       policyDecisions.push({ tool: callbackToolIdentity(tool), decision: "deny" });
@@ -2802,13 +2827,14 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
       input.reviewArtifactMap,
       recordDeniedTool,
       (tool, args, invocation) => {
-        const pending = pendingAdmissions.get(input.configuration.sessionId);
+        const key = admissionKey(tool as "read" | "search", args as Readonly<Record<string, string>>);
+        const pending = pendingAdmissions.get(key);
         if (pending === undefined || invocation.sessionId !== input.configuration.sessionId || invocation.toolName !== tool || canonicalJson(pending.projection) !== canonicalJson(args)) {
           recordDeniedTool(tool);
           callbackObservation.record({ surface: "handler", identitySource: invocation, toolCallSource: invocation, tool: callbackToolIdentity(tool), permissionKind: "unknown", arguments: args, decision: "not_invoked", reason: "pre_tool_denied" });
           throw new Error("review_artifact_tool_admission_invalid");
         }
-        pendingAdmissions.delete(input.configuration.sessionId);
+        pendingAdmissions.delete(key);
         callbackObservation.record({ surface: "handler", identitySource: invocation, toolCallSource: invocation, tool: callbackToolIdentity(tool), permissionKind: "unknown", arguments: args, decision: "invoked", reason: "handler_invoked" });
       },
     );
@@ -2890,8 +2916,9 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
             const admission = validation.state === "valid" && (validation.value.kind === "read" || validation.value.kind === "search")
               ? { tool: validation.value.kind, projection: validation.value.projection }
               : null;
-            const pending = pendingAdmissions.get(input.configuration.sessionId);
-            const decision = admission !== null && pending === undefined ? "allow" as const : "deny" as const;
+            const key = admission === null ? null : admissionKey(admission.tool, admission.projection);
+            const duplicate = key !== null && pendingAdmissions.has(key);
+            const decision = admission !== null && (duplicate || pendingAdmissions.size < MAX_PENDING_TOOL_ADMISSIONS) ? "allow" as const : "deny" as const;
             const tool = callbackToolIdentity(name);
             policyDecisions.push({ tool, decision });
             callbackObservation.record({ surface: "pre_tool", identitySource: hookInput, toolCallSource: hookInput, tool, permissionKind: "unknown", arguments: hookInput.toolArgs, decision, reason: decision === "deny" ? "tool_or_arguments_denied" : "exact_tool_allowed" });
@@ -2900,7 +2927,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
               pendingAdmissions.clear();
               callbackObservation.record({ surface: "handler", tool, permissionKind: "unknown", arguments: hookInput.toolArgs, decision: "not_invoked", reason: "pre_tool_denied" });
             }
-            else pendingAdmissions.set(input.configuration.sessionId, admission as Readonly<{ tool: "read" | "search"; projection: Readonly<Record<string, string>> }>);
+            else if (!duplicate && key !== null) pendingAdmissions.set(key, admission as Readonly<{ tool: "read" | "search"; projection: Readonly<Record<string, string>> }>);
             return { permissionDecision: decision, permissionDecisionReason: decision === "deny" ? "Tool is outside the fixed read-only Fury surface." : "Tool is in the fixed read-only Fury surface.", ...(decision === "allow" ? { modifiedArgs: admission?.projection } : {}) };
           },
           onPreMcpToolCall: async (hookInput) => {
@@ -3344,7 +3371,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       packetBytes = recovery.packetBytes;
       packetDigest = recovery.packetDigest;
       let successor = projections.find((candidate) => candidate.receiptId === identity.receiptId);
-      if (successor !== undefined && successor.state !== "started" && successor.state !== "resumed" && successor.receiptId === COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_RECEIPT_ID) {
+      for (let recoveryDepth = 1; recoveryDepth < FROZEN_RECOVERY_SIGNATURES.length && successor !== undefined && successor.state !== "started" && successor.state !== "resumed"; recoveryDepth += 1) {
         const chainedInputEvidence = Object.freeze([
           plan.id,
           plan.digest,
@@ -3364,7 +3391,9 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
           packetBytes = recovery.packetBytes;
           packetDigest = recovery.packetDigest;
           successor = projections.find((candidate) => candidate.receiptId === identity.receiptId);
+          continue;
         }
+        break;
       }
       if (successor !== undefined && successor.state !== "started" && successor.state !== "resumed") {
         return await replayExisting(request, source, {
