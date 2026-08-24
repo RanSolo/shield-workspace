@@ -377,8 +377,28 @@ type CopilotFuryCallbackArgumentKindV1 = "string" | "number" | "boolean" | "null
 type CopilotFuryCallbackArgumentKeyV1 = "path" | "query" | "unknown";
 type CopilotFuryCallbackDecisionV1 = "allow" | "deny" | "reject" | "invoked" | "not_invoked";
 type CopilotFuryCallbackReasonV1 =
-  | "exact_tool_allowed" | "tool_or_arguments_denied" | "permission_rejected" | "mcp_denied"
+  | "exact_tool_allowed" | "tool_or_arguments_denied"
+  | "admission_sticky_denied" | "admission_capacity_exceeded" | "admission_session_denied"
+  | "admission_tool_denied" | "admission_argument_decode_denied" | "admission_argument_shape_denied"
+  | "admission_read_path_denied" | "admission_read_target_denied" | "admission_search_query_denied"
+  | "admission_search_path_denied" | "admission_search_scope_denied" | "admission_validation_internal_denied"
+  | "permission_rejected" | "mcp_denied"
   | "handler_invoked" | "pre_tool_denied" | "shape_rejected";
+
+type CopilotFuryAdmissionReasonV1 = Extract<CopilotFuryCallbackReasonV1,
+  "admission_sticky_denied" | "admission_capacity_exceeded" | "admission_session_denied"
+  | "admission_tool_denied" | "admission_argument_decode_denied" | "admission_argument_shape_denied"
+  | "admission_read_path_denied" | "admission_read_target_denied" | "admission_search_query_denied"
+  | "admission_search_path_denied" | "admission_search_scope_denied" | "admission_validation_internal_denied">;
+
+type CopilotFuryAdmissionDiagnosticV1 = Readonly<{
+  callbackSessionMatch: boolean;
+  invocationSessionMatch: boolean;
+  latched: boolean;
+  pendingAdmissionCount: number;
+  duplicate: boolean;
+  validationAttempted: boolean;
+}>;
 
 export type CopilotFuryCallbackArgumentShapeV1 = Readonly<{
   kind: CopilotFuryCallbackArgumentKindV1;
@@ -396,6 +416,7 @@ export interface CopilotFuryCallbackObservationRecordV1 {
   readonly expectedSessionMatch: "match" | "mismatch" | "absent";
   readonly decision: CopilotFuryCallbackDecisionV1;
   readonly reason: CopilotFuryCallbackReasonV1;
+  readonly admission?: CopilotFuryAdmissionDiagnosticV1;
 }
 
 export interface CopilotFuryCallbackObservationV1 {
@@ -1420,28 +1441,54 @@ type ValidatedReviewArtifactToolCall = Readonly<{
     | { kind: "read"; entry: CopilotFuryReviewArtifactMapEntryV1; projection: Readonly<{ path: string }> }
     | { kind: "search"; query: string; entries: readonly CopilotFuryReviewArtifactMapEntryV1[]; projection: Readonly<{ query: string } | { query: string; path: string }> }
   >;
-} | { state: "invalid" }>;
+} | { state: "invalid"; reason: CopilotFuryAdmissionReasonV1 }>;
+
+function invalidReviewArtifactToolCall(reason: CopilotFuryAdmissionReasonV1): ValidatedReviewArtifactToolCall {
+  return { state: "invalid", reason };
+}
+
+function customToolArgumentShapeError(message: string): boolean {
+  return [
+    "custom_tool_arguments_container_invalid",
+    "custom_tool_arguments_depth_exceeded",
+    "custom_tool_arguments_key_invalid",
+    "custom_tool_arguments_property_invalid",
+    "custom_tool_arguments_root_invalid",
+  ].includes(message);
+}
 
 function validateReviewArtifactToolCall(repositoryRoot: string, artifactMap: CopilotFuryReviewArtifactMapV1, toolName: string, args: unknown): ValidatedReviewArtifactToolCall {
+  let decoded: unknown;
+  try {
+    decoded = boundedCustomToolArguments(args);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    return invalidReviewArtifactToolCall(customToolArgumentShapeError(message) ? "admission_argument_shape_denied" : "admission_argument_decode_denied");
+  }
   try {
     validateReviewArtifactMap(artifactMap);
-    const decoded = boundedCustomToolArguments(args);
+    if (!safePlain(decoded)) return invalidReviewArtifactToolCall("admission_argument_shape_denied");
     const entries = artifactMap.entries;
     if (toolName === "read") {
-      if (!exact(decoded, ["path"])) return { state: "invalid" };
-      const path = exactGitTreePath(repositoryRoot, decoded.path);
+      if (!exact(decoded, ["path"])) return invalidReviewArtifactToolCall("admission_argument_shape_denied");
+      let path: string;
+      try { path = exactGitTreePath(repositoryRoot, decoded.path); } catch { return invalidReviewArtifactToolCall("admission_read_path_denied"); }
       const entry = entries.find((candidate) => candidate.path === path);
-      return entry === undefined ? { state: "invalid" } : { state: "valid", value: { kind: "read", entry, projection: Object.freeze({ path: entry.path }) } };
+      return entry === undefined ? invalidReviewArtifactToolCall("admission_read_target_denied") : { state: "valid", value: { kind: "read", entry, projection: Object.freeze({ path: entry.path }) } };
     }
-    if (toolName !== "search" || (!exact(decoded, ["query"]) && !exact(decoded, ["query", "path"])) || typeof decoded.query !== "string" || decoded.query.length < 1 || decoded.query.length > 1024 || (decoded.path !== undefined && typeof decoded.path !== "string")) return { state: "invalid" };
+    if (toolName !== "search") return invalidReviewArtifactToolCall("admission_tool_denied");
+    if (!exact(decoded, ["query"]) && !exact(decoded, ["query", "path"])) return invalidReviewArtifactToolCall("admission_argument_shape_denied");
+    if (typeof decoded.query !== "string" || decoded.query.length < 1 || decoded.query.length > 1024) return invalidReviewArtifactToolCall("admission_search_query_denied");
+    if (decoded.path !== undefined && typeof decoded.path !== "string") return invalidReviewArtifactToolCall("admission_search_path_denied");
     const canonicalRootSearch = decoded.path === repositoryRoot;
-    const prefix = decoded.path === undefined || canonicalRootSearch ? null : exactGitTreePath(repositoryRoot, decoded.path);
+    let prefix: string | null;
+    try { prefix = decoded.path === undefined || canonicalRootSearch ? null : exactGitTreePath(repositoryRoot, decoded.path); } catch { return invalidReviewArtifactToolCall("admission_search_path_denied"); }
     const scoped = entries.filter((entry) => prefix === null || entry.path === prefix || entry.path.startsWith(`${prefix}/`));
-    if (scoped.length === 0) return { state: "invalid" };
+    if (scoped.length === 0) return invalidReviewArtifactToolCall("admission_search_scope_denied");
     const projection = prefix === null ? Object.freeze({ query: decoded.query }) : Object.freeze({ query: decoded.query, path: prefix });
     return { state: "valid", value: { kind: "search", query: decoded.query, entries: scoped, projection } };
   } catch {
-    return { state: "invalid" };
+    return invalidReviewArtifactToolCall("admission_validation_internal_denied");
   }
 }
 
@@ -2690,6 +2737,7 @@ function createCallbackObservationRecorder(expectedSessionId: string) {
     arguments: unknown;
     decision: CopilotFuryCallbackDecisionV1;
     reason: CopilotFuryCallbackReasonV1;
+    admission?: CopilotFuryAdmissionDiagnosticV1;
   }>) => {
     const argumentShape = safeCallbackArgumentShape(input.arguments);
     const ordinal = totalCount === Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : totalCount + 1;
@@ -2702,7 +2750,8 @@ function createCallbackObservationRecorder(expectedSessionId: string) {
       argumentShape: deepFreeze(argumentShape),
       expectedSessionMatch: callbackExpectedSessionMatch(input.identitySource, expectedSessionId),
       decision: input.decision,
-      reason: argumentShape.kind === "rejected" ? "shape_rejected" : input.reason,
+      reason: argumentShape.kind === "rejected" && !input.reason.startsWith("admission_") ? "shape_rejected" : input.reason,
+      ...(input.admission === undefined ? {} : { admission: deepFreeze(input.admission) }),
     });
     totalCount = totalCount === Number.MAX_SAFE_INTEGER ? totalCount : totalCount + 1;
     if (firstDenial === null && (record.decision === "deny" || record.decision === "reject")) firstDenial = record;
@@ -2925,20 +2974,52 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
         hooks: {
           onPreToolUse: async (hookInput, invocation?: Readonly<{ sessionId: string }>) => {
             const name = hookInput.toolName;
-            const sessionMatch = callbackExpectedSessionMatch(hookInput, input.configuration.sessionId) === "match" && callbackExpectedSessionMatch(invocation, input.configuration.sessionId) === "match";
-            const validation = sessionMatch && allowed.has(name)
+            const callbackSessionMatch = callbackExpectedSessionMatch(hookInput, input.configuration.sessionId) === "match";
+            const invocationSessionMatch = callbackExpectedSessionMatch(invocation, input.configuration.sessionId) === "match";
+            const validationAttempted = callbackSessionMatch && invocationSessionMatch && allowed.has(name);
+            const validation = validationAttempted
               ? validateReviewArtifactToolCall(input.repositoryRoot, input.reviewArtifactMap, name, hookInput.toolArgs)
-              : { state: "invalid" as const };
-            const admission = validation.state === "valid" && (validation.value.kind === "read" || validation.value.kind === "search")
+              : null;
+            const admission = validation?.state === "valid" && (validation.value.kind === "read" || validation.value.kind === "search")
               ? { tool: validation.value.kind, projection: validation.value.projection }
               : null;
             const key = admission === null ? null : admissionKey(admission.tool, admission.projection);
             const duplicate = key !== null && pendingAdmissions.has(key);
             const capacityExceeded = admission !== null && !duplicate && pendingAdmissions.size >= MAX_PENDING_TOOL_ADMISSIONS;
             const decision = !admissionDenied && admission !== null && !capacityExceeded ? "allow" as const : "deny" as const;
+            const reason: CopilotFuryCallbackReasonV1 = decision === "allow"
+              ? "exact_tool_allowed"
+              : admissionDenied
+                ? "admission_sticky_denied"
+                : !callbackSessionMatch || !invocationSessionMatch
+                  ? "admission_session_denied"
+                  : !allowed.has(name)
+                    ? "admission_tool_denied"
+                    : validation?.state === "invalid"
+                      ? validation.reason
+                      : capacityExceeded
+                        ? "admission_capacity_exceeded"
+                        : "tool_or_arguments_denied";
             const tool = callbackToolIdentity(name);
             policyDecisions.push({ tool, decision });
-            callbackObservation.record({ surface: "pre_tool", identitySource: hookInput, toolCallSource: hookInput, tool, permissionKind: "unknown", arguments: hookInput.toolArgs, decision, reason: decision === "deny" ? "tool_or_arguments_denied" : "exact_tool_allowed" });
+            callbackObservation.record({
+              surface: "pre_tool",
+              identitySource: hookInput,
+              toolCallSource: hookInput,
+              tool,
+              permissionKind: "unknown",
+              arguments: hookInput.toolArgs,
+              decision,
+              reason,
+              admission: {
+                callbackSessionMatch,
+                invocationSessionMatch,
+                latched: admissionDenied,
+                pendingAdmissionCount: Math.min(MAX_PENDING_TOOL_ADMISSIONS, pendingAdmissions.size),
+                duplicate,
+                validationAttempted,
+              },
+            });
             if (decision === "deny") {
               unauthorizedToolOrEffectObserved = true;
               if (admission === null || admissionDenied) {
@@ -3263,6 +3344,17 @@ function validCallbackArgumentShape(value: unknown, depth = 0): value is Copilot
   return exact(value, ["kind", "keys", "entries"]);
 }
 
+function validAdmissionDiagnostic(value: unknown): value is CopilotFuryAdmissionDiagnosticV1 {
+  return safePlain(value) && exact(value, ["callbackSessionMatch", "invocationSessionMatch", "latched", "pendingAdmissionCount", "duplicate", "validationAttempted"])
+    && typeof value.callbackSessionMatch === "boolean"
+    && typeof value.invocationSessionMatch === "boolean"
+    && typeof value.latched === "boolean"
+    && typeof value.pendingAdmissionCount === "number"
+    && Number.isSafeInteger(value.pendingAdmissionCount) && value.pendingAdmissionCount >= 0 && value.pendingAdmissionCount <= MAX_PENDING_TOOL_ADMISSIONS
+    && typeof value.duplicate === "boolean"
+    && typeof value.validationAttempted === "boolean";
+}
+
 function validCallbackObservation(value: unknown): value is CopilotFuryCallbackObservationV1 {
   if (!safePlain(value) || !exact(value, ["version", "totalCount", "truncated", "records"])) return false;
   const data = value as Plain;
@@ -3272,14 +3364,14 @@ function validCallbackObservation(value: unknown): value is CopilotFuryCallbackO
   let previousOrdinal = 0;
   const seenOrdinals = new Set<number>();
   for (const [index, candidate] of records.entries()) {
-    if (!safePlain(candidate) || !exact(candidate, ["surface", "ordinal", "callbackIdentity", "tool", "permissionKind", "argumentShape", "expectedSessionMatch", "decision", "reason"])) return false;
+    if (!safePlain(candidate) || (!exact(candidate, ["surface", "ordinal", "callbackIdentity", "tool", "permissionKind", "argumentShape", "expectedSessionMatch", "decision", "reason"]) && !exact(candidate, ["surface", "ordinal", "callbackIdentity", "tool", "permissionKind", "argumentShape", "expectedSessionMatch", "decision", "reason", "admission"]))) return false;
     const record = candidate as Plain;
     const callbackIdentity = record.callbackIdentity;
     const ordinal = record.ordinal as number;
     const terminalSentinel = data.truncated === true && index === records.length - 1 && (record.decision === "deny" || record.decision === "reject") && ordinal <= previousOrdinal;
     if (!Number.isSafeInteger(ordinal) || ordinal <= 0 || ordinal > (totalCount as number) || seenOrdinals.has(ordinal) || (!terminalSentinel && ordinal <= previousOrdinal) || !safePlain(callbackIdentity) || !exact(callbackIdentity, ["sessionId", "toolCallId"])) return false;
     const identity = callbackIdentity as Plain;
-    if (!["pre_tool", "permission", "handler"].includes(record.surface as string) || !["present", "absent"].includes(identity.sessionId as string) || !["present", "absent"].includes(identity.toolCallId as string) || !["read", "search", "unknown"].includes(record.tool as string) || (!CALLBACK_PERMISSION_KINDS.has(record.permissionKind as CopilotFuryCallbackPermissionKindV1) && record.permissionKind !== "unknown") || !validCallbackArgumentShape(record.argumentShape) || !["match", "mismatch", "absent"].includes(record.expectedSessionMatch as string) || !["allow", "deny", "reject", "invoked", "not_invoked"].includes(record.decision as string) || !["exact_tool_allowed", "tool_or_arguments_denied", "permission_rejected", "mcp_denied", "handler_invoked", "pre_tool_denied", "shape_rejected"].includes(record.reason as string)) return false;
+    if (!["pre_tool", "permission", "handler"].includes(record.surface as string) || !["present", "absent"].includes(identity.sessionId as string) || !["present", "absent"].includes(identity.toolCallId as string) || !["read", "search", "unknown"].includes(record.tool as string) || (!CALLBACK_PERMISSION_KINDS.has(record.permissionKind as CopilotFuryCallbackPermissionKindV1) && record.permissionKind !== "unknown") || !validCallbackArgumentShape(record.argumentShape) || !["match", "mismatch", "absent"].includes(record.expectedSessionMatch as string) || !["allow", "deny", "reject", "invoked", "not_invoked"].includes(record.decision as string) || !["exact_tool_allowed", "tool_or_arguments_denied", "admission_sticky_denied", "admission_capacity_exceeded", "admission_session_denied", "admission_tool_denied", "admission_argument_decode_denied", "admission_argument_shape_denied", "admission_read_path_denied", "admission_read_target_denied", "admission_search_query_denied", "admission_search_path_denied", "admission_search_scope_denied", "admission_validation_internal_denied", "permission_rejected", "mcp_denied", "handler_invoked", "pre_tool_denied", "shape_rejected"].includes(record.reason as string) || (record.admission !== undefined && !validAdmissionDiagnostic(record.admission))) return false;
     seenOrdinals.add(ordinal);
     previousOrdinal = ordinal;
   }

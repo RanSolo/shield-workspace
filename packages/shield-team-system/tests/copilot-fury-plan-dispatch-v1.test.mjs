@@ -2381,6 +2381,80 @@ test("production admission rejects hostile JSON, byte, depth, path, key, and nam
   }
 });
 
+test("production admission callback diagnostics classify bounded denial branches without sensitive values", async () => {
+  const cases = [
+    ["callback-session", { toolName: "read", toolArgs: { path: "package.json" }, sessionId: "wrong-session" }, "admission_session_denied", { callbackSessionMatch: false, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: false }],
+    ["invocation-session", { toolName: "read", toolArgs: { path: "package.json" }, invocation: { sessionId: "wrong-session", toolCallId: "wrong-call" } }, "admission_session_denied", { callbackSessionMatch: true, invocationSessionMatch: false, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: false }],
+    ["non-allowlisted-tool", { toolName: "write", toolArgs: { path: "package.json" } }, "admission_tool_denied", { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: false }],
+    ["decode", { toolName: "read", toolArgs: "{" }, "admission_argument_decode_denied", { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true }],
+    ["shape", { toolName: "read", toolArgs: { path: "package.json", extra: true } }, "admission_argument_shape_denied", { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true }],
+    ["read-path", { toolName: "read", toolArgs: { path: "../package.json" } }, "admission_read_path_denied", { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true }],
+    ["read-target", { toolName: "read", toolArgs: { path: "missing.txt" } }, "admission_read_target_denied", { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true }],
+    ["search-query", { toolName: "search", toolArgs: { query: "" } }, "admission_search_query_denied", { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true }],
+    ["search-path", { toolName: "search", toolArgs: { query: "private", path: 7 } }, "admission_search_path_denied", { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true }],
+    ["search-scope", { toolName: "search", toolArgs: { query: "private", path: "missing.txt" } }, "admission_search_scope_denied", { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true }],
+  ];
+  for (const [label, toolCall, reason, admission] of cases) {
+    const current = await fixture();
+    const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [toolCall] }));
+    assert.equal(result.state, "failed", `${label}: ${JSON.stringify(result)}`);
+    const record = result.observations.callbackObservation.records.find(({ surface }) => surface === "pre_tool");
+    assert.equal(record.reason, reason, label);
+    assert.deepEqual(record.admission, admission, label);
+    assert.equal(JSON.stringify(record).includes("missing.txt"), false, label);
+  }
+
+  const stickyCurrent = await fixture();
+  const sticky = await runProductionExecutor(stickyCurrent, productionSdkHarness({
+    preToolUseCalls: [
+      { toolName: "read", toolArgs: { path: "../package.json" } },
+      { toolName: "read", toolArgs: { path: "package.json" } },
+    ],
+  }));
+  const stickyRecords = sticky.observations.callbackObservation.records.filter(({ surface }) => surface === "pre_tool");
+  assert.equal(stickyRecords.at(-1).reason, "admission_sticky_denied");
+  assert.deepEqual(stickyRecords.at(-1).admission, { callbackSessionMatch: true, invocationSessionMatch: true, latched: true, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true });
+
+  const duplicateCurrent = await fixture();
+  const duplicate = await runProductionExecutor(duplicateCurrent, productionSdkHarness({
+    preToolUseCalls: [{ toolName: "read", toolArgs: JSON.stringify({ path: "package.json" }), duplicatePreHook: true }],
+    outputText: productionPassOutput(duplicateCurrent),
+  }));
+  const duplicateRecords = duplicate.observations.callbackObservation.records.filter(({ surface }) => surface === "pre_tool");
+  assert.equal(duplicate.state, "completed", JSON.stringify(duplicate));
+  assert.equal(duplicateRecords.at(-1).reason, "exact_tool_allowed");
+  assert.deepEqual(duplicateRecords.at(-1).admission, { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 1, duplicate: true, validationAttempted: true });
+
+  const capacityCurrent = await fixture();
+  const capacity = await runProductionExecutor(capacityCurrent, productionSdkHarness({
+    batchPreToolUse: true,
+    preToolUseCalls: Array.from({ length: 17 }, (_, index) => ({ toolName: "search", toolArgs: { query: `private-${index}`, path: "package.json" } })),
+  }));
+  const capacityRecord = capacity.observations.callbackObservation.records.filter(({ surface }) => surface === "pre_tool").at(-1);
+  assert.equal(capacityRecord.reason, "admission_capacity_exceeded");
+  assert.deepEqual(capacityRecord.admission, { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 16, duplicate: false, validationAttempted: true });
+});
+
+test("production callback-8 evidence distinguishes argument decoding from later sticky handler denial", async () => {
+  const current = await fixture();
+  const result = await runProductionExecutor(current, productionSdkHarness({
+    batchPreToolUse: true,
+    preToolUseCalls: [
+      ...Array.from({ length: 4 }, () => ({ toolName: "read", toolArgs: JSON.stringify({ path: "package.json" }) })),
+      ...Array.from({ length: 3 }, () => ({ toolName: "search", toolArgs: JSON.stringify({ query: "private", path: "package.json" }) })),
+      { toolName: "search", toolArgs: "{" },
+    ],
+  }));
+  assert.equal(result.state, "failed", JSON.stringify(result));
+  const records = result.observations.callbackObservation.records;
+  const eighth = records.filter(({ surface }) => surface === "pre_tool")[7];
+  assert.equal(eighth.reason, "admission_argument_decode_denied");
+  assert.deepEqual(eighth.admission, { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 2, duplicate: false, validationAttempted: true });
+  assert.equal(eighth.argumentShape.kind, "string");
+  assert.equal(records.find(({ surface, reason }) => surface === "handler" && reason === "pre_tool_denied").reason, "pre_tool_denied");
+  assert.equal(JSON.stringify(eighth).includes("toolArgs"), false);
+});
+
 test("production pending admission is single-use, session-bound, and consumed only by an exact handler call", async () => {
   const current = await fixture();
   const cases = [
