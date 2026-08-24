@@ -2570,18 +2570,18 @@ test("production callback observations reject proxy, accessor, cycle, and over-d
   const overDepthPrimitive = { a: { b: { c: "rejected" } } };
   const overDepthFunction = { a: { b: { c: () => undefined } } };
   const overDepthContainer = { a: { b: { c: { d: "rejected" } } } };
-  for (const [label, toolCall] of [
-    ["proxy", { toolName: "write", toolArgs: proxyFunction }],
-    ["accessor", { toolName: "read", toolArgs: accessor }],
-    ["cycle", { toolName: "write", toolArgs: cycle }],
-    ["depth-primitive", { toolName: "write", toolArgs: overDepthPrimitive }],
-    ["depth-function", { toolName: "write", toolArgs: overDepthFunction }],
-    ["depth-container", { toolName: "write", toolArgs: overDepthContainer }],
+  for (const [label, toolCall, expectedReason] of [
+    ["proxy", { toolName: "write", toolArgs: proxyFunction }, "admission_tool_denied"],
+    ["accessor", { toolName: "read", toolArgs: accessor }, "admission_argument_shape_denied"],
+    ["cycle", { toolName: "write", toolArgs: cycle }, "admission_tool_denied"],
+    ["depth-primitive", { toolName: "write", toolArgs: overDepthPrimitive }, "admission_tool_denied"],
+    ["depth-function", { toolName: "write", toolArgs: overDepthFunction }, "admission_tool_denied"],
+    ["depth-container", { toolName: "write", toolArgs: overDepthContainer }, "admission_tool_denied"],
   ]) {
     const current = await fixture();
     const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [toolCall] }));
     assert.equal(result.state, "failed", `${label}: ${JSON.stringify(result)}`);
-    assert.equal(result.observations.callbackObservation.records[0].reason, "admission_tool_denied", label);
+    assert.equal(result.observations.callbackObservation.records[0].reason, expectedReason, label);
     assert.equal(result.observations.callbackObservation.records[0].decision, "deny", label);
     assert.equal(result.observations.callbackObservation.records[0].argumentShape.kind, "rejected", label);
   }
