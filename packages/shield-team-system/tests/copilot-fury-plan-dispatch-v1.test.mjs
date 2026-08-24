@@ -77,20 +77,6 @@ const ISSUE_383_RECOVERY_FIXTURE = Object.freeze({
   packetDigest: "sha256:z1jfC-m15ozX07UHP5hZaUMVNEvvAIIyyWGogi14fdM",
 });
 
-function matchesIssue383RecoveryFixture(receipt, evidence, packetDigest) {
-  return receipt.receiptId === ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId
-    && receipt.lastEntryDigest === ISSUE_383_RECOVERY_FIXTURE.terminalEntryDigest
-    && Array.isArray(receipt.outputEvidenceRefs)
-    && receipt.outputEvidenceRefs.length === 1
-    && receipt.outputEvidenceRefs[0] === ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest
-    && evidence.evidenceDigest === ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest
-    && evidence.receiptId === ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId
-    && evidence.packetDigest === ISSUE_383_RECOVERY_FIXTURE.packetDigest
-    && evidence.dispositionCode === ISSUE_383_RECOVERY_FIXTURE.dispositionCode
-    && JSON.stringify(evidence.errors) === JSON.stringify(ISSUE_383_RECOVERY_FIXTURE.errors)
-    && packetDigest === ISSUE_383_RECOVERY_FIXTURE.packetDigest;
-}
-
 function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
 }
@@ -513,7 +499,8 @@ function productionSdkHarness(options = {}) {
             if (decision.permissionDecision === "allow") {
               const tool = config.tools.find((candidate) => candidate.name === hookInput.toolName);
               if (tool === undefined || typeof tool.handler !== "function") throw new Error("production harness observed missing allowed handler");
-              calls.toolResults.push({ name: hookInput.toolName, result: await tool.handler(hookInput.toolArgs) });
+              const invocation = toolCall.invocation ?? { sessionId: config.sessionId, toolCallId: `tool-call-${calls.toolResults.length + 1}`, toolName: hookInput.toolName, arguments: hookInput.toolArgs };
+              calls.toolResults.push({ name: hookInput.toolName, invocation, result: await tool.handler(hookInput.toolArgs, invocation) });
             }
           }
           if (options.cancel) {
@@ -735,56 +722,54 @@ test("historical V1 rejects receipt and complete packet substitutions and preser
   }
 });
 
-test("Issue #383 predecessor fixture exact-matches recovery signature, rejects substitutions, and replays one successor", async () => {
+test("actual #383 ledger/evidence fixture binds recovery and production dispatch replays one terminal execution", async () => {
   assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId);
   assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_TERMINAL_ENTRY_DIGEST, ISSUE_383_RECOVERY_FIXTURE.terminalEntryDigest);
   assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST, ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest);
   assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_PACKET_DIGEST, ISSUE_383_RECOVERY_FIXTURE.packetDigest);
 
-  const current = await fixture();
-  const request = v1Request(current, { parentSessionId: `${current.request.parentSessionId}:issue-383-predecessor` });
-  const historical = historicalV1Ledger(current, request, "failed");
-  const predecessor = {
-    ...historical.projection,
-    receiptId: ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId,
-    lastEntryDigest: ISSUE_383_RECOVERY_FIXTURE.terminalEntryDigest,
-    outputEvidenceRefs: [ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest],
-  };
-  const evidence = {
-    ...historical.evidence(),
-    evidenceDigest: ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest,
-    receiptId: ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId,
-    packetDigest: ISSUE_383_RECOVERY_FIXTURE.packetDigest,
-    outcome: "failed",
-    dispositionCode: ISSUE_383_RECOVERY_FIXTURE.dispositionCode,
-    errors: [...ISSUE_383_RECOVERY_FIXTURE.errors],
-  };
+  const bootstrapRoot = "/private/tmp/shield-383-bootstrap";
+  const ledgerLines = (await readFile(join(bootstrapRoot, ".shield", "dispatch-receipts.jsonl"), "utf8")).trim().split("\n");
+  const replay = replaySeatDispatchReceiptsV1(ledgerLines.map((line) => JSON.parse(line)));
+  assert.equal(replay.state, "valid", JSON.stringify(replay));
+  const predecessor = replay.projections.find(({ receiptId }) => receiptId === ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId);
+  assert.ok(predecessor);
+  const evidence = JSON.parse(await readFile(join(bootstrapRoot, ".shield", "audit", "copilot-fury-plan-dispatch", "df64de777e8ca9a7a553f6d80377cf324da893dbb6cac69a57f15705e6db3b84", "dispatch-evidence-ZQ2YCXxtHe-bA3F1CvdiVorSWOEblvTKL4kWSnqBKHM.json"), "utf8"));
+  assert.equal(predecessor.receiptId, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId);
+  assert.equal(predecessor.state, "failed");
+  assert.equal(predecessor.lastEntryDigest, ISSUE_383_RECOVERY_FIXTURE.terminalEntryDigest);
+  assert.deepEqual(predecessor.outputEvidenceRefs, [ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest]);
+  assert.equal(evidence.evidenceDigest, ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest);
+  assert.equal(evidence.receiptId, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId);
+  assert.equal(evidence.packetDigest, ISSUE_383_RECOVERY_FIXTURE.packetDigest);
+  assert.equal(evidence.outcome, "failed");
+  assert.equal(evidence.dispositionCode, ISSUE_383_RECOVERY_FIXTURE.dispositionCode);
+  assert.deepEqual(evidence.errors, [...ISSUE_383_RECOVERY_FIXTURE.errors]);
 
-  assert.equal(matchesIssue383RecoveryFixture(predecessor, evidence, ISSUE_383_RECOVERY_FIXTURE.packetDigest), true);
+  for (const [label, field, candidate] of [
+    ["receipt", "receiptId", { ...predecessor, receiptId: "receipt:substitute" }],
+    ["terminal entry", "lastEntryDigest", { ...predecessor, lastEntryDigest: "sha256:substitute" }],
+    ["output evidence", "outputEvidenceRefs", { ...predecessor, outputEvidenceRefs: ["sha256:substitute"] }],
+  ]) {
+    assert.notDeepEqual(candidate[field], predecessor[field], label);
+  }
+  for (const [field, candidate] of [
+    ["evidence digest", { ...evidence, evidenceDigest: "sha256:substitute" }],
+    ["evidence receipt", { ...evidence, receiptId: "receipt:substitute" }],
+    ["packet digest", { ...evidence, packetDigest: "sha256:substitute" }],
+    ["disposition", { ...evidence, dispositionCode: "DISPATCH_FAILED" }],
+    ["error", { ...evidence, errors: ["substitute"] }],
+  ]) {
+    const key = field === "evidence digest" ? "evidenceDigest" : field === "evidence receipt" ? "receiptId" : field === "packet digest" ? "packetDigest" : field === "disposition" ? "dispositionCode" : "errors";
+    assert.notDeepEqual(candidate[key], evidence[key], field);
+  }
+
   const expectation = recoveryClaimExpectation(predecessor);
   const eligibility = evaluateCopilotFuryRecoveryEligibilityV1(predecessor, expectation, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId);
   assert.equal(eligibility.state, "eligible", JSON.stringify(eligibility));
   assert.match(eligibility.successor.packetId, /^packet:copilot-fury-recovery:/u);
   assert.notEqual(eligibility.successor.receiptId, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId);
   assert.deepEqual(evaluateCopilotFuryRecoveryEligibilityV1(predecessor, expectation, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId), eligibility);
-
-  const signatureSubstitutions = {
-    receipt: { ...predecessor, receiptId: "receipt:substitute" },
-    terminalEntry: { ...predecessor, lastEntryDigest: "sha256:substitute" },
-    outputEvidenceRef: { ...predecessor, outputEvidenceRefs: ["sha256:substitute"] },
-    evidenceDigest: { ...evidence, evidenceDigest: "sha256:substitute" },
-    evidenceReceipt: { ...evidence, receiptId: "receipt:substitute" },
-    evidencePacket: { ...evidence, packetDigest: "sha256:substitute" },
-    disposition: { ...evidence, dispositionCode: "DISPATCH_FAILED" },
-    error: { ...evidence, errors: ["substitute"] },
-    packet: "sha256:substitute",
-  };
-  for (const [field, substitution] of Object.entries(signatureSubstitutions)) {
-    const candidateReceipt = substitution === "sha256:substitute" || field.startsWith("evidence") || field === "disposition" || field === "error" ? predecessor : substitution;
-    const candidateEvidence = substitution === "sha256:substitute" || !field.startsWith("evidence") && field !== "disposition" && field !== "error" ? evidence : substitution;
-    const candidatePacketDigest = substitution === "sha256:substitute" ? substitution : ISSUE_383_RECOVERY_FIXTURE.packetDigest;
-    assert.equal(matchesIssue383RecoveryFixture(candidateReceipt, candidateEvidence, candidatePacketDigest), false, field);
-  }
 
   const claimSubstitutions = {
     dispatchId: (value) => ({ ...value, dispatchId: `${value.dispatchId}:substitute` }),
@@ -801,21 +786,33 @@ test("Issue #383 predecessor fixture exact-matches recovery signature, rejects s
     );
   }
 
-  const successorExecutions = [];
-  const successorTerminals = new Map();
-  async function invokeSuccessor(successor) {
-    const prior = successorTerminals.get(successor.receiptId);
-    if (prior !== undefined) return { ...prior, replayed: true };
-    successorExecutions.push(successor.receiptId);
-    const terminal = { receiptId: successor.receiptId, state: "failed", code: ISSUE_383_RECOVERY_FIXTURE.dispositionCode, errors: [...ISSUE_383_RECOVERY_FIXTURE.errors] };
-    successorTerminals.set(successor.receiptId, terminal);
-    return { ...terminal, replayed: false };
-  }
-  const firstSuccessor = await invokeSuccessor(eligibility.successor);
-  const secondSuccessor = await invokeSuccessor(eligibility.successor);
-  assert.deepEqual(successorExecutions, [eligibility.successor.receiptId]);
-  assert.equal(firstSuccessor.replayed, false);
-  assert.deepEqual(secondSuccessor, { ...firstSuccessor, replayed: true });
+  const current = await fixture();
+  const firstExecutor = executor(current.plan);
+  const failedSuccessor = {
+    ...firstExecutor.value,
+    async execute() {
+      firstExecutor.calls.execute += 1;
+      return { state: "failed", code: ISSUE_383_RECOVERY_FIXTURE.dispositionCode, errors: [...ISSUE_383_RECOVERY_FIXTURE.errors], observations: {} };
+    },
+  };
+  const first = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: failedSuccessor, userCopilotHome: current.userCopilotHome });
+  assert.equal(first.state, "failed", JSON.stringify(first));
+  assert.equal(first.replayed, false);
+  assert.equal(firstExecutor.calls.preflight, 1);
+  assert.equal(firstExecutor.calls.execute, 1);
+  const ledgerPath = join(current.root, ".shield", "dispatch-receipts.jsonl");
+  const ledgerAfterFirst = await readFile(ledgerPath, "utf8");
+  const persistenceRoot = join(current.root, ".shield", "runtime", "copilot-fury");
+  const persistenceAfterFirst = await readdir(persistenceRoot);
+  const secondExecutor = executor(current.plan);
+  const second = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: secondExecutor.value, userCopilotHome: current.userCopilotHome });
+  assert.equal(second.state, "failed", JSON.stringify(second));
+  assert.equal(second.receiptId, first.receiptId);
+  assert.equal(second.replayed, true);
+  assert.equal(secondExecutor.calls.preflight, 0);
+  assert.equal(secondExecutor.calls.execute, 0);
+  assert.deepEqual(await readdir(persistenceRoot), persistenceAfterFirst);
+  assert.equal(await readFile(ledgerPath, "utf8"), ledgerAfterFirst);
 });
 
 test("V2 contract exhaustion terminalizes once with no findings and replays without execution", async () => {
@@ -2072,15 +2069,15 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.deepEqual(harness.calls.toolResults.map(({ name }) => name), ["read", "search"]);
   assert.deepEqual(result.observations.callbackObservation.records.map(({ surface, tool, decision, expectedSessionMatch }) => ({ surface, tool, decision, expectedSessionMatch })), [
     { surface: "pre_tool", tool: "read", decision: "allow", expectedSessionMatch: "match" },
-    { surface: "handler", tool: "read", decision: "invoked", expectedSessionMatch: "absent" },
+    { surface: "handler", tool: "read", decision: "invoked", expectedSessionMatch: "match" },
     { surface: "pre_tool", tool: "search", decision: "allow", expectedSessionMatch: "match" },
-    { surface: "handler", tool: "search", decision: "invoked", expectedSessionMatch: "absent" },
+    { surface: "handler", tool: "search", decision: "invoked", expectedSessionMatch: "match" },
   ]);
   assert.deepEqual(result.observations.callbackObservation.records.map(({ callbackIdentity }) => callbackIdentity), [
     { sessionId: "present", toolCallId: "absent" },
-    { sessionId: "absent", toolCallId: "absent" },
+    { sessionId: "present", toolCallId: "present" },
     { sessionId: "present", toolCallId: "absent" },
-    { sessionId: "absent", toolCallId: "absent" },
+    { sessionId: "present", toolCallId: "present" },
   ]);
   assert.equal(result.observations.callbackObservation.truncated, false);
   assert.equal(result.observations.callbackObservation.totalCount, 4);
@@ -2105,19 +2102,21 @@ test("production executor binds loaded SDK and producer identity and confines pe
   git(current.root, ["commit", "-qm", "replacement object two"]);
   const replacementTwo = git(current.root, ["rev-parse", "HEAD"]);
   git(current.root, ["replace", "-f", current.request.headRevision, replacementTwo]);
-  const immutableRead = JSON.parse(await harness.calls.sessionConfig.tools.find((tool) => tool.name === "read").handler({ path: exactPath }));
+  const invokeTool = (tool, args, toolCallId) => tool.handler(args, { sessionId: harness.calls.sessionConfig.sessionId, toolCallId, toolName: tool.name, arguments: args });
+  const immutableRead = JSON.parse(await invokeTool(harness.calls.sessionConfig.tools.find((tool) => tool.name === "read"), { path: exactPath }, "direct-read-1"));
   assert.equal(immutableRead.repositoryRevision, current.request.headRevision);
   assert.equal(immutableRead.path, "package.json");
   assert.equal(immutableRead.content, "{\"private\":true}\n");
   const readTool = harness.calls.sessionConfig.tools.find((tool) => tool.name === "read");
-  const virtualTransition = JSON.parse(await readTool.handler({ path: current.request.transitionPlanPath }));
+  const virtualTransition = JSON.parse(await invokeTool(readTool, { path: current.request.transitionPlanPath }, "direct-read-2"));
   assert.equal(virtualTransition.content, await readFile(join(current.root, current.request.transitionPlanPath), "utf8"));
-  const pinnedParent = JSON.parse(await readTool.handler({ path: "docs/missions/issue-319-plan.md" }));
+  const pinnedParent = JSON.parse(await invokeTool(readTool, { path: "docs/missions/issue-319-plan.md" }, "direct-read-3"));
   assert.equal(pinnedParent.content, await readFile(join(current.root, "docs/missions/issue-319-plan.md"), "utf8"));
-  const deterministicSearch = JSON.parse(await harness.calls.sessionConfig.tools.find((tool) => tool.name === "search").handler({ query: "Parent", path: "docs" }));
+  const searchTool = harness.calls.sessionConfig.tools.find((tool) => tool.name === "search");
+  const deterministicSearch = JSON.parse(await invokeTool(searchTool, { query: "Parent", path: "docs" }, "direct-search-1"));
   assert.deepEqual(deterministicSearch.matches.map(({ path, line }) => ({ path, line })), [{ path: "docs/missions/issue-319-plan.md", line: 1 }]);
   for (const query of ["replacement object one", '"replacement":"one"', '"replacement":"two"']) {
-    const immutableSearch = JSON.parse(await harness.calls.sessionConfig.tools.find((tool) => tool.name === "search").handler({ query }));
+    const immutableSearch = JSON.parse(await invokeTool(searchTool, { query }, `direct-search-${query}`));
     assert.deepEqual(immutableSearch.matches, []);
   }
   const aliasPath = join(current.root, "package-alias.json");
@@ -2155,13 +2154,55 @@ test("production callback observations reject permissions and redact callback pa
   assert.deepEqual(harness.calls.toolResults, []);
 });
 
-test("production callback observations cap records and retain the first overflow denial", async () => {
+test("production callback observations reject proxy, accessor, cycle, and over-depth argument shapes", async () => {
+  const proxyFunction = new Proxy(() => undefined, {});
+  const accessor = {};
+  Object.defineProperty(accessor, "path", { enumerable: true, get() { throw new Error("accessor must not run"); } });
+  const cycle = { path: "package.json" };
+  cycle.self = cycle;
+  const overDepth = { a: { b: { c: { d: "rejected" } } } };
+  for (const [label, toolCall] of [
+    ["proxy", { toolName: "write", toolArgs: proxyFunction }],
+    ["accessor", { toolName: "read", toolArgs: accessor }],
+    ["cycle", { toolName: "write", toolArgs: cycle }],
+    ["depth", { toolName: "write", toolArgs: overDepth }],
+  ]) {
+    const current = await fixture();
+    const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [toolCall] }));
+    assert.equal(result.state, "failed", `${label}: ${JSON.stringify(result)}`);
+    assert.equal(result.observations.callbackObservation.records[0].reason, "shape_rejected", label);
+    assert.equal(result.observations.callbackObservation.records[0].decision, "deny", label);
+  }
+});
+
+test("production callback observations preserve a denial before the cap as the final retained record", async () => {
   const current = await fixture();
-  const calls = Array.from({ length: 20 }, () => ({ toolName: "write", toolArgs: { path: "package.json" } }));
+  const calls = [
+    { toolName: "write", toolArgs: { path: "package.json" } },
+    ...Array.from({ length: 16 }, () => ({ toolName: "read", toolArgs: { path: "package.json" } })),
+  ];
   const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: calls }));
   assert.equal(result.state, "failed", JSON.stringify(result));
   const observation = result.observations.callbackObservation;
-  assert.equal(observation.totalCount, 40);
+  assert.equal(observation.totalCount, 34);
+  assert.equal(observation.truncated, true);
+  assert.equal(observation.records.length, 32);
+  assert.equal(observation.records.at(-1).ordinal, 1);
+  assert.equal(observation.records.at(-1).decision, "deny");
+  assert.equal(observation.records.at(-1).reason, "tool_or_arguments_denied");
+  assert.ok(observation.records.slice(1, -1).every((record) => record.ordinal > observation.records.at(-1).ordinal));
+});
+
+test("production callback observations preserve a denial after the cap as the final retained record", async () => {
+  const current = await fixture();
+  const calls = [
+    ...Array.from({ length: 16 }, () => ({ toolName: "read", toolArgs: { path: "package.json" } })),
+    { toolName: "write", toolArgs: { path: "package.json" } },
+  ];
+  const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: calls }));
+  assert.equal(result.state, "failed", JSON.stringify(result));
+  const observation = result.observations.callbackObservation;
+  assert.equal(observation.totalCount, 34);
   assert.equal(observation.truncated, true);
   assert.equal(observation.records.length, 32);
   assert.equal(observation.records.at(-1).ordinal, 33);

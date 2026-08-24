@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isProxy } from "node:util/types";
 
-import type { CopilotClient, CopilotSession, PermissionRequest, SessionEvent, StdioRuntimeConnection, Tool } from "@github/copilot-sdk";
+import type { CopilotClient, CopilotSession, PermissionRequest, SessionEvent, StdioRuntimeConnection, Tool, ToolInvocation } from "@github/copilot-sdk";
 import { validateTransitionPlanV1OrV2, type TransitionPlanV1OrV2 } from "@shield/mission-preparation";
 
 import {
@@ -1360,7 +1360,7 @@ function reviewArtifactTools(
   revision: string,
   artifactMap: CopilotFuryReviewArtifactMapV1,
   onDenied: (toolName: string) => void,
-  onHandler?: (toolName: string, args: unknown) => void,
+  onHandler?: (toolName: string, args: unknown, invocation: ToolInvocation) => void,
 ): readonly Tool[] {
   const readTool: Tool = {
     name: "read",
@@ -1369,8 +1369,8 @@ function reviewArtifactTools(
     overridesBuiltInTool: true,
     skipPermission: true,
     defer: "never",
-    handler: async (args: unknown) => {
-      onHandler?.("read", args);
+    handler: async (args: unknown, invocation: ToolInvocation) => {
+      onHandler?.("read", args, invocation);
       const validated = validateReviewArtifactToolCall(repositoryRoot, artifactMap, "read", args);
       if (validated.state === "invalid" || validated.value.kind !== "read") {
         onDenied("read");
@@ -1386,8 +1386,8 @@ function reviewArtifactTools(
     overridesBuiltInTool: true,
     skipPermission: true,
     defer: "never",
-    handler: async (args: unknown) => {
-      onHandler?.("search", args);
+    handler: async (args: unknown, invocation: ToolInvocation) => {
+      onHandler?.("search", args, invocation);
       const validated = validateReviewArtifactToolCall(repositoryRoot, artifactMap, "search", args);
       if (validated.state === "invalid" || validated.value.kind !== "search") {
         onDenied("search");
@@ -2506,6 +2506,7 @@ function callbackExpectedSessionMatch(value: unknown, expectedSessionId: string)
 
 function callbackArgumentShape(value: unknown, depth = 0, seen = new Set<object>()): CopilotFuryCallbackArgumentShapeV1 {
   if (value === null) return { kind: "null" };
+  if ((typeof value === "object" && value !== null || typeof value === "function") && isProxy(value)) throw new Error("shape_rejected");
   if (typeof value === "string") return { kind: "string" };
   if (typeof value === "number") return { kind: "number" };
   if (typeof value === "boolean") return { kind: "boolean" };
@@ -2551,7 +2552,7 @@ function createCallbackObservationRecorder(expectedSessionId: string) {
   const records: CopilotFuryCallbackObservationRecordV1[] = [];
   let totalCount = 0;
   let truncated = false;
-  let firstOverflowDenial: CopilotFuryCallbackObservationRecordV1 | null = null;
+  let firstDenial: CopilotFuryCallbackObservationRecordV1 | null = null;
   const record = (input: Readonly<{
     surface: CopilotFuryCallbackSurfaceV1;
     identitySource?: unknown;
@@ -2576,13 +2577,11 @@ function createCallbackObservationRecorder(expectedSessionId: string) {
       reason: argumentShape.kind === "rejected" ? "shape_rejected" : input.reason,
     });
     totalCount = totalCount === Number.MAX_SAFE_INTEGER ? totalCount : totalCount + 1;
+    if (firstDenial === null && (record.decision === "deny" || record.decision === "reject")) firstDenial = record;
     if (records.length < 32) records.push(record);
     else {
       truncated = true;
-      if (firstOverflowDenial === null && (record.decision === "deny" || record.decision === "reject")) {
-        firstOverflowDenial = record;
-        records[31] = record;
-      }
+      if (firstDenial !== null) records[31] = firstDenial;
     }
   };
   return Object.freeze({
@@ -2709,7 +2708,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
       input.configuration.repositoryRevision,
       input.reviewArtifactMap,
       recordDeniedTool,
-      (tool, args) => callbackObservation.record({ surface: "handler", tool: callbackToolIdentity(tool), permissionKind: "unknown", arguments: args, decision: "invoked", reason: "handler_invoked" }),
+      (tool, args, invocation) => callbackObservation.record({ surface: "handler", identitySource: invocation, toolCallSource: invocation, tool: callbackToolIdentity(tool), permissionKind: "unknown", arguments: args, decision: "invoked", reason: "handler_invoked" }),
     );
     if (immutableTools.length !== 2 || immutableTools.map((tool) => tool.name).join("\0") !== "read\0search") return { state: "failed", code: "FURY_TOOL_BINDING_INVALID", errors: ["FURY_TOOL_BINDING_INVALID"], observations: {} };
     const onEvent = (event: SessionEvent) => {
