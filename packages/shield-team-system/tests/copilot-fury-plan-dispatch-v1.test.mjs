@@ -199,7 +199,7 @@ function historicalV1Ledger(current, request, state, { mutateReceipt = (value) =
 }
 
 test("exact replay reobserves durable pending and late terminal states without reinvocation", async () => {
-  for (const state of ["started", "completed", "failed", "cancelled"]) {
+  for (const state of ["started", "uncertain", "completed", "failed", "cancelled"]) {
     const current = await fixture();
     const request = v1Request(current);
     const observedLedger = historicalV1Ledger(current, request, state);
@@ -218,6 +218,7 @@ test("exact replay reobserves durable pending and late terminal states without r
       },
       async durableSessionObserver({ receipt }) {
         if (state === "started") return { state: "pending", receipt };
+        if (state === "uncertain") return { state: "uncertain", receipt };
         return { state: "terminal", receipt: observedLedger.projection };
       },
     });
@@ -226,6 +227,10 @@ test("exact replay reobserves durable pending and late terminal states without r
       assert.equal(result.state, "recovery_required", JSON.stringify(result));
       assert.equal(result.code, "DISPATCH_PENDING");
       assert.equal(result.receiptId, startedLedger.projection.receiptId);
+    } else if (state === "uncertain") {
+      assert.equal(result.state, "recovery_required", JSON.stringify(result));
+      assert.equal(result.code, "DISPATCH_UNCERTAIN");
+      assert.deepEqual(result.errors, ["The exact dispatch session state is uncertain; retry the same receipt after host recovery."]);
     } else if (state === "completed") {
       assert.equal(result.state, "completed", JSON.stringify(result));
       assert.equal(result.disposition, "REVISE");
@@ -252,7 +257,7 @@ test("durable replay rejects stale identity deterministically without execution"
   assert.deepEqual(result.errors, ["durable_session_identity_drift"]);
 });
 
-test("durable replay rejects duplicate terminal evidence deterministically without execution", async () => {
+test("durable replay rejects conflicting duplicate terminal evidence deterministically without execution", async () => {
   const current = await fixture();
   const request = v1Request(current);
   const startedLedger = historicalV1Ledger(current, request, "started");
