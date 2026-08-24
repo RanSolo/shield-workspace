@@ -20,6 +20,22 @@ closed admission reason and non-sensitive shape/boolean/count fields, so a
 single malformed ranged read cannot be misreported as session identity or
 policy drift and can recommend a fresh corrected successor.
 
+The deterministic ranged contract is exact: `line_start` and `line_end` are
+optional but must appear together; both are safe integers using 1-based
+inclusive indexing; the maximum span is 400 lines; a start beyond the logical
+line count, an end before the start, or an end beyond EOF fails closed. UTF-8
+line counting treats a terminal LF as a terminator rather than an additional
+empty line. Unranged `{path}` reads retain their byte-identical response. A
+ranged read returns canonical JSON `{repositoryRevision,path,line_start,
+line_end,content}`; `content` joins selected source lines with LF and includes
+a trailing LF iff the selected final source line was LF-terminated.
+
+The model-facing Fury request includes this exact read/search schema guidance,
+including the paired range fields, bounds, and canonical ranged response.
+Sticky fail-closed denial remains unchanged, but its terminal projection must
+expose the closed redacted admission reason and the copy-safe recommendation
+to create a fresh corrected successor, never session identity or policy drift.
+
 Add the production request’s machine-generated read/search shape guidance so
 Fury receives the exact safe contract before tool calls. Preserve #390 exact
 receipt identity, ordinary/conflicting/uncertain replay, execute-once behavior,
