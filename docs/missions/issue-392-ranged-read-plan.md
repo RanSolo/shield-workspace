@@ -36,6 +36,27 @@ Sticky fail-closed denial remains unchanged, but its terminal projection must
 expose the closed redacted admission reason and the copy-safe recommendation
 to create a fresh corrected successor, never session identity or policy drift.
 
+## Closed terminal admission-failure contract
+
+For new executions only, an admission denial terminalizes with code
+`FURY_TOOL_ADMISSION_DENIED` and the single error
+`Fury tool admission denied; create a fresh corrected successor.` The failed
+executor observation and returned failed result contain `admissionFailure`
+exactly `{schemaVersion:1,reason,ordinal,tool,argumentShape,recovery}`:
+
+- `reason` is the first non-sticky `CopilotFuryAdmissionReasonV1`;
+- `ordinal` is its positive callback ordinal;
+- `tool` is `read`, `search`, or `unknown`;
+- `argumentShape` is the existing redacted `CopilotFuryCallbackArgumentShapeV1`;
+- `recovery` is the literal `fresh_corrected_successor_required`.
+
+The field is present iff an admission denial occurred and is absent otherwise.
+It contains no raw arguments, paths, queries, session IDs, or tool-call IDs.
+Non-admission failures retain `COPILOT_EXECUTION_FAILED`. Existing stored
+#384/#390 receipts and evidence replay byte-preserving without synthesizing the
+new field; only new executions emit this contract. Add exact and conflicting
+replay plus malformed-field tests.
+
 Add the production request’s machine-generated read/search shape guidance so
 Fury receives the exact safe contract before tool calls. Preserve #390 exact
 receipt identity, ordinary/conflicting/uncertain replay, execute-once behavior,
