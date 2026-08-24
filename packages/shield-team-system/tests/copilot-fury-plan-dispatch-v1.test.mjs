@@ -37,6 +37,10 @@ import {
   validateCopilotFuryPlanResultV2,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import {
+  COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST,
+  COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_PACKET_DIGEST,
+  COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_RECEIPT_ID,
+  COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_TERMINAL_ENTRY_DIGEST,
   COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST,
   COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_PACKET_DIGEST,
   COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_TERMINAL_ENTRY_DIGEST,
@@ -74,6 +78,15 @@ const ISSUE_383_RECOVERY_FIXTURE = Object.freeze({
   predecessorReceiptId: "receipt:sVgAqsU53kRLIUKg4frtNEzHy9vOqU3c",
   terminalEntryDigest: "sha256:SN427iHPVSZwrmqUvs9bDEKu0k9LKEk69zMEf53Ujzc",
   outputEvidenceDigest: "sha256:ZQ2YCXxtHe-bA3F1CvdiVorSWOEblvTKL4kWSnqBKHM",
+  dispositionCode: "COPILOT_EXECUTION_FAILED",
+  errors: Object.freeze(["Copilot session identity or policy drifted."]),
+  packetDigest: "sha256:z1jfC-m15ozX07UHP5hZaUMVNEvvAIIyyWGogi14fdM",
+});
+
+const ISSUE_384_ADMISSION_RECOVERY_FIXTURE = Object.freeze({
+  predecessorReceiptId: "receipt:BXq8_kk7dlFZ8P7_-9MQrQOl2onMu1nR",
+  terminalEntryDigest: "sha256:czI_Kiq9sCml_6YN8l2nbIKYhfzbgUp_9SOqfHCgpQ8",
+  outputEvidenceDigest: "sha256:3j8HM0LmVP3ks0lNJhTlJdK0CYkcRZc7Kw7DE8cjuyg",
   dispositionCode: "COPILOT_EXECUTION_FAILED",
   errors: Object.freeze(["Copilot session identity or policy drifted."]),
   packetDigest: "sha256:z1jfC-m15ozX07UHP5hZaUMVNEvvAIIyyWGogi14fdM",
@@ -467,7 +480,7 @@ function productionSdkHarness(options = {}) {
   class CopilotClient {
     constructor(clientOptions) { calls.clientOptions = clientOptions; calls.construct += 1; options.onConstruct?.(clientOptions); }
     async start() { calls.start += 1; if (options.startFault) throw new Error("runtime startup fault"); }
-    async listModels() { calls.listModels += 1; if (options.listModelsFault) throw new Error("model query fault"); return [{ id: "model:fury" }]; }
+    async listModels() { calls.listModels += 1; if (options.listModelsFault) throw new Error("model query fault"); return options.models ?? [{ id: "model:fury" }]; }
     async createSession(config) {
       calls.createSession += 1;
       calls.sessionConfig = config;
@@ -502,9 +515,22 @@ function productionSdkHarness(options = {}) {
             if (decision.permissionDecision === "allow") {
               const tool = config.tools.find((candidate) => candidate.name === hookInput.toolName);
               if (tool === undefined || typeof tool.handler !== "function") throw new Error("production harness observed missing allowed handler");
-              const invocation = toolCall.invocation ?? { sessionId: config.sessionId, toolCallId: `tool-call-${calls.toolResults.length + 1}`, toolName: hookInput.toolName, arguments: hookInput.toolArgs };
-              calls.toolResults.push({ name: hookInput.toolName, invocation, result: await tool.handler(hookInput.toolArgs, invocation) });
+              for (const concurrentCall of toolCall.beforeHandlerCalls ?? []) {
+                await config.hooks.onPreToolUse({ sessionId: config.sessionId, timestamp: new Date(), workingDirectory: config.workingDirectory, ...concurrentCall }, { sessionId: config.sessionId });
+              }
+              if (toolCall.skipHandler === true) continue;
+              const admittedArgs = decision.modifiedArgs ?? hookInput.toolArgs;
+              const handlerArgs = Object.hasOwn(toolCall, "handlerArgs") ? toolCall.handlerArgs : admittedArgs;
+              const invocation = toolCall.invocation ?? { sessionId: config.sessionId, toolCallId: `tool-call-${calls.toolResults.length + 1}`, toolName: hookInput.toolName, arguments: handlerArgs };
+              calls.toolResults.push({ name: hookInput.toolName, invocation, result: await tool.handler(handlerArgs, invocation) });
+              if (toolCall.duplicateHandler === true) await tool.handler(handlerArgs, invocation);
             }
+          }
+          for (const directCall of options.directToolCalls ?? []) {
+            const tool = config.tools.find((candidate) => candidate.name === directCall.toolName);
+            if (tool === undefined || typeof tool.handler !== "function") throw new Error("production harness observed missing direct handler");
+            const invocation = directCall.invocation ?? { sessionId: config.sessionId, toolCallId: `direct-tool-call-${calls.toolResults.length + 1}`, toolName: directCall.toolName, arguments: directCall.toolArgs };
+            await tool.handler(directCall.toolArgs, invocation);
           }
           if (options.cancel) {
             config.onEvent(event("abort", { reason: "user_initiated" }));
@@ -792,12 +818,13 @@ test("actual #383 fixture drives one production recovery execution and zero-effe
   await cp(bootstrapRoot, isolatedRoot, { recursive: true, preserveTimestamps: true });
   const sourceLedgerPath = join(bootstrapRoot, ".shield", "dispatch-receipts.jsonl");
   const installedLedgerPath = join(isolatedRoot, ".shield", "dispatch-receipts.jsonl");
-  await copyFile(sourceLedgerPath, installedLedgerPath);
+  const predecessorLedgerBytes = `${(await readFile(sourceLedgerPath, "utf8")).trim().split("\n").filter((line) => JSON.parse(line).receiptId === ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId).join("\n")}\n`;
+  await writeFile(installedLedgerPath, predecessorLedgerBytes);
   const sourceEvidencePath = join(bootstrapRoot, ".shield", "audit", "copilot-fury-plan-dispatch", "df64de777e8ca9a7a553f6d80377cf324da893dbb6cac69a57f15705e6db3b84", "dispatch-evidence-ZQ2YCXxtHe-bA3F1CvdiVorSWOEblvTKL4kWSnqBKHM.json");
   const installedEvidenceDirectory = join(isolatedRoot, ".shield", "audit", "copilot-fury-plan-dispatch", "df64de777e8ca9a7a553f6d80377cf324da893dbb6cac69a57f15705e6db3b84");
   await mkdir(installedEvidenceDirectory, { recursive: true, mode: 0o700 });
   await copyFile(sourceEvidencePath, join(installedEvidenceDirectory, "dispatch-evidence-ZQ2YCXxtHe-bA3F1CvdiVorSWOEblvTKL4kWSnqBKHM.json"));
-  assert.equal(await readFile(installedLedgerPath, "utf8"), await readFile(sourceLedgerPath, "utf8"));
+  assert.equal(await readFile(installedLedgerPath, "utf8"), predecessorLedgerBytes);
   assert.equal(await readFile(join(installedEvidenceDirectory, "dispatch-evidence-ZQ2YCXxtHe-bA3F1CvdiVorSWOEblvTKL4kWSnqBKHM.json"), "utf8"), await readFile(sourceEvidencePath, "utf8"));
 
   const request = evidence.packet.request;
@@ -848,6 +875,78 @@ test("actual #383 fixture drives one production recovery execution and zero-effe
   assert.deepEqual(secondEffects, { preflight: 0, execute: 0, session: 0, tool: 0 });
   assert.deepEqual(await readdir(persistenceRoot), persistenceAfterFirst);
   assert.equal(await readFile(installedLedgerPath, "utf8"), ledgerAfterFirst);
+});
+
+test("frozen BXq admission predecessor executes one production successor and then ordinary-replays", async () => {
+  assert.equal(COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_RECEIPT_ID, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.predecessorReceiptId);
+  assert.equal(COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_TERMINAL_ENTRY_DIGEST, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.terminalEntryDigest);
+  assert.equal(COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.outputEvidenceDigest);
+  assert.equal(COPILOT_FURY_PLAN_DISPATCH_ADMISSION_RECOVERABLE_PACKET_DIGEST, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.packetDigest);
+
+  const bootstrapRoot = "/private/tmp/shield-383-bootstrap";
+  const evidenceRelative = join(".shield", "audit", "copilot-fury-plan-dispatch", "df64de777e8ca9a7a553f6d80377cf324da893dbb6cac69a57f15705e6db3b84", "dispatch-evidence-3j8HM0LmVP3ks0lNJhTlJdK0CYkcRZc7Kw7DE8cjuyg.json");
+  const predecessorEvidence = JSON.parse(await readFile(join(bootstrapRoot, evidenceRelative), "utf8"));
+  assert.equal(predecessorEvidence.receiptId, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.predecessorReceiptId);
+  assert.equal(predecessorEvidence.evidenceDigest, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.outputEvidenceDigest);
+  assert.equal(predecessorEvidence.packetDigest, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.packetDigest);
+  assert.equal(predecessorEvidence.outcome, "failed");
+  assert.equal(predecessorEvidence.dispositionCode, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.dispositionCode);
+  assert.deepEqual(predecessorEvidence.errors, [...ISSUE_384_ADMISSION_RECOVERY_FIXTURE.errors]);
+  assert.equal(predecessorEvidence.observations.unauthorizedToolOrEffectObserved, true);
+
+  const isolatedRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-copilot-fury-admission-recovery-")));
+  await cp(bootstrapRoot, isolatedRoot, { recursive: true, preserveTimestamps: true });
+  const request = predecessorEvidence.packet.request;
+  const isolatedRequest = { ...request, repositoryRoot: isolatedRoot };
+  const resolved = await resolveCommittedTransitionPlanSourceV1(isolatedRequest);
+  assert.equal(resolved.state, "valid", JSON.stringify(resolved));
+  const current = { root: isolatedRoot, request: isolatedRequest, plan: predecessorEvidence.packet.transitionPlan };
+  const harness = productionSdkHarness({
+    models: [{ id: request.requestedModel }],
+    outputText: productionPassOutput(current),
+    preToolUseCalls: [
+      { toolName: "read", toolArgs: JSON.stringify({ path: request.transitionPlanPath }) },
+      { toolName: "search", toolArgs: JSON.stringify({ query: "mission", path: "docs" }) },
+    ],
+  });
+  const first = await dispatchCopilotFuryPlanReviewCoreV1(request, resolved.source, {
+    repositoryRootOverride: isolatedRoot,
+    executor: createCopilotFuryPlanExecutorV1({
+      async loadSdk() { return harness.module; },
+      async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+    }),
+  });
+  assert.equal(first.state, "completed", JSON.stringify(first));
+  assert.equal(first.replayed, false);
+  assert.notEqual(first.receiptId, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.predecessorReceiptId);
+  assert.deepEqual(harness.calls.toolResults.map(({ name }) => name), ["read", "search"]);
+  const successorEvidence = JSON.parse(await readFile(join(isolatedRoot, first.evidencePath), "utf8"));
+  assert.equal(successorEvidence.recovery.predecessorReceiptId, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.predecessorReceiptId);
+  assert.equal(successorEvidence.recovery.predecessorTerminalEntryDigest, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.terminalEntryDigest);
+  assert.equal(successorEvidence.recovery.failedEvidenceDigest, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.outputEvidenceDigest);
+  assert.equal(successorEvidence.recovery.originalPacketDigest, ISSUE_384_ADMISSION_RECOVERY_FIXTURE.packetDigest);
+  assert.deepEqual(successorEvidence.observations.callbackObservation.records.map(({ surface, tool, decision, argumentShape }) => ({ surface, tool, decision, kind: argumentShape.kind })), [
+    { surface: "pre_tool", tool: "read", decision: "allow", kind: "string" },
+    { surface: "handler", tool: "read", decision: "invoked", kind: "object" },
+    { surface: "pre_tool", tool: "search", decision: "allow", kind: "string" },
+    { surface: "handler", tool: "search", decision: "invoked", kind: "object" },
+  ]);
+
+  const ledgerPath = join(isolatedRoot, ".shield", "dispatch-receipts.jsonl");
+  const ledgerAfterFirst = await readFile(ledgerPath, "utf8");
+  const retryHarness = productionSdkHarness({ outputText: productionPassOutput(current) });
+  const retry = await dispatchCopilotFuryPlanReviewCoreV1(request, resolved.source, {
+    repositoryRootOverride: isolatedRoot,
+    executor: createCopilotFuryPlanExecutorV1({
+      async loadSdk() { return retryHarness.module; },
+      async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+    }),
+  });
+  assert.equal(retry.state, "completed", JSON.stringify(retry));
+  assert.equal(retry.receiptId, first.receiptId);
+  assert.equal(retry.replayed, true);
+  assert.deepEqual({ construct: retryHarness.calls.construct, start: retryHarness.calls.start, createSession: retryHarness.calls.createSession, tools: retryHarness.calls.toolResults.length }, { construct: 0, start: 0, createSession: 0, tools: 0 });
+  assert.equal(await readFile(ledgerPath, "utf8"), ledgerAfterFirst);
 });
 
 test("V2 contract exhaustion terminalizes once with no findings and replays without execution", async () => {
@@ -2128,9 +2227,18 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review", requestSandboxBypass: true })).kind, "reject");
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "write", fileName: exactPath, diff: "", intention: "mutate", canOfferSessionApproval: false })).kind, "reject");
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: "./package.json", intention: "alias" })).kind, "reject");
-  assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "read", toolArgs: { path: exactPath } })).permissionDecision, "allow");
-  assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "search", toolArgs: { query: "Fury" } })).permissionDecision, "allow");
-  assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "write", toolArgs: { path: exactPath } })).permissionDecision, "deny");
+  const readTool = harness.calls.sessionConfig.tools.find((tool) => tool.name === "read");
+  const searchTool = harness.calls.sessionConfig.tools.find((tool) => tool.name === "search");
+  const invokeTool = async (tool, args, toolCallId) => {
+    const invocation = { sessionId: harness.calls.sessionConfig.sessionId, toolCallId, toolName: tool.name, arguments: args };
+    const admission = await harness.calls.sessionConfig.hooks.onPreToolUse({ sessionId: harness.calls.sessionConfig.sessionId, toolName: tool.name, toolArgs: args }, { sessionId: harness.calls.sessionConfig.sessionId });
+    assert.equal(admission.permissionDecision, "allow");
+    const admittedArgs = admission.modifiedArgs ?? args;
+    return tool.handler(admittedArgs, { ...invocation, arguments: admittedArgs });
+  };
+  await invokeTool(readTool, { path: exactPath }, "direct-read-precheck");
+  await invokeTool(searchTool, { query: "Fury" }, "direct-search-precheck");
+  assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ sessionId: harness.calls.sessionConfig.sessionId, toolName: "write", toolArgs: { path: exactPath } }, { sessionId: harness.calls.sessionConfig.sessionId })).permissionDecision, "deny");
   await writeFile(exactPath, "{\"private\":false,\"replacement\":\"one\"}\n");
   git(current.root, ["add", "package.json"]);
   git(current.root, ["commit", "-qm", "replacement object one"]);
@@ -2141,17 +2249,14 @@ test("production executor binds loaded SDK and producer identity and confines pe
   git(current.root, ["commit", "-qm", "replacement object two"]);
   const replacementTwo = git(current.root, ["rev-parse", "HEAD"]);
   git(current.root, ["replace", "-f", current.request.headRevision, replacementTwo]);
-  const invokeTool = (tool, args, toolCallId) => tool.handler(args, { sessionId: harness.calls.sessionConfig.sessionId, toolCallId, toolName: tool.name, arguments: args });
   const immutableRead = JSON.parse(await invokeTool(harness.calls.sessionConfig.tools.find((tool) => tool.name === "read"), { path: exactPath }, "direct-read-1"));
   assert.equal(immutableRead.repositoryRevision, current.request.headRevision);
   assert.equal(immutableRead.path, "package.json");
   assert.equal(immutableRead.content, "{\"private\":true}\n");
-  const readTool = harness.calls.sessionConfig.tools.find((tool) => tool.name === "read");
   const virtualTransition = JSON.parse(await invokeTool(readTool, { path: current.request.transitionPlanPath }, "direct-read-2"));
   assert.equal(virtualTransition.content, await readFile(join(current.root, current.request.transitionPlanPath), "utf8"));
   const pinnedParent = JSON.parse(await invokeTool(readTool, { path: "docs/missions/issue-319-plan.md" }, "direct-read-3"));
   assert.equal(pinnedParent.content, await readFile(join(current.root, "docs/missions/issue-319-plan.md"), "utf8"));
-  const searchTool = harness.calls.sessionConfig.tools.find((tool) => tool.name === "search");
   const deterministicSearch = JSON.parse(await invokeTool(searchTool, { query: "Parent", path: "docs" }, "direct-search-1"));
   assert.deepEqual(deterministicSearch.matches.map(({ path, line }) => ({ path, line })), [{ path: "docs/missions/issue-319-plan.md", line: 1 }]);
   for (const query of ["replacement object one", '"replacement":"one"', '"replacement":"two"']) {
@@ -2163,6 +2268,108 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: aliasPath, intention: "alias" })).kind, "reject");
   assert.equal(harness.calls.disconnect, 1);
   assert.equal(harness.calls.stop, 1);
+});
+
+test("production admission decodes live JSON text and preserves exact object compatibility", async () => {
+  const current = await fixture();
+  for (const [label, calls] of [
+    ["json-text", [
+      { toolName: "read", toolArgs: JSON.stringify({ path: "package.json" }) },
+      { toolName: "search", toolArgs: JSON.stringify({ query: "private", path: "package.json" }) },
+    ]],
+    ["object", [
+      { toolName: "read", toolArgs: { path: "package.json" } },
+      { toolName: "search", toolArgs: { query: "private" } },
+    ]],
+  ]) {
+    const harness = productionSdkHarness({ preToolUseCalls: calls });
+    const result = await runProductionExecutor(current, harness);
+    assert.equal(result.state, "completed", `${label}: ${JSON.stringify(result)}`);
+    assert.deepEqual(harness.calls.toolResults.map(({ invocation }) => invocation.arguments), [
+      { path: "package.json" },
+      label === "json-text" ? { query: "private", path: "package.json" } : { query: "private" },
+    ]);
+    assert.equal(JSON.parse(harness.calls.toolResults[0].result).path, "package.json");
+    assert.deepEqual(JSON.parse(harness.calls.toolResults[1].result).matches.map(({ path }) => path), ["package.json"]);
+  }
+});
+
+test("production admission rejects hostile JSON, byte, depth, path, key, and namespace inputs before effects", async () => {
+  const current = await fixture();
+  const exactBytes = (target) => {
+    const base = JSON.stringify({ path: "package.json" });
+    return `${base}${" ".repeat(target - Buffer.byteLength(base, "utf8"))}`;
+  };
+  for (const size of [8191, 8192]) {
+    const harness = productionSdkHarness({ preToolUseCalls: [{ toolName: "read", toolArgs: exactBytes(size) }] });
+    const result = await runProductionExecutor(current, harness);
+    assert.equal(result.state, "completed", `${size}: ${JSON.stringify(result)}`);
+    assert.equal(harness.calls.toolResults.length, 1);
+  }
+  const oversizedAscii = exactBytes(8193);
+  const oversizedMultibyte = JSON.stringify({ path: "package.json", padding: "é".repeat(4090) });
+  assert.equal(Buffer.byteLength(oversizedAscii, "utf8"), 8193);
+  assert.ok(Buffer.byteLength(oversizedMultibyte, "utf8") > 8192);
+  const hostile = [
+    ["malformed", "{"],
+    ["duplicate", '{"path":"package.json","path":"package.json"}'],
+    ["trailing", '{"path":"package.json"}x'],
+    ["scalar", '"package.json"'],
+    ["array", '[{"path":"package.json"}]'],
+    ["null", "null"],
+    ["oversized-ascii", oversizedAscii],
+    ["oversized-multibyte", oversizedMultibyte],
+    ["depth-two-container", '{"path":"package.json","extra":{"leaf":"x"}}'],
+    ["depth-three-container", '{"path":"package.json","extra":{"nested":{"leaf":"x"}}}'],
+    ["extra-key", { path: "package.json", extra: true }],
+    ["missing-key", {}],
+    ["wrong-key", { query: "private" }],
+    ["traversal", { path: "../package.json" }],
+    ["git-path", { path: ".git/config" }],
+    ["non-map", { path: "not-in-map.txt" }],
+  ];
+  for (const [label, toolArgs] of hostile) {
+    const harness = productionSdkHarness({ preToolUseCalls: [{ toolName: "read", toolArgs }] });
+    const result = await runProductionExecutor(current, harness);
+    assert.equal(result.state, "failed", `${label}: ${JSON.stringify(result)}`);
+    assert.equal(result.observations.unauthorizedToolOrEffectObserved, true, label);
+    assert.deepEqual(harness.calls.toolResults, [], label);
+  }
+  for (const [label, toolName] of [["unknown", "unknown"], ["namespace", "custom:read"], ["mcp-namespace", "mcp:read"]]) {
+    const harness = productionSdkHarness({ preToolUseCalls: [{ toolName, toolArgs: { path: "package.json" } }] });
+    const result = await runProductionExecutor(current, harness);
+    assert.equal(result.state, "failed", `${label}: ${JSON.stringify(result)}`);
+    assert.deepEqual(harness.calls.toolResults, [], label);
+  }
+  for (const [label, toolArgs] of [
+    ["empty-query", { query: "" }],
+    ["long-query", { query: "x".repeat(1025) }],
+    ["search-extra", { query: "private", extra: true }],
+    ["search-traversal", { query: "private", path: "../" }],
+  ]) {
+    const harness = productionSdkHarness({ preToolUseCalls: [{ toolName: "search", toolArgs }] });
+    const result = await runProductionExecutor(current, harness);
+    assert.equal(result.state, "failed", `${label}: ${JSON.stringify(result)}`);
+    assert.deepEqual(harness.calls.toolResults, [], label);
+  }
+});
+
+test("production pending admission is single-use, session-bound, and consumed only by an exact handler call", async () => {
+  const current = await fixture();
+  const cases = [
+    ["hook-bypass", { directToolCalls: [{ toolName: "read", toolArgs: { path: "package.json" } }] }],
+    ["stale-pending", { preToolUseCalls: [{ toolName: "read", toolArgs: { path: "package.json" }, skipHandler: true }] }],
+    ["duplicate-handler", { preToolUseCalls: [{ toolName: "read", toolArgs: { path: "package.json" }, duplicateHandler: true }] }],
+    ["concurrent-pending", { preToolUseCalls: [{ toolName: "read", toolArgs: { path: "package.json" }, beforeHandlerCalls: [{ toolName: "search", toolArgs: { query: "private" } }] }] }],
+    ["changed-valid-args", { preToolUseCalls: [{ toolName: "read", toolArgs: { path: "package.json" }, handlerArgs: { path: current.request.transitionPlanPath } }] }],
+    ["wrong-handler-session", { preToolUseCalls: [{ toolName: "read", toolArgs: { path: "package.json" }, invocation: { sessionId: "wrong-session", toolCallId: "wrong-session-call", toolName: "read", arguments: { path: "package.json" } } }] }],
+  ];
+  for (const [label, options] of cases) {
+    const harness = productionSdkHarness(options);
+    const result = await runProductionExecutor(current, harness);
+    assert.equal(result.state, "failed", `${label}: ${JSON.stringify(result)}`);
+    assert.equal(result.observations.unauthorizedToolOrEffectObserved, true, label);
+  }
 });
 
 test("production callback observations reject permissions and redact callback payloads", async () => {
