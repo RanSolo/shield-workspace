@@ -2371,6 +2371,8 @@ test("production admission rejects hostile JSON, byte, depth, path, key, and nam
     ["long-query", { query: "x".repeat(1025) }],
     ["search-extra", { query: "private", extra: true }],
     ["search-traversal", { query: "private", path: "../" }],
+    ["search-root-dot-alias", { query: "private", path: `${current.root}/.` }],
+    ["search-root-parent-alias", { query: "private", path: `${current.root}/sub/..` }],
   ]) {
     const harness = productionSdkHarness({ preToolUseCalls: [{ toolName: "search", toolArgs }] });
     const result = await runProductionExecutor(current, harness);

@@ -1434,7 +1434,7 @@ function validateReviewArtifactToolCall(repositoryRoot: string, artifactMap: Cop
       return entry === undefined ? { state: "invalid" } : { state: "valid", value: { kind: "read", entry, projection: Object.freeze({ path: entry.path }) } };
     }
     if (toolName !== "search" || (!exact(decoded, ["query"]) && !exact(decoded, ["query", "path"])) || typeof decoded.query !== "string" || decoded.query.length < 1 || decoded.query.length > 1024 || (decoded.path !== undefined && typeof decoded.path !== "string")) return { state: "invalid" };
-    const canonicalRootSearch = decoded.path !== undefined && isAbsolute(decoded.path) && resolve(decoded.path) === repositoryRoot;
+    const canonicalRootSearch = decoded.path === repositoryRoot;
     const prefix = decoded.path === undefined || canonicalRootSearch ? null : exactGitTreePath(repositoryRoot, decoded.path);
     const scoped = entries.filter((entry) => prefix === null || entry.path === prefix || entry.path.startsWith(`${prefix}/`));
     if (scoped.length === 0) return { state: "invalid" };
