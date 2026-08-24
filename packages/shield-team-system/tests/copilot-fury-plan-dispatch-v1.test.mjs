@@ -36,7 +36,14 @@ import {
   validateCopilotFuryPlanDispatchRequestV2,
   validateCopilotFuryPlanResultV2,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
-import { buildCopilotFuryReviewArtifactMapV1, createCopilotFuryExecutionToolBindingV1, validateCopilotFuryReviewArtifactMapV1 } from "../dist/copilot-fury-plan-dispatch-core-v1.mjs";
+import {
+  COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST,
+  COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_PACKET_DIGEST,
+  COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_TERMINAL_ENTRY_DIGEST,
+  buildCopilotFuryReviewArtifactMapV1,
+  createCopilotFuryExecutionToolBindingV1,
+  validateCopilotFuryReviewArtifactMapV1,
+} from "../dist/copilot-fury-plan-dispatch-core-v1.mjs";
 import { replaySeatDispatchReceiptsV1 } from "../dist/seat-dispatch-receipt-v1.mjs";
 import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptLedgerV1 } from "../dist/seat-dispatch-store.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
@@ -60,6 +67,29 @@ tools: [read, search, web]
 
 You are Fury. Review only the exact plan and return a technical verdict with authority none.
 `;
+
+const ISSUE_383_RECOVERY_FIXTURE = Object.freeze({
+  predecessorReceiptId: "receipt:sVgAqsU53kRLIUKg4frtNEzHy9vOqU3c",
+  terminalEntryDigest: "sha256:SN427iHPVSZwrmqUvs9bDEKu0k9LKEk69zMEf53Ujzc",
+  outputEvidenceDigest: "sha256:ZQ2YCXxtHe-bA3F1CvdiVorSWOEblvTKL4kWSnqBKHM",
+  dispositionCode: "COPILOT_EXECUTION_FAILED",
+  errors: Object.freeze(["Copilot session identity or policy drifted."]),
+  packetDigest: "sha256:z1jfC-m15ozX07UHP5hZaUMVNEvvAIIyyWGogi14fdM",
+});
+
+function matchesIssue383RecoveryFixture(receipt, evidence, packetDigest) {
+  return receipt.receiptId === ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId
+    && receipt.lastEntryDigest === ISSUE_383_RECOVERY_FIXTURE.terminalEntryDigest
+    && Array.isArray(receipt.outputEvidenceRefs)
+    && receipt.outputEvidenceRefs.length === 1
+    && receipt.outputEvidenceRefs[0] === ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest
+    && evidence.evidenceDigest === ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest
+    && evidence.receiptId === ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId
+    && evidence.packetDigest === ISSUE_383_RECOVERY_FIXTURE.packetDigest
+    && evidence.dispositionCode === ISSUE_383_RECOVERY_FIXTURE.dispositionCode
+    && JSON.stringify(evidence.errors) === JSON.stringify(ISSUE_383_RECOVERY_FIXTURE.errors)
+    && packetDigest === ISSUE_383_RECOVERY_FIXTURE.packetDigest;
+}
 
 function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
@@ -703,6 +733,89 @@ test("historical V1 rejects receipt and complete packet substitutions and preser
     assert.equal(fake.calls.preflight, 0);
     assert.equal(fake.calls.execute, 0);
   }
+});
+
+test("Issue #383 predecessor fixture exact-matches recovery signature, rejects substitutions, and replays one successor", async () => {
+  assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId);
+  assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_TERMINAL_ENTRY_DIGEST, ISSUE_383_RECOVERY_FIXTURE.terminalEntryDigest);
+  assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_OUTPUT_EVIDENCE_DIGEST, ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest);
+  assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_PACKET_DIGEST, ISSUE_383_RECOVERY_FIXTURE.packetDigest);
+
+  const current = await fixture();
+  const request = v1Request(current, { parentSessionId: `${current.request.parentSessionId}:issue-383-predecessor` });
+  const historical = historicalV1Ledger(current, request, "failed");
+  const predecessor = {
+    ...historical.projection,
+    receiptId: ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId,
+    lastEntryDigest: ISSUE_383_RECOVERY_FIXTURE.terminalEntryDigest,
+    outputEvidenceRefs: [ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest],
+  };
+  const evidence = {
+    ...historical.evidence(),
+    evidenceDigest: ISSUE_383_RECOVERY_FIXTURE.outputEvidenceDigest,
+    receiptId: ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId,
+    packetDigest: ISSUE_383_RECOVERY_FIXTURE.packetDigest,
+    outcome: "failed",
+    dispositionCode: ISSUE_383_RECOVERY_FIXTURE.dispositionCode,
+    errors: [...ISSUE_383_RECOVERY_FIXTURE.errors],
+  };
+
+  assert.equal(matchesIssue383RecoveryFixture(predecessor, evidence, ISSUE_383_RECOVERY_FIXTURE.packetDigest), true);
+  const expectation = recoveryClaimExpectation(predecessor);
+  const eligibility = evaluateCopilotFuryRecoveryEligibilityV1(predecessor, expectation, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId);
+  assert.equal(eligibility.state, "eligible", JSON.stringify(eligibility));
+  assert.match(eligibility.successor.packetId, /^packet:copilot-fury-recovery:/u);
+  assert.notEqual(eligibility.successor.receiptId, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId);
+  assert.deepEqual(evaluateCopilotFuryRecoveryEligibilityV1(predecessor, expectation, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId), eligibility);
+
+  const signatureSubstitutions = {
+    receipt: { ...predecessor, receiptId: "receipt:substitute" },
+    terminalEntry: { ...predecessor, lastEntryDigest: "sha256:substitute" },
+    outputEvidenceRef: { ...predecessor, outputEvidenceRefs: ["sha256:substitute"] },
+    evidenceDigest: { ...evidence, evidenceDigest: "sha256:substitute" },
+    evidenceReceipt: { ...evidence, receiptId: "receipt:substitute" },
+    evidencePacket: { ...evidence, packetDigest: "sha256:substitute" },
+    disposition: { ...evidence, dispositionCode: "DISPATCH_FAILED" },
+    error: { ...evidence, errors: ["substitute"] },
+    packet: "sha256:substitute",
+  };
+  for (const [field, substitution] of Object.entries(signatureSubstitutions)) {
+    const candidateReceipt = substitution === "sha256:substitute" || field.startsWith("evidence") || field === "disposition" || field === "error" ? predecessor : substitution;
+    const candidateEvidence = substitution === "sha256:substitute" || !field.startsWith("evidence") && field !== "disposition" && field !== "error" ? evidence : substitution;
+    const candidatePacketDigest = substitution === "sha256:substitute" ? substitution : ISSUE_383_RECOVERY_FIXTURE.packetDigest;
+    assert.equal(matchesIssue383RecoveryFixture(candidateReceipt, candidateEvidence, candidatePacketDigest), false, field);
+  }
+
+  const claimSubstitutions = {
+    dispatchId: (value) => ({ ...value, dispatchId: `${value.dispatchId}:substitute` }),
+    childTaskId: (value) => ({ ...value, childTaskId: `${value.childTaskId}:substitute` }),
+    childSessionId: (value) => ({ ...value, childSessionId: `${value.childSessionId}:substitute` }),
+    artifactRevision: (value) => ({ ...value, artifactRevision: "sha256:substitute" }),
+    inputEvidenceRefs: (value) => ({ ...value, inputEvidenceRefs: [...value.inputEvidenceRefs].reverse() }),
+  };
+  for (const [field, mutate] of Object.entries(claimSubstitutions)) {
+    assert.deepEqual(
+      evaluateCopilotFuryRecoveryEligibilityV1(mutate(predecessor), expectation, ISSUE_383_RECOVERY_FIXTURE.predecessorReceiptId),
+      { state: "invalid", code: "RECOVERABLE_PREDECESSOR_CLAIM_MISMATCH" },
+      field,
+    );
+  }
+
+  const successorExecutions = [];
+  const successorTerminals = new Map();
+  async function invokeSuccessor(successor) {
+    const prior = successorTerminals.get(successor.receiptId);
+    if (prior !== undefined) return { ...prior, replayed: true };
+    successorExecutions.push(successor.receiptId);
+    const terminal = { receiptId: successor.receiptId, state: "failed", code: ISSUE_383_RECOVERY_FIXTURE.dispositionCode, errors: [...ISSUE_383_RECOVERY_FIXTURE.errors] };
+    successorTerminals.set(successor.receiptId, terminal);
+    return { ...terminal, replayed: false };
+  }
+  const firstSuccessor = await invokeSuccessor(eligibility.successor);
+  const secondSuccessor = await invokeSuccessor(eligibility.successor);
+  assert.deepEqual(successorExecutions, [eligibility.successor.receiptId]);
+  assert.equal(firstSuccessor.replayed, false);
+  assert.deepEqual(secondSuccessor, { ...firstSuccessor, replayed: true });
 });
 
 test("V2 contract exhaustion terminalizes once with no findings and replays without execution", async () => {
