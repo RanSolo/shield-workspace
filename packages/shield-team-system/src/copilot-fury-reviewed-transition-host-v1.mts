@@ -205,6 +205,8 @@ export interface CopilotFuryReviewedTransitionHostDependenciesV1 {
   readonly materializeReviewedTransition?: typeof materializeReviewedMissionTransitionV1;
   readonly seedPersistence?: Partial<CopilotFuryReviewedTransitionSeedPersistenceV1>;
   readonly now?: () => Date;
+  /** Test-only bound override; production retains the five-second host wait. */
+  readonly dispatchWaitMs?: number;
   readonly beforeDispatch?: () => void | Promise<void>;
   readonly afterDispatch?: (result: CopilotFuryPlanDispatchResultV1) => void | Promise<void>;
   readonly beforeMaterialization?: () => void | Promise<void>;
@@ -1236,18 +1238,20 @@ const inFlightReviewedTransitions = new Map<string, Promise<PrepareReviewedMissi
 
 function concurrentDispatchPending(result: CopilotFuryPlanDispatchResultV1): boolean {
   return (result.state === "invalid" && result.code === "dispatch_receipt_lock_held") ||
+    (result.state === "recovery_required" && result.code === "DISPATCH_PENDING" && result.errors.length === 1 &&
+      result.errors[0] === "The exact dispatch receipt remains active; retry the same receipt without reinvoking Fury.") ||
     (result.state === "recovery_required" && result.code === "RECOVERY_REQUIRED" && result.errors.length === 1 &&
       result.errors[0] === "Existing dispatch is nonterminal and cannot be reinvoked.");
 }
 
-function boundedDispatchPending(): CopilotFuryPlanDispatchResultV1 {
+function boundedDispatchPending(result: CopilotFuryPlanDispatchResultV1): CopilotFuryPlanDispatchResultV1 {
   return Object.freeze({
-    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+    contractVersion: result.contractVersion,
     authority: "none" as const,
     state: "blocked" as const,
     code: "DISPATCH_PENDING",
-    errors: Object.freeze(["The exact dispatch receipt remains nonterminal after the bounded host wait."]),
-    receiptId: null,
+    errors: Object.freeze(["The exact dispatch receipt remains active after the bounded host wait; retry the same receipt without reinvoking Fury."]),
+    receiptId: result.receiptId,
     evidencePath: null,
     replayed: false,
     handoff: null,
@@ -1293,7 +1297,9 @@ async function prepareReviewedMissionTransitionInternal(
           (dependencies.dispatchDerivedPlanReview ?? dispatchCopilotFuryPlanReviewCoreV1)(request, derivedSource, dispatchDependencies);
     let dispatchResult = await dispatch(seed.seed.request, dependencies.dispatchDependencies);
     let pendingReceiptId: string | null = null;
-    const dispatchWaitDeadline = Date.now() + DISPATCH_LOCK_WAIT_MS;
+    const configuredDispatchWaitMs = dependencies.dispatchWaitMs ?? DISPATCH_LOCK_WAIT_MS;
+    const dispatchWaitMs = Number.isFinite(configuredDispatchWaitMs) && configuredDispatchWaitMs >= 0 ? configuredDispatchWaitMs : DISPATCH_LOCK_WAIT_MS;
+    const dispatchWaitDeadline = Date.now() + dispatchWaitMs;
     while (concurrentDispatchPending(dispatchResult) && Date.now() < dispatchWaitDeadline) {
       if (dispatchResult.receiptId !== null) {
         if (pendingReceiptId !== null && dispatchResult.receiptId !== pendingReceiptId) {
@@ -1304,7 +1310,7 @@ async function prepareReviewedMissionTransitionInternal(
       await new Promise<void>((resolveWait) => setTimeout(resolveWait, Math.min(SEED_INSTALL_WAIT_INTERVAL_MS, dispatchWaitDeadline - Date.now())));
       dispatchResult = await dispatch(seed.seed.request, dependencies.dispatchDependencies);
     }
-    if (concurrentDispatchPending(dispatchResult)) return boundedDispatchPending();
+    if (concurrentDispatchPending(dispatchResult)) return boundedDispatchPending(dispatchResult);
     if (pendingReceiptId !== null && dispatchResult.receiptId !== pendingReceiptId) {
       return closed("recovery_required", "DISPATCH_RECEIPT_IDENTITY_DRIFT", "Concurrent dispatch terminal replay changed receipt identity.");
     }

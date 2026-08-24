@@ -531,8 +531,22 @@ export interface CopilotFuryPlanExecutorV1 {
   readonly close?: () => Promise<void>;
 }
 
+export type CopilotFuryDurableSessionObservationV1 = Readonly<
+  | { state: "pending" | "uncertain"; receipt: SeatDispatchReceiptProjectionV1 }
+  | { state: "terminal"; receipt: SeatDispatchReceiptProjectionV1 }
+>;
+
+export type CopilotFuryDurableSessionObserverV1 = (input: Readonly<{
+  repositoryRoot: string;
+  request: CopilotFuryPlanDispatchRequestV1OrV2;
+  receipt: SeatDispatchReceiptProjectionV1;
+  packetDigest: string;
+}>) => Promise<CopilotFuryDurableSessionObservationV1>;
+
 export interface CopilotFuryPlanDispatchDependenciesV1 {
   readonly executor?: CopilotFuryPlanExecutorV1;
+  /** Read-only seam for reobserving an existing durable session; never executes Fury. */
+  readonly durableSessionObserver?: CopilotFuryDurableSessionObserverV1;
   readonly userCopilotHome?: string;
   readonly repositoryRootOverride?: string;
   readonly beforeClaim?: () => void | Promise<void>;
@@ -565,7 +579,7 @@ export type CopilotFuryPlanDispatchResultV1 =
   | (CommonDispatchResultV1 & Readonly<{ state: "completed"; disposition: "REVISE"; findings: readonly CopilotFuryPlanFindingV1[]; handoff: null }>)
   | (CommonDispatchResultV1 & Readonly<{ state: "failed" | "cancelled"; code: string; errors: readonly string[]; handoff: null }>)
   | (CommonDispatchResultV1 & Readonly<{ state: "recovery_required"; code: string; errors: readonly string[]; handoff: null }>)
-  | Readonly<{ contractVersion: typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION | typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2; authority: "none"; state: "blocked" | "invalid"; code: string; errors: readonly string[]; receiptId: null; evidencePath: null; replayed: false; handoff: null }>;
+  | Readonly<{ contractVersion: typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION | typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2; authority: "none"; state: "blocked" | "invalid"; code: string; errors: readonly string[]; receiptId: string | null; evidencePath: null; replayed: false; handoff: null }>;
 
 type StableFile = Readonly<{ path: string; bytes: string; identity: string; rawSha256: string }>;
 export type InternalLegacyDerivedTransitionPlanProvenanceV1 = Readonly<{
@@ -2516,6 +2530,36 @@ type ReplayPacketExpectationV1 = Readonly<{
   packetBytes: Uint8Array;
 }>;
 
+function validateObservedReceiptBinding(
+  request: CopilotFuryPlanDispatchRequestV1OrV2,
+  original: SeatDispatchReceiptProjectionV1,
+  observed: SeatDispatchReceiptProjectionV1,
+  packetDigest: string,
+): void {
+  const identityKeys = [
+    "schemaVersion", "contractVersion", "startedAt",
+    "receiptId", "dispatchId", "parentMissionId", "parentMissionRevision", "parentSessionId",
+    "childTaskId", "childSessionId", "accountableSeatId", "repositoryId", "repositoryWorkspaceId",
+    "repositoryRevision", "subjectId", "subjectRevision", "artifactId", "artifactRevision",
+    "configuredRuntime", "requestedRuntime", "toolExecution",
+  ] as const;
+  for (const key of identityKeys) {
+    if (canonicalJson(observed[key]) !== canonicalJson(original[key])) throw new Error("durable_session_immutable_binding_mismatch");
+  }
+  if (canonicalJson(observed.inputEvidenceRefs) !== canonicalJson(original.inputEvidenceRefs)) throw new Error("durable_session_immutable_binding_mismatch");
+  if (observed.parentMissionId !== request.missionId || observed.parentMissionRevision !== request.missionRevision ||
+      observed.parentSessionId !== request.parentSessionId || observed.accountableSeatId !== "fury" ||
+      observed.repositoryId !== request.repositoryId || observed.repositoryWorkspaceId !== request.repositoryWorkspaceId ||
+      observed.repositoryRevision !== request.headRevision || observed.subjectId !== request.subjectId ||
+      observed.subjectRevision !== request.subjectRevision || observed.artifactRevision !== request.subjectRevision ||
+      !observed.inputEvidenceRefs.some((ref) => ref.endsWith(`:${packetDigest}`))) {
+    throw new Error("durable_session_immutable_binding_mismatch");
+  }
+  if (!["started", "resumed", "completed", "failed", "cancelled"].includes(observed.state)) throw new Error("durable_session_state_invalid");
+  if ((observed.state === "completed" || observed.state === "failed" || observed.state === "cancelled") &&
+      (observed.outputEvidenceRefs === null || observed.outputEvidenceRefs.length === 0 || new Set(observed.outputEvidenceRefs).size !== observed.outputEvidenceRefs.length)) throw new Error("durable_session_terminal_evidence_ambiguous");
+}
+
 function validateHistoricalV1EvidenceBinding(
   evidence: Plain,
   request: CopilotFuryPlanDispatchRequestV1,
@@ -2535,8 +2579,18 @@ function validateHistoricalV1EvidenceBinding(
   if (!Array.isArray(evidence.errors) || evidence.errors.some((value) => typeof value !== "string") || !safePlain(evidence.artifacts)) throw new Error("replayed_evidence_shape_invalid");
 }
 
-async function replayExisting(request: CopilotFuryPlanDispatchRequestV1OrV2, source: InternalResolvedTransitionPlanSourceV1, claim: Extract<SeatDispatchPacketClaimContractResultV1, { state: "valid" }>["value"], recovery: RecoveryBindingV2 | null = null, expectedPacket?: ReplayPacketExpectationV1): Promise<CopilotFuryPlanDispatchResultV1> {
-  const receipt = claim.receipt;
+async function replayExisting(request: CopilotFuryPlanDispatchRequestV1OrV2, source: InternalResolvedTransitionPlanSourceV1, claim: Extract<SeatDispatchPacketClaimContractResultV1, { state: "valid" }>["value"], recovery: RecoveryBindingV2 | null = null, expectedPacket?: ReplayPacketExpectationV1, durableSessionObserver?: CopilotFuryDurableSessionObserverV1): Promise<CopilotFuryPlanDispatchResultV1> {
+  let receipt = claim.receipt;
+  if ((receipt.state === "started" || receipt.state === "resumed") && durableSessionObserver !== undefined) {
+    const observed = await durableSessionObserver({ repositoryRoot: request.repositoryRoot, request, receipt, packetDigest: claim.packetDigest });
+    if (!safePlain(observed) || !["pending", "uncertain", "terminal"].includes(observed.state)) throw new Error("durable_session_discriminator_invalid");
+    if ((observed.state === "pending" || observed.state === "uncertain") && !["started", "resumed"].includes(observed.receipt.state)) throw new Error("durable_session_discriminator_mismatch");
+    if (observed.state === "terminal" && !["completed", "failed", "cancelled"].includes(observed.receipt.state)) throw new Error("durable_session_discriminator_mismatch");
+    validateObservedReceiptBinding(request, receipt, observed.receipt, claim.packetDigest);
+    if (observed.state === "pending") return deepFreeze({ contractVersion: request.contractVersion, authority: "none" as const, state: "recovery_required" as const, code: "DISPATCH_PENDING", errors: ["The exact dispatch receipt remains active; retry the same receipt without reinvoking Fury."], missionId: request.missionId, receiptId: receipt.receiptId, evidencePath: null, replayed: true, handoff: null });
+    if (observed.state === "uncertain") return deepFreeze({ contractVersion: request.contractVersion, authority: "none" as const, state: "recovery_required" as const, code: "DISPATCH_UNCERTAIN", errors: ["The exact dispatch session state is uncertain; retry the same receipt after host recovery."], missionId: request.missionId, receiptId: receipt.receiptId, evidencePath: null, replayed: true, handoff: null });
+    receipt = observed.receipt;
+  }
   const common = {
     contractVersion: request.contractVersion,
     authority: "none" as const,
@@ -2558,8 +2612,18 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1OrV2, sou
     if (evidence.evidenceDigest !== evidenceDigest || evidence.receiptId !== receipt.receiptId || evidence.packetDigest !== claim.packetDigest || evidence.outcome !== "interrupted" || evidence.dispositionCode !== receipt.originalDisposition.code || canonicalJson(evidence.errors) !== canonicalJson(receipt.originalDisposition.errors)) throw new Error("interrupted_recovery_binding_mismatch");
     return deepFreeze({ ...common, state: "recovery_required" as const, code: receipt.originalDisposition.code, errors: [...receipt.originalDisposition.errors], evidencePath, handoff: null });
   }
-  if (receipt.state === "started" || receipt.state === "resumed" || receipt.state === "interrupted") {
-    return deepFreeze({ ...common, state: "recovery_required" as const, code: "RECOVERY_REQUIRED", errors: ["Existing dispatch is nonterminal and cannot be reinvoked."], evidencePath: null, handoff: null });
+  if (receipt.state === "started" || receipt.state === "resumed") {
+    return deepFreeze({
+      ...common,
+      state: "recovery_required" as const,
+      code: "DISPATCH_PENDING",
+      errors: ["The exact dispatch receipt remains active; retry the same receipt without reinvoking Fury."],
+      evidencePath: null,
+      handoff: null,
+    });
+  }
+  if (receipt.state === "interrupted") {
+    return deepFreeze({ ...common, state: "recovery_required" as const, code: "RECOVERY_REQUIRED", errors: ["Existing interrupted dispatch has no verifiable recovery evidence."], evidencePath: null, handoff: null });
   }
   const evidencePath = await terminalEvidencePathFromReceipt(request, receipt, claim.packetDigest);
   const evidence = await parseEvidenceFile(request.repositoryRoot, evidencePath);
@@ -3475,7 +3539,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
           packetDigest,
           receipt: existing[0],
           claimStatus: "already_claimed",
-        }, null, { plan, packetId: predecessorIdentity.packetId, packetBytes });
+        }, null, { plan, packetId: predecessorIdentity.packetId, packetBytes }, suppliedDependencies.durableSessionObserver);
       }
       identity = recovery.successor;
       activeExecutionIdentity = recovery.executionIdentity;
@@ -3515,7 +3579,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
           packetDigest,
           receipt: successor,
           claimStatus: "already_claimed",
-        }, recoveryBinding, { plan, packetId: identity.packetId, packetBytes });
+        }, recoveryBinding, { plan, packetId: identity.packetId, packetBytes }, suppliedDependencies.durableSessionObserver);
       }
     }
     if (existing.length === 0 && projections.some((candidate) => candidate.inputEvidenceRefs.some((ref) => ref.startsWith(bindingPrefix)))) return invalidFor(request, "packet_claim_conflict", "Existing packet binding conflicts with the exact request.");
@@ -3577,7 +3641,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     if (request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION && !receiptMatchesClaimExpectation(claim.value.receipt, predecessorClaimExpectation(request, plan, identity, claimedInputEvidenceRefs, normalizedReceiptTimestamp(claimStartedAt)))) {
       return invalidFor(request, "packet_claim_conflict", "Existing V1 packet claim conflicts with the complete request identity.");
     }
-    if (claim.value.claimStatus === "already_claimed") return await replayExisting(request, source, claim.value, recoveryBinding, { plan, packetId, packetBytes });
+    if (claim.value.claimStatus === "already_claimed") return await replayExisting(request, source, claim.value, recoveryBinding, { plan, packetId, packetBytes }, suppliedDependencies.durableSessionObserver);
     const evidenceDirectory = await ensureEvidenceDirectory(request.repositoryRoot, request.missionId);
     await suppliedDependencies.afterClaimBeforeExecution?.();
     const persistence = await materializePersistencePath(request.repositoryRoot, activeExecutionIdentity.claimKey);
@@ -3711,7 +3775,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       if (claimedReceipt.state !== "started" && claimedReceipt.state !== "resumed") {
         try {
           if (packetBytes === null) throw new Error("replay_packet_expectation_unavailable");
-          return await replayExisting(request, source, { logPath: ledger.value.logPath, byteLength: 0, packetDigest, receipt: claimedReceipt, claimStatus: "already_claimed" }, recoveryBinding, { plan, packetId, packetBytes });
+          return await replayExisting(request, source, { logPath: ledger.value.logPath, byteLength: 0, packetDigest, receipt: claimedReceipt, claimStatus: "already_claimed" }, recoveryBinding, { plan, packetId, packetBytes }, suppliedDependencies.durableSessionObserver);
         } catch (verificationError) {
           return recovery([message, verificationError instanceof Error ? verificationError.message : "Existing terminal receipt verification failed."]);
         }
@@ -3751,7 +3815,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
           if (matches.length === 1 && matches[0].state !== "started" && matches[0].state !== "resumed") {
             try {
               if (packetBytes === null) throw new Error("replay_packet_expectation_unavailable");
-              return await replayExisting(request, source, { logPath: ledger.value.logPath, byteLength: 0, packetDigest, receipt: matches[0], claimStatus: "already_claimed" }, recoveryBinding, { plan, packetId, packetBytes });
+              return await replayExisting(request, source, { logPath: ledger.value.logPath, byteLength: 0, packetDigest, receipt: matches[0], claimStatus: "already_claimed" }, recoveryBinding, { plan, packetId, packetBytes }, suppliedDependencies.durableSessionObserver);
             } catch { /* return the receipt-bound uncertainty below */ }
           }
         }
