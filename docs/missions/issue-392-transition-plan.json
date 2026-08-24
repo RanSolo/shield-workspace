@@ -1,0 +1,44 @@
+{
+  "schemaId": "mission.transition-plan.v1",
+  "authority": "none",
+  "missionId": "mission:issue-392-ranged-read",
+  "subjectId": "github:RanSolo/shield-workspace/issue/392",
+  "repositoryId": "RanSolo/shield-workspace",
+  "planningBaseRevision": "90791997d05e98ddbf37cd613d6901c1564e3432",
+  "parentPlanCommit": "36d8390e2c2eb9dfe23becdfac209d79911eafd6",
+  "parentPlanPath": "docs/missions/issue-392-ranged-read-plan.md",
+  "parentPlanRawSha256": "b8e9f70f77f395262e3d0990998bf2c2cfda43cebc77a96200d62abaf18256b8",
+  "transitionKind": "fresh_authorize_wheels_up",
+  "boundedOutcome": "May extends the repository-owned Fury read admission with optional bounded line_start and line_end integers, deterministic tracked-Git-tree line semantics, redacted recoverable admission diagnostics, and machine-generated read/search shape guidance, while preserving fail-closed security, authority-none capabilities, exact #390 replay identity, and no replay of the failed #392 evidence receipt.",
+  "approvedRelativePaths": [
+    "docs/missions/issue-392-ranged-read-plan.md",
+    "docs/missions/issue-392-transition-plan.json",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
+    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs"
+  ],
+  "publicationPaths": [
+    "docs/missions/issue-392-ranged-read-plan.md",
+    "docs/missions/issue-392-transition-plan.json",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
+    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs"
+  ],
+  "approvedActionIds": ["action:issue-392:implement", "action:issue-392:validate"],
+  "approvedEffectClasses": ["behavioral_implementation", "verification"],
+  "approvedEffectKeys": ["effect:issue-392:diagnostics", "effect:issue-392:ranged-read"],
+  "approvedCapabilities": ["filesystem_write", "process_execute"],
+  "validationCommandIds": ["validation:issue-392:affected", "validation:issue-392:focused"],
+  "modelId": "gpt-5.6-luna",
+  "reasoningRuntimeId": "runtime:codex-hosted-may-luna",
+  "toolExecutorId": "executor:codex-hosted-workspace-tools",
+  "exclusions": [
+    "review.comment.publish",
+    "review.pull_request.update_draft",
+    "review.pull_request.mark_ready",
+    "merge",
+    "deployment",
+    "release",
+    "final_acceptance"
+  ],
+  "id": "transition-plan:Z2_szNqwxxp0DGDqGYthTOHtqRmfGQHQf9QU08q_zTM",
+  "digest": "sha256:Z2_szNqwxxp0DGDqGYthTOHtqRmfGQHQf9QU08q_zTM"
+}
