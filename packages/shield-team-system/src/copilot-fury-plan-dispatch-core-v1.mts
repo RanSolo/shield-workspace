@@ -2583,6 +2583,7 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1OrV2, sou
   let receipt = claim.receipt;
   if ((receipt.state === "started" || receipt.state === "resumed") && durableSessionObserver !== undefined) {
     const observed = await durableSessionObserver({ repositoryRoot: request.repositoryRoot, request, receipt, packetDigest: claim.packetDigest });
+    if (!safePlain(observed) || !["pending", "uncertain", "terminal"].includes(observed.state)) throw new Error("durable_session_discriminator_invalid");
     if ((observed.state === "pending" || observed.state === "uncertain") && !["started", "resumed"].includes(observed.receipt.state)) throw new Error("durable_session_discriminator_mismatch");
     if (observed.state === "terminal" && !["completed", "failed", "cancelled"].includes(observed.receipt.state)) throw new Error("durable_session_discriminator_mismatch");
     validateObservedReceiptBinding(request, receipt, observed.receipt, claim.packetDigest);

@@ -291,6 +291,22 @@ test("durable replay rejects contradictory observer discriminator before executi
   assert.deepEqual(result.errors, ["durable_session_discriminator_mismatch"]);
 });
 
+test("durable replay rejects unknown observer discriminator before execution", async () => {
+  const current = await fixture();
+  const request = v1Request(current);
+  const startedLedger = historicalV1Ledger(current, request, "started");
+  const result = await dispatchCopilotFuryPlanReviewV1(request, {
+    executor: { async preflight() { throw new Error("must not preflight"); }, async execute() { throw new Error("must not execute"); } },
+    userCopilotHome: current.userCopilotHome,
+    readDispatchLedger: startedLedger.readDispatchLedger,
+    async claimDispatchPacket() { return { state: "valid", logPath: join(current.root, ".shield", "dispatch-receipts.jsonl"), byteLength: 0, packetDigest: startedLedger.packetDigest(), receipt: startedLedger.projection, claimStatus: "already_claimed" }; },
+    async durableSessionObserver({ receipt }) { return { state: "future", receipt }; },
+  });
+  assert.equal(result.state, "invalid", JSON.stringify(result));
+  assert.equal(result.code, "PRECLAIM_VALIDATION_FAILED");
+  assert.deepEqual(result.errors, ["durable_session_discriminator_invalid"]);
+});
+
 function architectureResult(current, overrides = {}) {
   return { schemaVersion: 2, contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: current.plan.id, reviewedArtifactRevision: current.plan.digest, verdict: "PASS", findings: [], reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2, repositoryRevision: current.request.headRevision, ...overrides };
 }
