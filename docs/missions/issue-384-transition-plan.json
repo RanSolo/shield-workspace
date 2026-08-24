@@ -1,0 +1,59 @@
+{
+  "schemaId": "mission.transition-plan.v1",
+  "authority": "none",
+  "missionId": "mission:issue-intake:pUZP-oL0sUtRqrDvDry8jwT5M4RZvooCYSmixCKxVlA",
+  "subjectId": "github:RanSolo/shield-workspace/issue/384",
+  "repositoryId": "RanSolo/shield-workspace",
+  "planningBaseRevision": "a93ab6c406bc4315eb5f1f5bd32f13c970aadbca",
+  "parentPlanCommit": "a79681eaffce7b9a521ddc761482d89165fb4c58",
+  "parentPlanPath": "docs/missions/issue-384-fury-tool-policy-plan.md",
+  "parentPlanRawSha256": "13a94ff84acda3d4d56ca396507d3482bdc7ff4eddc1205032409fff89b88812",
+  "transitionKind": "fresh_authorize_wheels_up",
+  "boundedOutcome": "Add bounded redacted production callback observations without widening Fury tool policy, exact-bind one-use recovery of the observed Issue #383 failed receipt, and replay the successor without repeated execution.",
+  "approvedRelativePaths": [
+    "docs/missions/issue-384-fury-tool-policy-plan.md",
+    "docs/missions/issue-384-transition-plan.json",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
+    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs"
+  ],
+  "publicationPaths": [
+    "docs/missions/issue-384-fury-tool-policy-plan.md",
+    "docs/missions/issue-384-transition-plan.json",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
+    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs"
+  ],
+  "approvedActionIds": [
+    "action:issue-384:implement",
+    "action:issue-384:validate"
+  ],
+  "approvedEffectClasses": [
+    "behavioral_implementation",
+    "verification"
+  ],
+  "approvedEffectKeys": [
+    "effect:issue-384:diagnostic",
+    "effect:issue-384:recovery"
+  ],
+  "approvedCapabilities": [
+    "filesystem_write",
+    "process_execute"
+  ],
+  "validationCommandIds": [
+    "validation:issue-384:affected",
+    "validation:issue-384:focused"
+  ],
+  "modelId": "gpt-5.6-luna",
+  "reasoningRuntimeId": "runtime:codex-hosted-may-luna",
+  "toolExecutorId": "executor:codex-hosted-workspace-tools",
+  "exclusions": [
+    "review.comment.publish",
+    "review.pull_request.update_draft",
+    "review.pull_request.mark_ready",
+    "merge",
+    "deployment",
+    "release",
+    "final_acceptance"
+  ],
+  "id": "transition-plan:Zl2XFEK_FDMQ13PAu8RwL5HcZflnk9zwUm4YWq2WZXk",
+  "digest": "sha256:Zl2XFEK_FDMQ13PAu8RwL5HcZflnk9zwUm4YWq2WZXk"
+}
