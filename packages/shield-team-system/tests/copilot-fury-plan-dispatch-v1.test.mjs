@@ -16,7 +16,6 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
   COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
   COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID,
-  COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_SUCCESSOR_RECEIPT_ID,
   COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
   COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
   COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS,
@@ -444,7 +443,7 @@ function productionPassOutput(current) {
 }
 
 function productionSdkHarness(options = {}) {
-  const calls = { clientOptions: null, sessionConfig: null, prompts: [], toolResults: [], construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0, initializeAndValidate: 0, getCurrentMetadata: 0 };
+  const calls = { clientOptions: null, sessionConfig: null, prompts: [], toolResults: [], permissionResults: [], construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0, initializeAndValidate: 0, getCurrentMetadata: 0 };
   const event = (type, data) => ({ id: randomUUID(), parentId: null, timestamp: new Date().toISOString(), type, data });
   class CopilotClient {
     constructor(clientOptions) { calls.clientOptions = clientOptions; calls.construct += 1; options.onConstruct?.(clientOptions); }
@@ -472,12 +471,19 @@ function productionSdkHarness(options = {}) {
         async sendAndWait(request) {
           calls.prompts.push(request.prompt);
           if (options.eventType) config.onEvent(event(options.eventType, options.eventData ?? {}));
+          for (const permissionCall of options.permissionCalls ?? []) {
+            calls.permissionResults.push(await config.onPermissionRequest(permissionCall.request, permissionCall.invocation ?? { sessionId: config.sessionId }));
+          }
+          for (const mcpCall of options.mcpCalls ?? []) {
+            await assert.rejects(config.hooks.onPreMcpToolCall(mcpCall));
+          }
           for (const toolCall of options.preToolUseCalls ?? []) {
-            const decision = await config.hooks.onPreToolUse(toolCall);
+            const hookInput = { sessionId: config.sessionId, timestamp: new Date(), workingDirectory: config.workingDirectory, ...toolCall };
+            const decision = await config.hooks.onPreToolUse(hookInput, { sessionId: config.sessionId });
             if (decision.permissionDecision === "allow") {
-              const tool = config.tools.find((candidate) => candidate.name === toolCall.toolName);
+              const tool = config.tools.find((candidate) => candidate.name === hookInput.toolName);
               if (tool === undefined || typeof tool.handler !== "function") throw new Error("production harness observed missing allowed handler");
-              calls.toolResults.push({ name: toolCall.toolName, result: await tool.handler(toolCall.toolArgs) });
+              calls.toolResults.push({ name: hookInput.toolName, result: await tool.handler(hookInput.toolArgs) });
             }
           }
           if (options.cancel) {
@@ -1693,8 +1699,7 @@ test("claim winner privately materializes deterministic persistence and replacem
 });
 
 test("production ordinary-replays a non-allowlisted same-signature failure while pure mechanics remain deterministic", async () => {
-  assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID, "receipt:Y40rTRNdpEsqc9t24wRZ470R0zzYyk5G");
-  assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_SUCCESSOR_RECEIPT_ID, "receipt:3joci3m8iFvPsfeyceBy8b3uH8dfv111");
+  assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID, "receipt:sVgAqsU53kRLIUKg4frtNEzHy9vOqU3c");
   const current = await fixture();
   const failedExecutor = {
     async preflight() { return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
@@ -1952,6 +1957,20 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal(harness.calls.initializeAndValidate, 1);
   assert.equal(harness.calls.getCurrentMetadata, 1);
   assert.deepEqual(harness.calls.toolResults.map(({ name }) => name), ["read", "search"]);
+  assert.deepEqual(result.observations.callbackObservation.records.map(({ surface, tool, decision, expectedSessionMatch }) => ({ surface, tool, decision, expectedSessionMatch })), [
+    { surface: "pre_tool", tool: "read", decision: "allow", expectedSessionMatch: "match" },
+    { surface: "handler", tool: "read", decision: "invoked", expectedSessionMatch: "absent" },
+    { surface: "pre_tool", tool: "search", decision: "allow", expectedSessionMatch: "match" },
+    { surface: "handler", tool: "search", decision: "invoked", expectedSessionMatch: "absent" },
+  ]);
+  assert.deepEqual(result.observations.callbackObservation.records.map(({ callbackIdentity }) => callbackIdentity), [
+    { sessionId: "present", toolCallId: "absent" },
+    { sessionId: "absent", toolCallId: "absent" },
+    { sessionId: "present", toolCallId: "absent" },
+    { sessionId: "absent", toolCallId: "absent" },
+  ]);
+  assert.equal(result.observations.callbackObservation.truncated, false);
+  assert.equal(result.observations.callbackObservation.totalCount, 4);
   assert.equal(JSON.parse(harness.calls.toolResults[0].result).content, "{\"private\":true}\n");
   assert.deepEqual(JSON.parse(harness.calls.toolResults[1].result).matches.map(({ path }) => path), ["package.json"]);
   const exactPath = join(current.root, "package.json");
@@ -1993,6 +2012,49 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: aliasPath, intention: "alias" })).kind, "reject");
   assert.equal(harness.calls.disconnect, 1);
   assert.equal(harness.calls.stop, 1);
+});
+
+test("production callback observations reject permissions and redact callback payloads", async () => {
+  const current = await fixture();
+  const secret = "do-not-retain-this-secret";
+  const oversized = { path: secret, query: "private", ["oversized-secret-key"]: secret };
+  for (let index = 0; index < 8; index += 1) oversized[`extra-${index}`] = secret;
+  const harness = productionSdkHarness({
+    permissionCalls: [{ request: { kind: "read", path: secret, intention: secret, toolCallId: "tool-call-secret" } }],
+    preToolUseCalls: [{ toolName: "write", toolArgs: oversized }],
+  });
+  const result = await runProductionExecutor(current, harness);
+  assert.equal(result.state, "failed", JSON.stringify(result));
+  assert.equal(result.observations.unauthorizedToolOrEffectObserved, true);
+  const observation = result.observations.callbackObservation;
+  assert.equal(observation.version, "shield.copilot-fury.callback-observation.v1");
+  assert.deepEqual(observation.records.map(({ surface, tool, permissionKind, decision, reason }) => ({ surface, tool, permissionKind, decision, reason })), [
+    { surface: "permission", tool: "unknown", permissionKind: "read", decision: "reject", reason: "permission_rejected" },
+    { surface: "pre_tool", tool: "unknown", permissionKind: "unknown", decision: "deny", reason: "shape_rejected" },
+    { surface: "handler", tool: "unknown", permissionKind: "unknown", decision: "not_invoked", reason: "shape_rejected" },
+  ]);
+  assert.deepEqual(observation.records[0].callbackIdentity, { sessionId: "present", toolCallId: "present" });
+  assert.equal(observation.records[0].expectedSessionMatch, "match");
+  assert.equal(JSON.stringify(observation).includes(secret), false);
+  assert.equal(JSON.stringify(observation).includes("oversized-secret-key"), false);
+  assert.equal(JSON.stringify(observation).includes("tool-call-secret"), false);
+  assert.equal(harness.calls.permissionResults[0].kind, "reject");
+  assert.deepEqual(harness.calls.toolResults, []);
+});
+
+test("production callback observations cap records and retain the first overflow denial", async () => {
+  const current = await fixture();
+  const calls = Array.from({ length: 20 }, () => ({ toolName: "write", toolArgs: { path: "package.json" } }));
+  const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: calls }));
+  assert.equal(result.state, "failed", JSON.stringify(result));
+  const observation = result.observations.callbackObservation;
+  assert.equal(observation.totalCount, 40);
+  assert.equal(observation.truncated, true);
+  assert.equal(observation.records.length, 32);
+  assert.equal(observation.records.at(-1).ordinal, 33);
+  assert.equal(observation.records.at(-1).decision, "deny");
+  assert.equal(observation.records.at(-1).reason, "tool_or_arguments_denied");
+  assert.ok(observation.records.every((record, index) => index === 31 || record.ordinal < observation.records.at(-1).ordinal));
 });
 
 test("production hook and handler read a map-bound virtual transition absent from exact HEAD", async () => {
@@ -2088,7 +2150,7 @@ test("missing or duplicate execution descriptor registration fails before any SD
     assert.equal(result.state, "blocked");
     assert.equal(result.code, "FURY_TOOL_BINDING_INVALID");
   }
-  assert.deepEqual(harness.calls, { clientOptions: null, sessionConfig: null, prompts: [], toolResults: [], construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0, initializeAndValidate: 0, getCurrentMetadata: 0 });
+  assert.deepEqual(harness.calls, { clientOptions: null, sessionConfig: null, prompts: [], toolResults: [], permissionResults: [], construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0, initializeAndValidate: 0, getCurrentMetadata: 0 });
 });
 
 test("production executor denies malformed, aliased, escaping, and Git-metadata tool arguments before execution", async () => {
