@@ -1836,6 +1836,51 @@ test("replay rejects malformed or conflicting new admission evidence and preserv
   assert.deepEqual(legacyReplay.errors, ["historical failed"]);
 });
 
+test("legacy replay ignores qualifying callback denial without new admission evidence", async () => {
+  const current = await fixture();
+  const request = v1Request(current);
+  const expected = admissionFailureFixture();
+  const history = historicalV1Ledger(current, request, "failed", {
+    mutateEvidence(evidence) {
+      return { ...evidence, observations: { callbackObservation: expected.callbackObservation } };
+    },
+  });
+  const replayExecutor = executor(current.plan);
+  const replay = await dispatchCopilotFuryPlanReviewV1(request, {
+    executor: replayExecutor.value,
+    userCopilotHome: current.userCopilotHome,
+    readDispatchLedger: history.readDispatchLedger,
+  });
+  assert.equal(replay.state, "failed", JSON.stringify(replay));
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.code, "DISPATCH_FAILED");
+  assert.deepEqual(replay.errors, ["historical failed"]);
+  assert.equal(Object.hasOwn(replay, "admissionFailure"), false);
+  assert.equal(replayExecutor.calls.preflight, 0);
+  assert.equal(replayExecutor.calls.execute, 0);
+});
+
+test("replay rejects new admission code without observations before execution", async () => {
+  const current = await fixture();
+  const request = v1Request(current);
+  const history = historicalV1Ledger(current, request, "failed", {
+    mutateEvidence(evidence) {
+      const { observations, ...withoutObservations } = evidence;
+      return { ...withoutObservations, dispositionCode: "FURY_TOOL_ADMISSION_DENIED", errors: ["Fury tool admission denied; create a fresh corrected successor."] };
+    },
+  });
+  const replayExecutor = executor(current.plan);
+  const replay = await dispatchCopilotFuryPlanReviewV1(request, {
+    executor: replayExecutor.value,
+    userCopilotHome: current.userCopilotHome,
+    readDispatchLedger: history.readDispatchLedger,
+  });
+  assert.equal(replay.state, "invalid", JSON.stringify(replay));
+  assert.match(replay.errors.join(" "), /replayed_admission_failure_malformed/u);
+  assert.equal(replayExecutor.calls.preflight, 0);
+  assert.equal(replayExecutor.calls.execute, 0);
+});
+
 test("claim failure and unsafe evidence ancestry prevent model execution", async () => {
   const claimFailure = await fixture();
   const claimExecutor = executor(claimFailure.plan);

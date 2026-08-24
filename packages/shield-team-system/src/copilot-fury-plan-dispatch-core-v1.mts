@@ -3524,7 +3524,16 @@ function validateAdmissionFailureAgreement(
 
 function replayAdmissionFailure(evidence: Plain): CopilotFuryAdmissionFailureV1 | undefined {
   if (Object.hasOwn(evidence, "admissionFailure")) throw new Error("replayed_admission_failure_malformed");
-  return validateAdmissionFailureAgreement(evidence.outcome, evidence.dispositionCode, evidence.errors, evidence.observations, safePlain(evidence.observations) ? evidence.observations.admissionFailure : undefined, "replayed_admission_failure_malformed");
+  const observations = safePlain(evidence.observations) ? evidence.observations : undefined;
+  if (observations === undefined) {
+    if (evidence.dispositionCode === ADMISSION_FAILURE_CODE) throw new Error("replayed_admission_failure_malformed");
+    return undefined;
+  }
+  if (!Object.hasOwn(observations, "admissionFailure")) {
+    if (evidence.dispositionCode === ADMISSION_FAILURE_CODE) throw new Error("replayed_admission_failure_malformed");
+    return undefined;
+  }
+  return validateAdmissionFailureAgreement(evidence.outcome, evidence.dispositionCode, evidence.errors, observations, observations.admissionFailure, "replayed_admission_failure_malformed");
 }
 
 function validCallbackObservation(value: unknown): value is CopilotFuryCallbackObservationV1 {
