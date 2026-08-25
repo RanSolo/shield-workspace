@@ -1,0 +1,48 @@
+{
+  "schemaId": "mission.transition-plan.v1",
+  "authority": "none",
+  "missionId": "mission:issue-intake:uJZqpB8trZG10R-w2BuQXxu1QKVVGqo_xL5vQenuSZ8",
+  "subjectId": "github:RanSolo/shield-workspace/issue/394",
+  "repositoryId": "RanSolo/shield-workspace",
+  "planningBaseRevision": "68f68a9ea8fa4652f6bc96a9a057c25cee3bcd1d",
+  "parentPlanCommit": "e81c6ec20a0f07d1cef4ee0c3925082dd027f90d",
+  "parentPlanPath": "docs/missions/issue-394-corrected-successor-plan.md",
+  "parentPlanRawSha256": "afc851d20ebaf3278e8c8b4cf0f7c5dd9f39bd2f4d51f00be74500cc87c15d1c",
+  "transitionKind": "fresh_authorize_wheels_up",
+  "boundedOutcome": "May adds closed non-sensitive Fury search-path denial categories and correction hints, plus one repository-owned authority-none operation that consumes the exact failed receipt and original request without replaying it, revalidates unchanged bindings, and emits one fresh predecessor-bound corrected successor. It cannot broaden tools, effects, repository scope, plan, model/runtime/executor, authority, or sensitive evidence; malformed, stale, conflicting, ambiguous, consumed, and non-recoverable evidence fails closed; identical retry is idempotent.",
+  "approvedRelativePaths": [
+    "docs/missions/issue-394-corrected-successor-plan.md",
+    "docs/missions/issue-394-transition-plan.json",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
+    "packages/shield-team-system/src/mission-cli.mts",
+    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs",
+    "packages/shield-team-system/tests/supervised-cli.test.mjs"
+  ],
+  "publicationPaths": [
+    "docs/missions/issue-394-corrected-successor-plan.md",
+    "docs/missions/issue-394-transition-plan.json",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
+    "packages/shield-team-system/src/mission-cli.mts",
+    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs",
+    "packages/shield-team-system/tests/supervised-cli.test.mjs"
+  ],
+  "approvedActionIds": ["action:issue-394:implement", "action:issue-394:validate"],
+  "approvedEffectClasses": ["behavioral_implementation", "verification"],
+  "approvedEffectKeys": ["effect:issue-394:diagnostic-hint", "effect:issue-394:successor"],
+  "approvedCapabilities": ["filesystem_write", "process_execute"],
+  "validationCommandIds": ["validation:issue-394:affected", "validation:issue-394:focused"],
+  "modelId": "gpt-5.6-luna",
+  "reasoningRuntimeId": "runtime:codex-hosted-may-luna",
+  "toolExecutorId": "executor:codex-hosted-workspace-tools",
+  "exclusions": [
+    "review.comment.publish",
+    "review.pull_request.update_draft",
+    "review.pull_request.mark_ready",
+    "merge",
+    "deployment",
+    "release",
+    "final_acceptance"
+  ],
+  "id": "transition-plan:jxoUSxHc_deXUUu4XIzSPGfzfjt5nmD0Tovv5ejYNNQ",
+  "digest": "sha256:jxoUSxHc_deXUUu4XIzSPGfzfjt5nmD0Tovv5ejYNNQ"
+}
