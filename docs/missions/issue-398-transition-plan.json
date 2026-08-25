@@ -1,0 +1,48 @@
+{
+  "schemaId": "mission.transition-plan.v1",
+  "authority": "none",
+  "missionId": "mission:issue-intake:euS55Ob6cV-EsKE3iKix1JowOz9C18r7E0h6t2RBasA",
+  "subjectId": "github:RanSolo/shield-workspace/issue/398",
+  "repositoryId": "RanSolo/shield-workspace",
+  "planningBaseRevision": "35d5ea49f2af9ebe1f674aa60d642b6939441fbe",
+  "parentPlanCommit": "8410cdd90561082ffcd3e6276c74e48e6f15a865",
+  "parentPlanPath": "docs/missions/issue-398-reviewed-transition-seed-envelope-compatibility-plan.md",
+  "parentPlanRawSha256": "837c5b9a0f127713452cb0e397ac3b6d93dec2385cdced889d450c81e51c4216",
+  "transitionKind": "fresh_authorize_wheels_up",
+  "boundedOutcome": "May adds one authority-none compatibility adapter at corrected-successor dispatch that accepts the exact closed reviewed-transition seed envelope, extracts its nested request in memory, preserves direct request behavior, validates immutable bindings before preflight, and never mutates GitHub, rewrites evidence, invents authority, or replays the failed predecessor receipt.",
+  "approvedRelativePaths": [
+    "docs/missions/issue-398-reviewed-transition-seed-envelope-compatibility-plan.md",
+    "docs/missions/issue-398-transition-plan.json",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
+    "packages/shield-team-system/src/mission-cli.mts",
+    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs",
+    "packages/shield-team-system/tests/supervised-cli.test.mjs"
+  ],
+  "publicationPaths": [
+    "docs/missions/issue-398-reviewed-transition-seed-envelope-compatibility-plan.md",
+    "docs/missions/issue-398-transition-plan.json",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
+    "packages/shield-team-system/src/mission-cli.mts",
+    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs",
+    "packages/shield-team-system/tests/supervised-cli.test.mjs"
+  ],
+  "approvedActionIds": ["action:issue-398:implement", "action:issue-398:validate"],
+  "approvedEffectClasses": ["behavioral_implementation", "verification"],
+  "approvedEffectKeys": ["effect:issue-398:seed-envelope-compatibility", "effect:issue-398:validation"],
+  "approvedCapabilities": ["filesystem_write", "process_execute"],
+  "validationCommandIds": ["validation:issue-398:affected", "validation:issue-398:focused"],
+  "modelId": "gpt-5.6-luna",
+  "reasoningRuntimeId": "runtime:codex-hosted-may-luna",
+  "toolExecutorId": "executor:codex-hosted-workspace-tools",
+  "exclusions": [
+    "review.comment.publish",
+    "review.pull_request.update_draft",
+    "review.pull_request.mark_ready",
+    "merge",
+    "deployment",
+    "release",
+    "final_acceptance"
+  ],
+  "id": "transition-plan:au58MlxJB5qHCKuo80m6BoXPa9lxKJn2VMZuW1is1Co",
+  "digest": "sha256:au58MlxJB5qHCKuo80m6BoXPa9lxKJn2VMZuW1is1Co"
+}
