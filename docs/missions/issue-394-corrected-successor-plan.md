@@ -13,7 +13,7 @@
 
 Extend the existing Fury admission projection with closed, non-sensitive search-path denial categories and a canonical correction hint that contains no raw path, query, session, or tool-call identifiers. Add one repository-owned operation that consumes the exact failed receipt and original request, revalidates unchanged repository/plan/session bindings, derives a fresh predecessor-bound successor request, and dispatches it once through the existing authority-none host.
 
-The operation must preserve tools, effects, repository scope, plan, model/runtime/executor, authority, and execution semantics. Missing, malformed, stale, conflicting, ambiguous, already-consumed, or non-recoverable evidence fails closed; identical retry is idempotent and conflicting retry fails closed. The failed receipt is never replayed.
+The operation must preserve effects, repository scope, plan, model/runtime/executor, authority, and execution semantics. It may reduce the predecessor request's fixed read-only tools from `[read, search]` to `[read]` only; no tool or capability expansion is permitted. Missing, malformed, stale, conflicting, ambiguous, already-consumed, or non-recoverable evidence fails closed; identical retry is idempotent and conflicting retry fails closed. The failed receipt is never replayed.
 
 ## Approved implementation and test scope
 
