@@ -2941,6 +2941,7 @@ test("issue 398 projects the closed reviewed-transition seed and durable packet 
   };
   const mismatches = [
     ["extra", (value) => ({ ...value, extra: true }), "MALFORMED_REQUEST"],
+    ["nested request binding", (value) => ({ ...value, request: { ...value.request, parentSessionId: "session:other" } }), "PREDECESSOR_RECEIPT_STALE_OR_CONFLICTING"],
     ["transition plan id", (value) => ({ ...value, logicalOperation: { ...value.logicalOperation, transitionPlanId: "transition-plan:other" } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
     ["transition plan digest", (value) => ({ ...value, logicalOperation: { ...value.logicalOperation, transitionPlanDigest: "sha256:" + "d".repeat(43) } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
     ["journal sequence", (value) => ({ ...value, missionJournal: { ...value.missionJournal, sequence: 1 } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
@@ -2952,6 +2953,11 @@ test("issue 398 projects the closed reviewed-transition seed and durable packet 
     ["receipt raw sha", (value) => ({ ...value, preparedWorktree: { ...value.preparedWorktree, receiptRawSha256: "2".repeat(64) } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
     ["lane branch", (value) => ({ ...value, preparedWorktree: { ...value.preparedWorktree, laneBranch: "other" } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
   ];
+  const predecessorEvidenceBytes = await readFile(setup.evidencePath, "utf8");
+  const journalBytes = await readFile(current.journalPath, "utf8");
+  const worktreeStateBytes = await readFile(join(current.root, ".shield", "worktree-state.json"), "utf8");
+  const ledgerPath = join(current.root, ".shield", "dispatch-receipts.jsonl");
+  const ledgerBytes = await readFile(ledgerPath, "utf8").catch(() => null);
   for (const [label, mutate, expectedCode] of mismatches) {
     const conflictExecutor = executor(current.plan);
     const conflict = await dispatchCopilotFuryCorrectedSuccessorV1(
@@ -2961,9 +2967,14 @@ test("issue 398 projects the closed reviewed-transition seed and durable packet 
     assert.equal(conflict.state, "invalid", `${label}: ${JSON.stringify(conflict)}`);
     assert.equal(conflict.code, expectedCode, label);
     assert.equal(conflictExecutor.calls.preflight, 0, label);
+    assert.equal(conflictExecutor.calls.execute, 0, label);
+    assert.equal(conflictExecutor.calls.close, 0, label);
     assert.equal(conflict.receiptId, null, label);
+    assert.equal(await readFile(setup.evidencePath, "utf8"), predecessorEvidenceBytes, label);
+    assert.equal(await readFile(current.journalPath, "utf8"), journalBytes, label);
+    assert.equal(await readFile(join(current.root, ".shield", "worktree-state.json"), "utf8"), worktreeStateBytes, label);
+    assert.equal(await readFile(ledgerPath, "utf8").catch(() => null), ledgerBytes, label);
   }
-  const originalEvidenceBytes = await readFile(setup.evidencePath, "utf8");
   const seedExecutor = executor(current.plan);
   const result = await dispatchCopilotFuryCorrectedSuccessorV1(
     { request: seed, predecessorReceiptId: ISSUE_394_PREDECESSOR_RECEIPT_ID },
@@ -2971,7 +2982,23 @@ test("issue 398 projects the closed reviewed-transition seed and durable packet 
   );
   assert.equal(result.state, "completed", JSON.stringify(result));
   assert.equal(seedExecutor.calls.preflight, 1);
-  assert.equal(await readFile(setup.evidencePath, "utf8"), originalEvidenceBytes);
+  assert.equal(seedExecutor.calls.execute, 1);
+  assert.equal(seedExecutor.calls.close, 1);
+  assert.equal(await readFile(setup.evidencePath, "utf8"), predecessorEvidenceBytes);
+  const ledgerBytesAfterFirst = await readFile(ledgerPath, "utf8");
+  const retryExecutor = executor(current.plan);
+  const retry = await dispatchCopilotFuryCorrectedSuccessorV1(
+    { request: seed, predecessorReceiptId: ISSUE_394_PREDECESSOR_RECEIPT_ID },
+    { ...setup.dependencies, executor: retryExecutor.value },
+  );
+  assert.equal(retry.state, "completed", JSON.stringify(retry));
+  assert.equal(retry.receiptId, result.receiptId);
+  assert.equal(retry.replayed, true);
+  assert.equal(retryExecutor.calls.preflight, 0);
+  assert.equal(retryExecutor.calls.execute, 0);
+  assert.equal(retryExecutor.calls.close, 0);
+  assert.equal(await readFile(setup.evidencePath, "utf8"), predecessorEvidenceBytes);
+  assert.equal(await readFile(ledgerPath, "utf8"), ledgerBytesAfterFirst);
 });
 
 test("issue 394 consumes the caller-supplied Kdums predecessor once, narrows tools, and retries idempotently", async () => {

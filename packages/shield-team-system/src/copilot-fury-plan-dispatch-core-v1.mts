@@ -3789,6 +3789,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
   let reviewArtifactMap: CopilotFuryReviewArtifactMapV1 | null = null;
   let toolBinding: CopilotFuryExecutionToolBindingProjectionV1 | null = null;
   let preflightIdentity: Extract<CopilotFuryExecutorPreflightResultV1, { state: "ready" }> | null = null;
+  let shouldCloseExecutor = false;
   let terminalUncertain = false;
   let originalDisposition: Readonly<{ code: string; errors: readonly string[] }> = { code: "DISPATCH_FAILED", errors: [] };
   try {
@@ -3913,6 +3914,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     if (!validExecutionIdentity(activeExecutionIdentity, request.repositoryRoot)) return invalidFor(request, "PRECLAIM_VALIDATION_FAILED", "Copilot client option projection is malformed.");
     await validatePersistencePathBeforeClaim(request.repositoryRoot, activeExecutionIdentity.claimKey);
     if (reviewArtifactMap === null || toolBinding === null) return invalidFor(request, "FURY_TOOL_BINDING_INVALID", "Fury review-artifact tool binding is unavailable.");
+    shouldCloseExecutor = true;
     const preflight = await executor.preflight({ repositoryRoot: request.repositoryRoot, requestedModel: request.requestedModel, requestedRuntime: request.requestedRuntime, requestedExecutor: request.requestedExecutor, executionIdentity: activeExecutionIdentity, reviewArtifactMap, toolBinding });
     if (preflight.state === "blocked") return preflight.code === "FURY_TOOL_BINDING_INVALID" ? invalidFor(request, preflight.code, ...preflight.errors) : blockedFor(request, preflight.code, ...preflight.errors);
     if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor) return blockedFor(request, "BLOCKED_ADAPTER_GAP", "Copilot executor preflight identity mismatched the request.");
@@ -4143,5 +4145,5 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       } catch { /* preserve the original readback uncertainty */ }
       return recovery([message, terminalError instanceof Error ? terminalError.message : "Terminalization failed."]);
     }
-  } finally { await executor.close?.().catch(() => undefined); }
+  } finally { if (shouldCloseExecutor) await executor.close?.().catch(() => undefined); }
 }

@@ -4765,6 +4765,78 @@ test("issue 394 corrected-successor CLI is closed and rejects malformed input", 
   );
 });
 
+test("issue 398 corrected-successor CLI accepts a closed v3 seed envelope", async () => {
+  const current = await fixture();
+  const request = {
+    schemaVersion: 2,
+    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
+    authority: "none",
+    repositoryRoot: current.root,
+    repositoryId: "RanSolo/fixture",
+    repositoryWorkspaceId: "workspace:issue-398-cli",
+    branch: "main",
+    planningBaseRevision: "a".repeat(40),
+    headRevision: "b".repeat(40),
+    missionId: current.brief.missionId,
+    missionRevision: current.brief.revisionId,
+    subjectId: current.brief.subjectId,
+    subjectRevision: current.brief.revisionId,
+    parentSessionId: "session:issue-398-cli",
+    transitionPlanPath: "docs/missions/issue-398-plan.json",
+    transitionPlanRawSha256: "c".repeat(64),
+    cardSelection: { kind: "repository_default" },
+    requestedModel: "model:fury",
+    requestedRuntime: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
+    requestedExecutor: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+    allowedTools: [...COPILOT_FURY_PLAN_DISPATCH_ALLOWED_TOOLS],
+    allowedEffects: [...COPILOT_FURY_PLAN_DISPATCH_ALLOWED_EFFECTS],
+    repairLimit: 1,
+    stopConditions: [...COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS],
+    timestamp: { value: "2026-08-25T12:00:00.000Z", provenance: "hostTrusted" },
+    reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
+  };
+  const seed = {
+    authority: "none",
+    contractVersion: "shield.copilot-fury-reviewed-transition-seed.v3",
+    furyCard: { logicalRef: ".github/agents/fury.agent.md", rawSha256: "d".repeat(64), repositoryRevision: request.headRevision },
+    logicalOperation: {
+      missionId: request.missionId,
+      missionRevision: request.missionRevision,
+      parentSessionId: request.parentSessionId,
+      repositoryId: request.repositoryId,
+      repositoryRevision: request.headRevision,
+      repositoryWorkspaceId: request.repositoryWorkspaceId,
+      requestContractVersion: request.contractVersion,
+      reviewPhase: request.reviewPhase,
+      transitionPlanDigest: "sha256:" + "e".repeat(43),
+      transitionPlanId: "transition-plan:issue-398-cli",
+    },
+    missionJournal: { digest: "sha256:" + "f".repeat(64), sequence: 0 },
+    preparedWorktree: { laneBranch: request.branch, receiptDigest: "sha256:" + "1".repeat(64), receiptRawSha256: "2".repeat(64) },
+    request,
+    schemaVersion: 3,
+  };
+  await writeFile(join(current.root, "corrected-successor-v3.json"), `${JSON.stringify({ request: seed, predecessorReceiptId: "receipt:issue-398-cli-predecessor" })}\n`);
+  const output = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = (chunk) => { output.push(String(chunk)); return true; };
+  try {
+    assert.equal(await runMissionCli([
+      "mission", "dispatch-fury-corrected-successor", "--input", "corrected-successor-v3.json", "--root", current.root, "--json",
+    ], {
+      copilotFuryPlanDispatch: {
+        readDispatchLedger: async () => ({ state: "valid", value: { logPath: join(current.root, ".shield", "dispatch-receipts.jsonl"), entries: [], projections: [] } }),
+      },
+    }), 1);
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  const result = JSON.parse(output.join(""));
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "PREDECESSOR_RECEIPT_MISSING");
+  assert.equal(result.receiptId, null);
+});
+
 test("Copilot Fury dispatch CLI materializes the exact reviewed transition and replays it", async () => {
   const current = await profileAwareFixture();
   await mkdir(join(current.root, ".github", "agents"), { recursive: true });
