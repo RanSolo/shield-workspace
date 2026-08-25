@@ -52,6 +52,26 @@ The adapter must not invent raw arguments, authority, model/runtime/executor
 identity, capabilities, transition effects, or a new recovery contract. It
 must not alter #396 implementation scope or broaden #386.
 
+## Canonical implementation gap
+
+Inspection of `dispatchCopilotFuryCorrectedSuccessorV1` confirms that its
+caller contract currently validates only a direct closed `input.request` plus
+`predecessorReceiptId`. The predecessor path validates durable
+`evidence.packet` against an expected packet, but does not project the already
+bound `evidence.packet.request` into a closed caller request. Existing tests
+cover direct requests and assert that a seed request equals the packet request,
+but contain no packet-to-caller projection or CLI coverage for it.
+
+The smallest compatibility repair is therefore repository-owned projection
+after predecessor evidence validation: derive the closed request solely from
+the already durable `evidence.packet.request`, require it to equal any
+supplied seed-nested request and all immutable bindings, then pass that exact
+request through the existing successor path. A byte-identical retry returns
+the already-recorded successor result without model/tool reinvocation or a
+second emission; any differing retry is a conflict. No temporary caller file,
+raw argument synthesis, evidence rewrite, authority change, or predecessor
+replay is part of the repair.
+
 ## Files and focused validation
 
 The expected bounded surfaces are:
