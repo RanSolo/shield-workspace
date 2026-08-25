@@ -38,9 +38,15 @@ request through the existing successor path. It must verify before preflight:
    subject, repository, prepared-worktree receipt, branch, HEAD, transition
    plan, and predecessor receipt supplied by the canonical rail.
 3. The predecessor receipt is consumed only as an immutable predecessor input;
-   no durable evidence is rewritten and no failed receipt is reinvoked.
-4. Any malformed, stale, conflicting, ambiguous, or already-consumed input
-   fails closed before model invocation or successor emission.
+   no durable evidence is rewritten and no failed receipt is reinvoked. An
+   exact byte-for-byte retry of the already-consumed request returns the
+   already-recorded successor result idempotently, without model/tool
+   reinvocation or a second successor emission. Any differing retry against
+   the consumed receipt fails closed as a conflict before model invocation or
+   successor emission.
+4. Any malformed, stale, conflicting, ambiguous, or non-identical
+   already-consumed input fails closed before model invocation or successor
+   emission.
 
 The adapter must not invent raw arguments, authority, model/runtime/executor
 identity, capabilities, transition effects, or a new recovery contract. It
@@ -57,7 +63,8 @@ The expected bounded surfaces are:
 
 Add focused tests proving exact v3 envelope acceptance, unchanged direct
 request behavior, rejection of unknown or mismatched envelope/nested fields,
-preflight-before-invocation failure, idempotent no-replay behavior, and
+preflight-before-invocation failure, exact-identical idempotent readback,
+different-retry conflict rejection, and
 preservation of the original predecessor evidence bytes. Tests must run at the
 exact plan revision and may use only synthetic redacted fixtures.
 
