@@ -538,8 +538,7 @@ function executor(plan, verdict = "PASS", observationOverrides = {}) {
   };
 }
 
-function admissionFailureFixture(reason = "admission_argument_shape_denied") {
-  const argumentShape = { kind: "object", keys: ["path", "unknown"], entries: [{ kind: "string" }, { kind: "number" }] };
+function admissionFailureFixture(reason = "admission_argument_shape_denied", { tool = "read", argumentShape = { kind: "object", keys: ["path", "unknown"], entries: [{ kind: "string" }, { kind: "number" }] } } = {}) {
   const category = reason === "admission_search_path_denied" ? "search_path_denied"
     : reason === "admission_search_scope_denied" ? "search_scope_denied"
       : reason === "admission_read_path_denied" ? "read_path_denied"
@@ -553,7 +552,7 @@ function admissionFailureFixture(reason = "admission_argument_shape_denied") {
       : reason === "admission_read_path_denied" || reason === "admission_read_target_denied" ? "retry_with_known_review_artifact_path"
         : reason === "admission_session_denied" || reason === "admission_capacity_exceeded" ? "retry_after_session_recovery"
           : "retry_with_read_only_tools";
-  const admissionFailure = { schemaVersion: 1, reason, category, correctionHint, ordinal: 1, tool: "read", argumentShape, recovery: "fresh_corrected_successor_required" };
+  const admissionFailure = { schemaVersion: 1, reason, category, correctionHint, ordinal: 1, tool, argumentShape, recovery: "fresh_corrected_successor_required" };
   const callbackObservation = {
     version: "shield.copilot-fury.callback-observation.v1",
     totalCount: 1,
@@ -562,7 +561,7 @@ function admissionFailureFixture(reason = "admission_argument_shape_denied") {
       surface: "pre_tool",
       ordinal: 1,
       callbackIdentity: { sessionId: "present", toolCallId: "present" },
-      tool: "read",
+      tool,
       permissionKind: "unknown",
       argumentShape,
       expectedSessionMatch: "match",
@@ -575,7 +574,7 @@ function admissionFailureFixture(reason = "admission_argument_shape_denied") {
 }
 
 async function issue394PredecessorFixture(current, { mutateEvidence = (value) => value, mutateProjection = (value) => value } = {}) {
-  const expected = admissionFailureFixture();
+  const expected = admissionFailureFixture("admission_search_path_denied", { tool: "search", argumentShape: { kind: "string" } });
   const predecessorExecutor = {
     async preflight() { return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
     async execute() {
@@ -596,6 +595,10 @@ async function issue394PredecessorFixture(current, { mutateEvidence = (value) =>
   assert.equal(actualEvidence.dispositionCode, "FURY_TOOL_ADMISSION_DENIED");
   assert.deepEqual(actualEvidence.packet.request, current.request);
   assert.equal(digestBase64Url(canonicalJson(actualEvidence.packet)), actualEvidence.packetDigest);
+  const callback = actualEvidence.observations.callbackObservation.records.find(({ surface }) => surface === "pre_tool");
+  assert.equal(callback.tool, "search");
+  assert.equal(callback.reason, "admission_search_path_denied");
+  assert.deepEqual(callback.argumentShape, { kind: "string" });
   const actualLedger = await readSeatDispatchReceiptLedgerV1({ repositoryRoot: current.root, repositoryId: current.request.repositoryId, repositoryWorkspaceId: current.request.repositoryWorkspaceId });
   assert.equal(actualLedger.state, "valid", JSON.stringify(actualLedger));
   const actualProjection = actualLedger.value.projections.find(({ receiptId }) => receiptId === predecessor.receiptId);
@@ -2958,6 +2961,10 @@ test("issue 394 corrected-successor preclaim fails closed for malformed, stale, 
     ["stale", { mutateProjection: (value) => ({ ...value, repositoryRevision: "f".repeat(40) }) }, "PREDECESSOR_RECEIPT_STALE_OR_CONFLICTING"],
     ["conflicting", { mutateEvidence: (value) => ({ ...value, packet: { ...value.packet, request: { ...value.packet.request, allowedTools: ["read"] } } }) }, "PREDECESSOR_EVIDENCE_CONFLICTING"],
     ["cross-bound", { mutateEvidence: (value) => ({ ...value, missionId: "mission:other" }) }, "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["input evidence missing", { mutateProjection: (value) => ({ ...value, inputEvidenceRefs: value.inputEvidenceRefs.slice(0, -1) }) }, "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["input evidence extra", { mutateProjection: (value) => ({ ...value, inputEvidenceRefs: [...value.inputEvidenceRefs, "evidence:unexpected"] }) }, "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["input evidence reordered", { mutateProjection: (value) => ({ ...value, inputEvidenceRefs: [...value.inputEvidenceRefs].reverse() }) }, "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["input evidence conflicting", { mutateProjection: (value) => ({ ...value, inputEvidenceRefs: ["evidence:conflicting", ...value.inputEvidenceRefs.slice(1)] }) }, "PREDECESSOR_EVIDENCE_CONFLICTING"],
   ];
   for (const [label, options, expectedCode] of cases) {
     await t.test(label, async () => {
