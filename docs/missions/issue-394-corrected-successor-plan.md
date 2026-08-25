@@ -7,7 +7,7 @@
 - Planning base: `68f68a9ea8fa4652f6bc96a9a057c25cee3bcd1d`
 - Mission: `mission:issue-intake:uJZqpB8trZG10R-w2BuQXxu1QKVVGqo_xL5vQenuSZ8`
 - Authority at freeze: `none`
-- Proving predecessor: #386 receipt `receipt:WJiD4X5CNErr-M6fCpFXYRlstwGbBG54`; it is evidence input only and must never be replayed.
+- Proving predecessor: #394 receipt `receipt:KdumsbPE7B6iCeGF3sjSVrc8SEfrscQ6`; it is evidence input only and must never be replayed.
 
 ## Smallest bounded outcome
 
