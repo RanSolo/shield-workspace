@@ -184,6 +184,9 @@ import {
   type CopilotFuryPlanDispatchDependenciesV1,
 } from "./copilot-fury-plan-dispatch-v1.mjs";
 import {
+  dispatchCopilotFuryCorrectedSuccessorV1,
+} from "./copilot-fury-plan-dispatch-core-v1.mjs";
+import {
   prepareReviewedMissionTransitionV1,
   type CopilotFuryReviewedTransitionHostDependenciesV1,
 } from "./copilot-fury-reviewed-transition-host-v1.mjs";
@@ -1600,6 +1603,26 @@ async function dispatchFuryPlanReview(
         `dispatchReceiptId: ${result.handoff.dispatchReceiptId}`,
       ].join("\n")
     : `state: ${result.state}\n${"code" in result ? `code: ${result.code}` : `disposition: ${result.disposition}`}`;
+  output(result, options.flags.has("--json"), human);
+  return result.state === "completed" ? 0 : 1;
+}
+
+async function dispatchFuryCorrectedSuccessor(
+  args: string[],
+  dependencies: CopilotFuryPlanDispatchDependenciesV1 = {},
+): Promise<number> {
+  const options = parseOptions(args, ["--root", "--input", "--request", "--predecessor-receipt-id"], ["--json"]);
+  const root = await exactRoot(options.values.get("--root"), true);
+  const hasInput = options.values.has("--input");
+  const hasSplitInput = options.values.has("--request") || options.values.has("--predecessor-receipt-id");
+  if (hasInput === hasSplitInput) throw new MissionCliError("Provide exactly one corrected-successor input form: --input or --request with --predecessor-receipt-id.");
+  const suppliedInput = hasInput
+    ? await secureJsonFileBeneathRoot(root, required(options, "--input"), "Corrected Fury successor input")
+    : { request: await secureJsonFileBeneathRoot(root, required(options, "--request"), "Original Fury request"), predecessorReceiptId: required(options, "--predecessor-receipt-id") };
+  const result = await dispatchCopilotFuryCorrectedSuccessorV1(suppliedInput, { ...dependencies, repositoryRootOverride: root });
+  const human = result.state === "completed"
+    ? `state: ${result.state}\ndisposition: ${result.disposition}\nreceiptId: ${result.receiptId ?? ""}`
+    : `state: ${result.state}\n${"code" in result ? `code: ${result.code}` : ""}`.trimEnd();
   output(result, options.flags.has("--json"), human);
   return result.state === "completed" ? 0 : 1;
 }
@@ -3544,6 +3567,7 @@ export function missionUsage(): string {
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission dispatch-fury-plan-review --request <file> [--root <path>] [--json]",
+    "  shield mission dispatch-fury-corrected-successor --input <file> [--root <path>] [--json]",
     "  shield mission prepare-reviewed-transition --mission-id <id> --transition-plan <file> --fury-model <model-id> --root <path> [--json]",
     "  shield mission continue-legacy-reviewed-transition --mission-id <id> --fury-model <model-id> --root <path> [--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
@@ -3587,6 +3611,7 @@ export async function runMissionCli(
     if (action === "authorize") return authorize(rest);
     if (action === "authorize-wheels-up") return authorizeWheelsUp(rest);
     if (action === "dispatch-fury-plan-review") return dispatchFuryPlanReview(rest, dependencies.copilotFuryPlanDispatch);
+    if (action === "dispatch-fury-corrected-successor") return dispatchFuryCorrectedSuccessor(rest, dependencies.copilotFuryPlanDispatch);
     if (action === "prepare-reviewed-transition") return prepareReviewedTransition(
       rest, dependencies.copilotFuryReviewedTransition, dependencies.prepareReviewedMissionTransition,
     );

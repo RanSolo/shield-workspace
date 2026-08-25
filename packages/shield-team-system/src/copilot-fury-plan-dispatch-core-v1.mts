@@ -71,6 +71,7 @@ export const COPILOT_FURY_PLAN_DISPATCH_REPOSITORY_CARD_REF = ".github/agents/fu
 export const COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF = "user://agents/fury.agent.md" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_ALLOWED_TOOLS = Object.freeze(["read", "search"] as const);
 export const COPILOT_FURY_PLAN_DISPATCH_ALLOWED_EFFECTS = Object.freeze([] as const);
+type CopilotFuryAllowedToolsV1 = readonly ["read", "search"] | readonly ["read"];
 export const COPILOT_FURY_EXECUTION_TOOL_BINDING_VERSION = "shield.copilot-fury.execution-tool-binding.v1" as const;
 export const COPILOT_FURY_EXECUTION_OBSERVATION_VERSION = "shield.copilot-fury.execution-observation.v1" as const;
 export const COPILOT_FURY_CALLBACK_OBSERVATION_VERSION = "shield.copilot-fury.callback-observation.v1" as const;
@@ -248,7 +249,7 @@ export interface CopilotFuryPlanDispatchRequestV1 {
   readonly requestedModel: string;
   readonly requestedRuntime: typeof COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID;
   readonly requestedExecutor: typeof COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID;
-  readonly allowedTools: readonly ["read", "search"];
+  readonly allowedTools: CopilotFuryAllowedToolsV1;
   readonly allowedEffects: readonly [];
   readonly repairLimit: 0 | 1 | 2;
   readonly stopConditions: readonly ["PASS", "REVISE", "cancelled", "failed"];
@@ -321,7 +322,7 @@ export interface CopilotFurySdkConfigurationV1 {
   readonly skillDirectories: readonly [];
   readonly instructionDirectories: readonly [];
   readonly mcpServers: Readonly<Record<string, never>>;
-  readonly availableTools: readonly ["read", "search"];
+  readonly availableTools: CopilotFuryAllowedToolsV1;
   readonly excludedTools: readonly string[];
   readonly allowedEffects: readonly [];
 }
@@ -351,23 +352,23 @@ export interface CopilotFuryToolDescriptorProjectionV1 {
 
 export interface CopilotFuryExecutionToolBindingProjectionV1 {
   readonly version: typeof COPILOT_FURY_EXECUTION_TOOL_BINDING_VERSION;
-  readonly sessionAvailableTools: readonly ["custom:read", "custom:search"];
+  readonly sessionAvailableTools: readonly ["custom:read", "custom:search"] | readonly ["custom:read"];
   readonly sessionExcludedTools: readonly string[];
-  readonly customAgentTools: readonly ["read", "search"];
-  readonly modelFacingToolNames: readonly ["read", "search"];
-  readonly registeredDescriptors: readonly [CopilotFuryToolDescriptorProjectionV1, CopilotFuryToolDescriptorProjectionV1];
+  readonly customAgentTools: CopilotFuryAllowedToolsV1;
+  readonly modelFacingToolNames: CopilotFuryAllowedToolsV1;
+  readonly registeredDescriptors: readonly CopilotFuryToolDescriptorProjectionV1[];
   readonly artifactMapDigest: string;
 }
 
 export interface CopilotFuryExecutionObservationV1 {
   readonly version: typeof COPILOT_FURY_EXECUTION_OBSERVATION_VERSION;
   readonly sdkVersion: typeof COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION;
-  readonly registeredToolNames: readonly ["read", "search"];
-  readonly sessionAvailableTools: readonly ["custom:read", "custom:search"];
+  readonly registeredToolNames: CopilotFuryAllowedToolsV1;
+  readonly sessionAvailableTools: readonly ["custom:read", "custom:search"] | readonly ["custom:read"];
   readonly sessionExcludedTools: readonly string[];
-  readonly customAgentTools: readonly ["read", "search"];
-  readonly modelFacingToolNames: readonly ["read", "search"];
-  readonly runtimeMetadataNames: readonly ["read", "search"];
+  readonly customAgentTools: CopilotFuryAllowedToolsV1;
+  readonly modelFacingToolNames: CopilotFuryAllowedToolsV1;
+  readonly runtimeMetadataNames: CopilotFuryAllowedToolsV1;
   readonly runtimeMetadataDigest: string;
   readonly artifactMapDigest: string;
 }
@@ -405,6 +406,8 @@ const ADMISSION_FAILURE_REASONS: ReadonlySet<CopilotFuryAdmissionReasonV1> = new
 export type CopilotFuryAdmissionFailureV1 = Readonly<{
   schemaVersion: 1;
   reason: CopilotFuryAdmissionReasonV1;
+  category: "search_path_denied" | "search_scope_denied" | "read_path_denied" | "read_target_denied" | "argument_denied" | "tool_denied" | "session_denied" | "capacity_denied" | "internal_denied";
+  correctionHint: "retry_with_repository_relative_search_path" | "retry_without_search_path" | "retry_with_known_review_artifact_path" | "retry_with_read_only_tools" | "retry_after_session_recovery";
   ordinal: number;
   tool: CopilotFuryCallbackToolIdentityV1;
   argumentShape: CopilotFuryCallbackArgumentShapeV1;
@@ -578,6 +581,20 @@ export interface CopilotFuryPlanDispatchDependenciesV1 {
   readonly claimDispatchPacket?: typeof claimSeatDispatchPacketV1;
   readonly appendDispatchReceipt?: typeof appendSeatDispatchReceiptEntryV1;
   readonly readDispatchLedger?: typeof readSeatDispatchReceiptLedgerV1;
+  readonly correctedSuccessorBinding?: CopilotFuryCorrectedSuccessorBindingV1 | undefined;
+  readonly correctedSuccessorEvidenceRefs?: readonly string[];
+}
+
+export interface CopilotFuryCorrectedSuccessorBindingV1 {
+  readonly predecessorReceiptId: string;
+  readonly predecessorTerminalEntryDigest: string;
+  readonly failedEvidenceDigest: string;
+  readonly originalPacketDigest: string;
+}
+
+export interface CopilotFuryCorrectedSuccessorInputV1 {
+  readonly request: unknown;
+  readonly predecessorReceiptId: string;
 }
 
 export type CopilotFuryPlanDispatchHandoffV1 = Readonly<{
@@ -791,6 +808,10 @@ function sameArray(value: unknown, expected: readonly string[]): boolean {
   return value.every((entry, index) => entry === expected[index]);
 }
 
+function validAllowedTools(value: unknown): value is CopilotFuryAllowedToolsV1 {
+  return sameArray(value, ["read", "search"]) || sameArray(value, ["read"]);
+}
+
 function id(value: unknown): value is string {
   return typeof value === "string" && IDENTIFIER.test(value);
 }
@@ -981,7 +1002,7 @@ export function validateCopilotFuryPlanDispatchRequestV1(input: unknown): Readon
   if (!normalizedRelativePath(value.transitionPlanPath)) errors.push("transitionPlanPath is invalid.");
   if (typeof value.transitionPlanRawSha256 !== "string" || !SHA256_HEX.test(value.transitionPlanRawSha256)) errors.push("transitionPlanRawSha256 is invalid.");
   if (!exact(value.timestamp, TIMESTAMP_FIELDS) || value.timestamp.provenance !== "hostTrusted" || typeof value.timestamp.value !== "string" || !ISO_UTC.test(value.timestamp.value) || Number.isNaN(Date.parse(value.timestamp.value))) errors.push("timestamp is invalid.");
-  if (!sameArray(value.allowedTools, COPILOT_FURY_PLAN_DISPATCH_ALLOWED_TOOLS)) errors.push("allowedTools must be the fixed read-only tool list.");
+  if (!validAllowedTools(value.allowedTools)) errors.push("allowedTools must be exactly [read,search] or the reduced [read] tuple.");
   if (!sameArray(value.allowedEffects, COPILOT_FURY_PLAN_DISPATCH_ALLOWED_EFFECTS)) errors.push("allowedEffects must be empty.");
   if (!sameArray(value.stopConditions, COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS)) errors.push("stopConditions are invalid.");
   if (value.repairLimit !== 0 && value.repairLimit !== 1 && value.repairLimit !== 2) errors.push("repairLimit is invalid.");
@@ -1450,28 +1471,30 @@ const TOOL_SEARCH_PARAMETERS = Object.freeze({
   },
 });
 
-function executionToolDescriptors(artifactMapDigest: string): CopilotFuryExecutionToolBindingProjectionV1 {
+function executionToolDescriptors(artifactMapDigest: string, allowedTools: CopilotFuryAllowedToolsV1 = ["read", "search"]): CopilotFuryExecutionToolBindingProjectionV1 {
+  if (!validAllowedTools(allowedTools)) throw new Error("FURY_TOOL_BINDING_INVALID");
+  const includeSearch = allowedTools.length === 2;
   return deepFreeze({
     version: COPILOT_FURY_EXECUTION_TOOL_BINDING_VERSION,
-    sessionAvailableTools: [...EXECUTION_AVAILABLE_TOOLS] as ["custom:read", "custom:search"],
+    sessionAvailableTools: (includeSearch ? [...EXECUTION_AVAILABLE_TOOLS] : ["custom:read"]) as ["custom:read", "custom:search"] | ["custom:read"],
     sessionExcludedTools: [...EXECUTION_EXCLUDED_TOOLS],
-    customAgentTools: [...EXECUTION_AGENT_TOOLS] as ["read", "search"],
-    modelFacingToolNames: [...EXECUTION_MODEL_TOOLS] as ["read", "search"],
+    customAgentTools: [...allowedTools] as CopilotFuryAllowedToolsV1,
+    modelFacingToolNames: [...allowedTools] as CopilotFuryAllowedToolsV1,
     registeredDescriptors: [
       { name: "read", parameters: TOOL_READ_PARAMETERS, overridesBuiltInTool: true, skipPermission: true, defer: "never" },
-      { name: "search", parameters: TOOL_SEARCH_PARAMETERS, overridesBuiltInTool: true, skipPermission: true, defer: "never" },
-    ],
+      ...(includeSearch ? [{ name: "search", parameters: TOOL_SEARCH_PARAMETERS, overridesBuiltInTool: true, skipPermission: true, defer: "never" as const }] : []),
+    ] as CopilotFuryToolDescriptorProjectionV1[],
     artifactMapDigest,
   });
 }
 
-export function createCopilotFuryExecutionToolBindingV1(artifactMapDigest: string): CopilotFuryExecutionToolBindingProjectionV1 {
-  return executionToolDescriptors(artifactMapDigest);
+export function createCopilotFuryExecutionToolBindingV1(artifactMapDigest: string, allowedTools: CopilotFuryAllowedToolsV1 = ["read", "search"]): CopilotFuryExecutionToolBindingProjectionV1 {
+  return executionToolDescriptors(artifactMapDigest, allowedTools);
 }
 
 function validateExecutionToolBinding(binding: CopilotFuryExecutionToolBindingProjectionV1, artifactMap: CopilotFuryReviewArtifactMapV1): void {
-  if (!exact(binding, ["version", "sessionAvailableTools", "sessionExcludedTools", "customAgentTools", "modelFacingToolNames", "registeredDescriptors", "artifactMapDigest"]) || binding.version !== COPILOT_FURY_EXECUTION_TOOL_BINDING_VERSION || binding.artifactMapDigest !== artifactMap.digest || !sameArray(binding.sessionAvailableTools, EXECUTION_AVAILABLE_TOOLS) || !sameArray(binding.customAgentTools, EXECUTION_AGENT_TOOLS) || !sameArray(binding.modelFacingToolNames, EXECUTION_MODEL_TOOLS) || !Array.isArray(binding.sessionExcludedTools) || binding.sessionExcludedTools.length !== EXECUTION_EXCLUDED_TOOLS.length || binding.sessionExcludedTools.some((value, index) => value !== EXECUTION_EXCLUDED_TOOLS[index]) || !Array.isArray(binding.registeredDescriptors) || binding.registeredDescriptors.length !== 2) throw new Error("FURY_TOOL_BINDING_INVALID");
-  const expected = executionToolDescriptors(binding.artifactMapDigest);
+  if (!exact(binding, ["version", "sessionAvailableTools", "sessionExcludedTools", "customAgentTools", "modelFacingToolNames", "registeredDescriptors", "artifactMapDigest"]) || binding.version !== COPILOT_FURY_EXECUTION_TOOL_BINDING_VERSION || binding.artifactMapDigest !== artifactMap.digest || !validAllowedTools(binding.modelFacingToolNames) || !sameArray(binding.customAgentTools, binding.modelFacingToolNames) || !sameArray(binding.sessionAvailableTools, binding.modelFacingToolNames.map((tool) => `custom:${tool}`)) || !Array.isArray(binding.sessionExcludedTools) || binding.sessionExcludedTools.length !== EXECUTION_EXCLUDED_TOOLS.length || binding.sessionExcludedTools.some((value, index) => value !== EXECUTION_EXCLUDED_TOOLS[index]) || !Array.isArray(binding.registeredDescriptors) || binding.registeredDescriptors.length !== binding.modelFacingToolNames.length) throw new Error("FURY_TOOL_BINDING_INVALID");
+  const expected = executionToolDescriptors(binding.artifactMapDigest, binding.modelFacingToolNames);
   if (canonicalJson(binding.registeredDescriptors) !== canonicalJson(expected.registeredDescriptors)) throw new Error("FURY_TOOL_BINDING_INVALID");
 }
 
@@ -1549,12 +1572,79 @@ function validateReviewArtifactToolCall(repositoryRoot: string, artifactMap: Cop
   }
 }
 
+function correctedSuccessorMarker(binding: CopilotFuryCorrectedSuccessorBindingV1, request: CopilotFuryPlanDispatchRequestV1OrV2): string {
+  const token = digestBase64Url(`copilot-fury-corrected-successor-v1\0${canonicalJson({ binding, allowedTools: request.allowedTools })}`).slice("sha256:".length);
+  return `evidence:copilot-fury-corrected-successor-v1:${binding.predecessorReceiptId}:${token}`;
+}
+
+export async function dispatchCopilotFuryCorrectedSuccessorV1(
+  input: unknown,
+  suppliedDependencies: CopilotFuryPlanDispatchDependenciesV1 = {},
+): Promise<CopilotFuryPlanDispatchResultV1> {
+  if (!safePlain(input) || !exact(input, ["request", "predecessorReceiptId"]) || !id(input.predecessorReceiptId)) return invalid("MALFORMED_CORRECTED_SUCCESSOR", "Corrected successor input must contain exactly request and a valid predecessorReceiptId.");
+  const checkedRequest = validateCopilotFuryPlanDispatchRequestV1OrV2(input.request);
+  if (checkedRequest.state === "invalid") return invalid(checkedRequest.code, ...checkedRequest.errors);
+  const originalRequest = checkedRequest.value;
+  if (!sameArray(originalRequest.allowedTools, ["read", "search"])) return invalidFor(originalRequest, "CORRECTED_SUCCESSOR_CAPABILITY_INVALID", "Only the exact predecessor [read,search] capability tuple may be reduced.");
+  const repositoryRoot = suppliedDependencies.repositoryRootOverride ?? originalRequest.repositoryRoot;
+  const readDispatchLedger = suppliedDependencies.readDispatchLedger ?? readSeatDispatchReceiptLedgerV1;
+  try {
+    const ledger = await readDispatchLedger({ repositoryRoot, repositoryId: originalRequest.repositoryId, repositoryWorkspaceId: originalRequest.repositoryWorkspaceId });
+    if (ledger.state === "invalid") return invalidFor(originalRequest, "PREDECESSOR_LEDGER_INVALID", ...ledger.errors);
+    const matches = ledger.value.projections.filter((candidate) => candidate.receiptId === input.predecessorReceiptId);
+    if (matches.length !== 1) return invalidFor(originalRequest, matches.length === 0 ? "PREDECESSOR_RECEIPT_MISSING" : "PREDECESSOR_RECEIPT_AMBIGUOUS", "The caller-supplied predecessor receipt is not uniquely present in the durable ledger.");
+    const predecessor = matches[0];
+    if (predecessor.state !== "failed" || predecessor.accountableSeatId !== "fury" || predecessor.parentMissionId !== originalRequest.missionId || predecessor.parentMissionRevision !== originalRequest.missionRevision || predecessor.parentSessionId !== originalRequest.parentSessionId || predecessor.repositoryId !== originalRequest.repositoryId || predecessor.repositoryWorkspaceId !== originalRequest.repositoryWorkspaceId || predecessor.repositoryRevision !== originalRequest.headRevision || predecessor.subjectId !== originalRequest.subjectId || predecessor.subjectRevision !== originalRequest.subjectRevision) return invalidFor(originalRequest, "PREDECESSOR_RECEIPT_STALE_OR_CONFLICTING", "The predecessor receipt is stale, non-terminal, or outside the exact request binding.");
+    if (predecessor.outputEvidenceRefs === null || predecessor.outputEvidenceRefs.length !== 1 || !DIGEST.test(predecessor.outputEvidenceRefs[0])) return invalidFor(originalRequest, "PREDECESSOR_EVIDENCE_INVALID", "The predecessor has no unique durable failure evidence.");
+    const evidenceDigest = predecessor.outputEvidenceRefs[0];
+    const directory = await existingEvidenceDirectory(repositoryRoot, originalRequest.missionId);
+    if (directory === null) return invalidFor(originalRequest, "PREDECESSOR_EVIDENCE_MISSING", "The predecessor evidence directory is unavailable.");
+    const evidencePath = `${directory.relative}/dispatch-evidence-${evidenceDigest.slice("sha256:".length)}.json`;
+    let evidence: Plain;
+    try { evidence = await parseEvidenceFile(repositoryRoot, evidencePath); }
+    catch (error) { return invalidFor(originalRequest, "PREDECESSOR_EVIDENCE_INVALID", error instanceof Error ? error.message : "The predecessor failure evidence is malformed."); }
+    const admissionFailure = safePlain(evidence.observations) ? evidence.observations.admissionFailure : undefined;
+    if (evidence.evidenceDigest !== evidenceDigest || evidence.schemaVersion !== 1 || evidence.contractVersion !== COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_CONTRACT_VERSION || evidence.authority !== "none" || evidence.receiptId !== predecessor.receiptId || evidence.outcome !== "failed" || evidence.dispositionCode !== ADMISSION_FAILURE_CODE || !safePlain(evidence.packet) || !validAdmissionFailure(admissionFailure)) return invalidFor(originalRequest, "PREDECESSOR_EVIDENCE_INVALID", "The predecessor failure evidence is malformed or not a Fury admission denial.");
+    try {
+      if (validateAdmissionFailureAgreement(evidence.outcome, evidence.dispositionCode, evidence.errors, evidence.observations, admissionFailure, "admission_failure_malformed") === undefined) return invalidFor(originalRequest, "PREDECESSOR_EVIDENCE_INVALID", "The predecessor failure evidence does not contain a complete admission denial.");
+    } catch (error) {
+      return invalidFor(originalRequest, "PREDECESSOR_EVIDENCE_INVALID", error instanceof Error ? error.message : "The predecessor admission failure evidence is malformed.");
+    }
+    const packetBytes = new TextEncoder().encode(canonicalJson(evidence.packet));
+    const binding = deepFreeze({ predecessorReceiptId: predecessor.receiptId, predecessorTerminalEntryDigest: predecessor.lastEntryDigest, failedEvidenceDigest: evidenceDigest, originalPacketDigest: evidence.packetDigest as string });
+    const correctedRequest = deepFreeze({ ...originalRequest, schemaVersion: 2 as const, contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2, allowedTools: ["read"] as ["read"], reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2 });
+    const resolvedRequest = repositoryRoot === originalRequest.repositoryRoot ? correctedRequest : { ...correctedRequest, repositoryRoot };
+    const resolved = await resolveCommittedTransitionPlanSourceV1(resolvedRequest);
+    if (resolved.state === "invalid") return resolved.result;
+    const resolvedPlanFile = await revalidateResolvedTransitionPlanSource(resolved.request, resolved.source);
+    let resolvedPlanInput: unknown;
+    try { resolvedPlanInput = parseJsonRejectDuplicateKeys(resolvedPlanFile.bytes); } catch { return invalidFor(originalRequest, "PREDECESSOR_PLAN_INVALID", "The successor transition plan is malformed."); }
+    const resolvedPlan = validateTransitionPlanV1OrV2({ artifact: resolvedPlanInput });
+    if (resolvedPlan.state === "invalid") return invalidFor(originalRequest, "PREDECESSOR_PLAN_INVALID", ...resolvedPlan.errors);
+    const predecessorIdentity = deriveSessionIdentity(originalRequest, resolvedPlan.value);
+    const predecessorObservation = await observeRepository(originalRequest);
+    const predecessorCard = await resolveCard(originalRequest, suppliedDependencies.userCopilotHome);
+    const predecessorPacketConfiguration = sdkConfiguration(originalRequest, deriveCopilotSdkSessionIdV1(predecessorIdentity.childSessionId));
+    const expectedPredecessorPacket = packetBody(originalRequest, resolvedPlan.value, predecessorCard, predecessorObservation, predecessorPacketConfiguration);
+    if (evidence.packetId !== predecessorIdentity.packetId || digestBase64Url(packetBytes) !== evidence.packetDigest || canonicalJson(evidence.packet) !== canonicalJson(expectedPredecessorPacket) || !predecessor.inputEvidenceRefs.some((ref) => ref.endsWith(`:${evidence.packetDigest}`)) || evidence.missionId !== originalRequest.missionId || evidence.missionRevision !== originalRequest.missionRevision || evidence.subjectId !== originalRequest.subjectId || evidence.subjectRevision !== originalRequest.subjectRevision || evidence.repositoryId !== originalRequest.repositoryId || evidence.repositoryWorkspaceId !== originalRequest.repositoryWorkspaceId || evidence.repositoryRevision !== originalRequest.headRevision || evidence.transitionPlanRawSha256 !== originalRequest.transitionPlanRawSha256) return invalidFor(originalRequest, "PREDECESSOR_EVIDENCE_CONFLICTING", "The durable predecessor packet and evidence are not bound to the exact caller-supplied request.");
+    const marker = correctedSuccessorMarker(binding, correctedRequest);
+    const consumed = ledger.value.projections.filter((candidate) => candidate.inputEvidenceRefs.includes(marker) || candidate.inputEvidenceRefs.some((ref) => ref.startsWith(`evidence:copilot-fury-corrected-successor-v1:${predecessor.receiptId}:`)));
+    if (consumed.length > 1) return invalidFor(originalRequest, "CORRECTED_SUCCESSOR_CONSUMPTION_CONFLICT", "The exact predecessor has multiple corrected-successor consumers.");
+    const successorIdentity = deriveSessionIdentity(correctedRequest, resolvedPlan.value, binding);
+    if (consumed.length === 1 && consumed[0].receiptId !== successorIdentity.receiptId) return invalidFor(originalRequest, "CORRECTED_SUCCESSOR_CONSUMPTION_CONFLICT", "The exact predecessor has a conflicting corrected-successor consumer.");
+    return dispatchCopilotFuryPlanReviewCoreV1(correctedRequest, resolved.source, { ...suppliedDependencies, correctedSuccessorBinding: binding, correctedSuccessorEvidenceRefs: [marker] });
+  } catch (error) {
+    return invalidFor(originalRequest, "CORRECTED_SUCCESSOR_PRECLAIM_FAILED", error instanceof Error ? error.message : "Corrected successor preclaim validation failed.");
+  }
+}
+
 function reviewArtifactTools(
   repositoryRoot: string,
   revision: string,
   artifactMap: CopilotFuryReviewArtifactMapV1,
   onDenied: (toolName: string) => void,
   onHandler?: (toolName: string, args: unknown, invocation: ToolInvocation) => void,
+  allowedTools: CopilotFuryAllowedToolsV1 = ["read", "search"],
 ): readonly Tool[] {
   const readTool: Tool = {
     name: "read",
@@ -1603,7 +1693,7 @@ function reviewArtifactTools(
       return canonicalJson({ repositoryRevision: revision, query: validated.value.query, matches, truncated: false });
     },
   };
-  return Object.freeze([readTool, searchTool]);
+  return Object.freeze(allowedTools.length === 1 ? [readTool] : [readTool, searchTool]);
 }
 
 async function stableTextFile(root: string, relativePath: string, label: string, maxBytes = MAX_INPUT_BYTES): Promise<StableFile> {
@@ -1744,7 +1834,7 @@ async function resolveCard(request: CardResolutionRequest, userCopilotHome?: str
   });
 }
 
-function deriveSessionIdentity(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: TransitionPlanV1OrV2) {
+function deriveSessionIdentity(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: TransitionPlanV1OrV2, successorBinding?: CopilotFuryCorrectedSuccessorBindingV1) {
   const commonOperation = {
     missionId: request.missionId,
     missionRevision: request.missionRevision,
@@ -1760,7 +1850,13 @@ function deriveSessionIdentity(request: CopilotFuryPlanDispatchRequestV1OrV2, pl
   };
   const operation = request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION
     ? deepFreeze(commonOperation)
-    : deepFreeze({ ...commonOperation, requestContractVersion: request.contractVersion, reviewPhase: request.reviewPhase });
+    : deepFreeze({
+      ...commonOperation,
+      requestContractVersion: request.contractVersion,
+      reviewPhase: request.reviewPhase,
+      allowedTools: request.allowedTools,
+      ...(successorBinding === undefined ? {} : { predecessorBinding: successorBinding }),
+    });
   const operationDigest = digestBase64Url(`${request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION ? "copilot-fury-logical-operation-v1" : "copilot-fury-logical-operation-v2"}\0${canonicalJson(operation)}`);
   const token = operationDigest.replace(/^sha256:/u, "").slice(0, 32);
   const packetId = request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION
@@ -1940,6 +2036,7 @@ async function revalidatePersistenceSnapshot(snapshot: PersistenceSnapshot): Pro
 }
 
 function sdkConfiguration(request: CopilotFuryPlanDispatchRequestV1OrV2, childSessionId: string): CopilotFurySdkConfigurationV1 {
+  const allowedTools = request.allowedTools;
   return deepFreeze({
     packageName: "@github/copilot-sdk" as const,
     packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
@@ -1959,7 +2056,7 @@ function sdkConfiguration(request: CopilotFuryPlanDispatchRequestV1OrV2, childSe
     skillDirectories: [] as readonly [],
     instructionDirectories: [] as readonly [],
     mcpServers: {} as Readonly<Record<string, never>>,
-    availableTools: [...COPILOT_FURY_PLAN_DISPATCH_ALLOWED_TOOLS] as ["read", "search"],
+    availableTools: [...allowedTools] as CopilotFuryAllowedToolsV1,
     excludedTools: [...MUTATING_TOOL_EXCLUSIONS],
     allowedEffects: [] as readonly [],
   });
@@ -2070,7 +2167,7 @@ function repairPrompt(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: Trans
   ].join("\n");
 }
 
-function packetBody(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: TransitionPlanV1OrV2, card: ResolvedCard, observation: RepositoryObservation, configuration: CopilotFurySdkConfigurationV1) {
+function packetBody(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: TransitionPlanV1OrV2, card: ResolvedCard, observation: RepositoryObservation, configuration: CopilotFurySdkConfigurationV1, successorBinding?: CopilotFuryCorrectedSuccessorBindingV1) {
   return deepFreeze({
     schemaVersion: request.schemaVersion,
     contractVersion: request.contractVersion,
@@ -2089,6 +2186,7 @@ function packetBody(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: Transit
       },
     } : {}),
     sdkConfiguration: configuration,
+    ...(successorBinding === undefined ? {} : { predecessorBinding: successorBinding }),
   });
 }
 
@@ -2289,12 +2387,13 @@ function evidenceBody(input: {
   errors: readonly string[];
   artifacts: Readonly<{ transitionPlanPath: string | null; reviewArtifactPath: string | null }>;
   recovery?: RecoveryBindingV2 | null;
+  correctedSuccessorBinding?: CopilotFuryCorrectedSuccessorBindingV1 | undefined;
 }) {
   const common = {
     authority: "none",
     packetId: input.packetId,
     packetDigest: input.packetDigest,
-    packet: packetBody(input.request, input.plan, input.card, input.observation, input.packetConfiguration),
+    packet: packetBody(input.request, input.plan, input.card, input.observation, input.packetConfiguration, input.correctedSuccessorBinding),
     receiptId: input.receiptId,
     missionId: input.request.missionId,
     missionRevision: input.request.missionRevision,
@@ -2314,6 +2413,7 @@ function evidenceBody(input: {
     executionObservation: "executionObservation" in input.observations ? input.observations.executionObservation ?? null : null,
     errors: [...input.errors],
     artifacts: input.artifacts,
+    ...(input.correctedSuccessorBinding === undefined ? {} : { predecessorBinding: input.correctedSuccessorBinding }),
   };
   return input.recovery === undefined || input.recovery === null
     ? deepFreeze({ schemaVersion: 1, contractVersion: COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_CONTRACT_VERSION, ...common })
@@ -2832,6 +2932,27 @@ function safeCallbackArgumentShape(value: unknown): CopilotFuryCallbackArgumentS
   try { return callbackArgumentShape(value); } catch { return { kind: "rejected" }; }
 }
 
+function admissionCategory(reason: CopilotFuryAdmissionReasonV1): CopilotFuryAdmissionFailureV1["category"] {
+  if (reason === "admission_search_path_denied") return "search_path_denied";
+  if (reason === "admission_search_scope_denied") return "search_scope_denied";
+  if (reason === "admission_read_path_denied") return "read_path_denied";
+  if (reason === "admission_read_target_denied") return "read_target_denied";
+  if (reason === "admission_tool_denied") return "tool_denied";
+  if (reason === "admission_session_denied") return "session_denied";
+  if (reason === "admission_capacity_exceeded") return "capacity_denied";
+  if (reason === "admission_argument_decode_denied" || reason === "admission_argument_shape_denied") return "argument_denied";
+  return "internal_denied";
+}
+
+function admissionCorrectionHint(reason: CopilotFuryAdmissionReasonV1): CopilotFuryAdmissionFailureV1["correctionHint"] {
+  if (reason === "admission_search_path_denied") return "retry_with_repository_relative_search_path";
+  if (reason === "admission_search_scope_denied") return "retry_without_search_path";
+  if (reason === "admission_read_path_denied" || reason === "admission_read_target_denied") return "retry_with_known_review_artifact_path";
+  if (reason === "admission_session_denied" || reason === "admission_capacity_exceeded") return "retry_after_session_recovery";
+  if (reason === "admission_tool_denied") return "retry_with_read_only_tools";
+  return "retry_with_read_only_tools";
+}
+
 function createCallbackObservationRecorder(expectedSessionId: string) {
   const records: CopilotFuryCallbackObservationRecordV1[] = [];
   let totalCount = 0;
@@ -2883,7 +3004,7 @@ function createCallbackObservationRecorder(expectedSessionId: string) {
     record,
     admissionFailure: (): CopilotFuryAdmissionFailureV1 | undefined => {
       const first = records.reduce<CopilotFuryCallbackObservationRecordV1 | undefined>((candidate, record) => record.decision === "deny" && ADMISSION_FAILURE_REASONS.has(record.reason as CopilotFuryAdmissionReasonV1) && (candidate === undefined || record.ordinal < candidate.ordinal) ? record : candidate, undefined);
-      return first === undefined ? undefined : deepFreeze({ schemaVersion: 1, reason: first.reason as CopilotFuryAdmissionReasonV1, ordinal: first.ordinal, tool: first.tool, argumentShape: first.argumentShape, recovery: ADMISSION_FAILURE_RECOVERY });
+      return first === undefined ? undefined : deepFreeze({ schemaVersion: 1, reason: first.reason as CopilotFuryAdmissionReasonV1, category: admissionCategory(first.reason as CopilotFuryAdmissionReasonV1), correctionHint: admissionCorrectionHint(first.reason as CopilotFuryAdmissionReasonV1), ordinal: first.ordinal, tool: first.tool, argumentShape: first.argumentShape, recovery: ADMISSION_FAILURE_RECOVERY });
     },
     snapshot: (): CopilotFuryCallbackObservationV1 => deepFreeze({ version: COPILOT_FURY_CALLBACK_OBSERVATION_VERSION, totalCount, truncated, records: [...records] }),
   });
@@ -2963,8 +3084,8 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
       if (!validExecutionIdentity(input.executionIdentity, input.repositoryRoot)) throw new Error("Copilot client option projection is malformed.");
       validateReviewArtifactMap(input.reviewArtifactMap);
       validateExecutionToolBinding(input.toolBinding, input.reviewArtifactMap);
-      const registeredDescriptors = reviewArtifactTools(input.repositoryRoot, "0".repeat(40), input.reviewArtifactMap, () => undefined).map((tool) => ({ name: tool.name, parameters: tool.parameters, overridesBuiltInTool: tool.overridesBuiltInTool, skipPermission: tool.skipPermission, defer: tool.defer }));
-      if (registeredDescriptors.length !== 2 || canonicalJson(registeredDescriptors) !== canonicalJson(input.toolBinding.registeredDescriptors)) throw new Error("FURY_TOOL_BINDING_INVALID");
+      const registeredDescriptors = reviewArtifactTools(input.repositoryRoot, "0".repeat(40), input.reviewArtifactMap, () => undefined, undefined, input.toolBinding.modelFacingToolNames).map((tool) => ({ name: tool.name, parameters: tool.parameters, overridesBuiltInTool: tool.overridesBuiltInTool, skipPermission: tool.skipPermission, defer: tool.defer }));
+      if (registeredDescriptors.length !== input.toolBinding.modelFacingToolNames.length || canonicalJson(registeredDescriptors) !== canonicalJson(input.toolBinding.registeredDescriptors)) throw new Error("FURY_TOOL_BINDING_INVALID");
     } catch (error) {
       return { state: "blocked", code: "FURY_TOOL_BINDING_INVALID", errors: [error instanceof Error ? error.message : "Fury tool binding is invalid."] };
     }
@@ -3023,8 +3144,9 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
         pendingAdmissions.delete(key);
         callbackObservation.record({ surface: "handler", identitySource: invocation, toolCallSource: invocation, tool: callbackToolIdentity(tool), permissionKind: "unknown", arguments: args, decision: "invoked", reason: "handler_invoked" });
       },
+      input.toolBinding.modelFacingToolNames,
     );
-    if (immutableTools.length !== 2 || immutableTools.map((tool) => tool.name).join("\0") !== "read\0search") return { state: "failed", code: "FURY_TOOL_BINDING_INVALID", errors: ["FURY_TOOL_BINDING_INVALID"], observations: {} };
+    if (immutableTools.length !== input.toolBinding.modelFacingToolNames.length || immutableTools.map((tool) => tool.name).join("\0") !== input.toolBinding.modelFacingToolNames.join("\0")) return { state: "failed", code: "FURY_TOOL_BINDING_INVALID", errors: ["FURY_TOOL_BINDING_INVALID"], observations: {} };
     const onEvent = (event: SessionEvent) => {
       if (event.type === "session.start") startEvents.push(event);
       if (event.type === "session.model_change") modelChangeObserved = true;
@@ -3174,8 +3296,8 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
       } catch {
         throw new Error("FURY_TOOL_BINDING_DRIFT");
       }
-      if (!safePlain(metadataResult) || !Array.isArray(metadataResult.tools) || metadataResult.tools.length !== 2 || metadataResult.tools.some((tool) => !safePlain(tool) || typeof tool.name !== "string") || new Set(metadataResult.tools.map((tool) => tool.name)).size !== 2 || !sameArray([...metadataResult.tools.map((tool) => tool.name)].sort(), ["read", "search"])) throw new Error("FURY_TOOL_BINDING_DRIFT");
-      const runtimeMetadataNames = [...metadataResult.tools.map((tool) => tool.name)].sort() as ["read", "search"];
+      if (!safePlain(metadataResult) || !Array.isArray(metadataResult.tools) || metadataResult.tools.length !== input.toolBinding.modelFacingToolNames.length || metadataResult.tools.some((tool) => !safePlain(tool) || typeof tool.name !== "string") || new Set(metadataResult.tools.map((tool) => tool.name)).size !== input.toolBinding.modelFacingToolNames.length || !sameArray([...metadataResult.tools.map((tool) => tool.name)].sort(), [...input.toolBinding.modelFacingToolNames].sort())) throw new Error("FURY_TOOL_BINDING_DRIFT");
+      const runtimeMetadataNames = [...metadataResult.tools.map((tool) => tool.name)].sort() as unknown as CopilotFuryAllowedToolsV1;
       const runtimeMetadataDigest = digestBase64Url(canonicalJson(metadataResult.tools));
       const start = startEvents.at(-1);
       if (start === undefined || start.data.sessionId !== input.configuration.sessionId || start.data.selectedModel !== input.configuration.model || start.data.producer !== COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID || typeof start.data.copilotVersion !== "string" || start.data.copilotVersion === "" || selectedBefore.agent?.name !== "fury" || modelBefore.modelId !== input.configuration.model || agentSubstitutionObserved) throw new Error("Copilot session identity observation failed.");
@@ -3216,7 +3338,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
           executionObservation: deepFreeze({
             version: COPILOT_FURY_EXECUTION_OBSERVATION_VERSION,
             sdkVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
-            registeredToolNames: ["read", "search"],
+            registeredToolNames: input.toolBinding.modelFacingToolNames,
             sessionAvailableTools: [...input.toolBinding.sessionAvailableTools],
             sessionExcludedTools: [...input.toolBinding.sessionExcludedTools],
             customAgentTools: [...input.toolBinding.customAgentTools],
@@ -3482,9 +3604,11 @@ function validAdmissionDiagnostic(value: unknown): value is CopilotFuryAdmission
 }
 
 function validAdmissionFailure(value: unknown): value is CopilotFuryAdmissionFailureV1 {
-  return safePlain(value) && exact(value, ["schemaVersion", "reason", "ordinal", "tool", "argumentShape", "recovery"])
+  return safePlain(value) && exact(value, ["schemaVersion", "reason", "category", "correctionHint", "ordinal", "tool", "argumentShape", "recovery"])
     && value.schemaVersion === 1
     && typeof value.reason === "string" && ADMISSION_FAILURE_REASONS.has(value.reason as CopilotFuryAdmissionReasonV1)
+    && value.category === admissionCategory(value.reason as CopilotFuryAdmissionReasonV1)
+    && value.correctionHint === admissionCorrectionHint(value.reason as CopilotFuryAdmissionReasonV1)
     && Number.isSafeInteger(value.ordinal) && (value.ordinal as number) > 0
     && ["read", "search", "unknown"].includes(value.tool as string)
     && validCallbackArgumentShape(value.argumentShape)
@@ -3497,7 +3621,8 @@ function firstAdmissionFailureCallback(value: unknown): CopilotFuryCallbackObser
 }
 
 function admissionFailureFromCallback(record: CopilotFuryCallbackObservationRecordV1): CopilotFuryAdmissionFailureV1 {
-  return deepFreeze({ schemaVersion: 1, reason: record.reason as CopilotFuryAdmissionReasonV1, ordinal: record.ordinal, tool: record.tool, argumentShape: record.argumentShape, recovery: ADMISSION_FAILURE_RECOVERY });
+  const reason = record.reason as CopilotFuryAdmissionReasonV1;
+  return deepFreeze({ schemaVersion: 1, reason, category: admissionCategory(reason), correctionHint: admissionCorrectionHint(reason), ordinal: record.ordinal, tool: record.tool, argumentShape: record.argumentShape, recovery: ADMISSION_FAILURE_RECOVERY });
 }
 
 function validateAdmissionFailureAgreement(
@@ -3561,7 +3686,9 @@ function validCallbackObservation(value: unknown): value is CopilotFuryCallbackO
 
 function validExecutorObservations(observations: CopilotFuryExecutorObservationsV1, request: CopilotFuryPlanDispatchRequestV1OrV2, childSessionId: string, artifactMapDigest: string): boolean {
   const executionObservation = observations.executionObservation;
-  const toolBindingObserved = executionObservation !== undefined && executionObservation.version === COPILOT_FURY_EXECUTION_OBSERVATION_VERSION && executionObservation.sdkVersion === COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION && sameArray(executionObservation.registeredToolNames, EXECUTION_MODEL_TOOLS) && sameArray(executionObservation.sessionAvailableTools, EXECUTION_AVAILABLE_TOOLS) && sameArray(executionObservation.customAgentTools, EXECUTION_AGENT_TOOLS) && sameArray(executionObservation.modelFacingToolNames, EXECUTION_MODEL_TOOLS) && sameArray(executionObservation.runtimeMetadataNames, EXECUTION_MODEL_TOOLS) && Array.isArray(executionObservation.sessionExcludedTools) && executionObservation.sessionExcludedTools.length === EXECUTION_EXCLUDED_TOOLS.length && executionObservation.sessionExcludedTools.every((value, index) => value === EXECUTION_EXCLUDED_TOOLS[index]) && DIGEST.test(executionObservation.runtimeMetadataDigest) && executionObservation.artifactMapDigest === artifactMapDigest;
+  const expectedTools = request.allowedTools;
+  const expectedSessionTools = expectedTools.map((tool) => `custom:${tool}`);
+  const toolBindingObserved = executionObservation !== undefined && executionObservation.version === COPILOT_FURY_EXECUTION_OBSERVATION_VERSION && executionObservation.sdkVersion === COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION && sameArray(executionObservation.registeredToolNames, expectedTools) && sameArray(executionObservation.sessionAvailableTools, expectedSessionTools) && sameArray(executionObservation.customAgentTools, expectedTools) && sameArray(executionObservation.modelFacingToolNames, expectedTools) && sameArray(executionObservation.runtimeMetadataNames, expectedTools) && Array.isArray(executionObservation.sessionExcludedTools) && executionObservation.sessionExcludedTools.length === EXECUTION_EXCLUDED_TOOLS.length && executionObservation.sessionExcludedTools.every((value, index) => value === EXECUTION_EXCLUDED_TOOLS[index]) && DIGEST.test(executionObservation.runtimeMetadataDigest) && executionObservation.artifactMapDigest === artifactMapDigest;
   return toolBindingObserved && observations.admissionFailure === undefined && (observations.callbackObservation === undefined || validCallbackObservation(observations.callbackObservation)) && observations.sessionStartObserved === true && observations.sessionId === childSessionId && observations.selectedAgent === "fury" && observations.model === request.requestedModel && observations.assistantModel === request.requestedModel && observations.runtimeId === request.requestedRuntime && observations.executorId === request.requestedExecutor && observations.loadedSdkPackageVersion === COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION && observations.sessionProducer === request.requestedExecutor && typeof observations.sessionProducerVersion === "string" && observations.sessionProducerVersion.length > 0 && observations.sessionProducerVersion.length <= 255 && observations.modelChangeObserved === false && observations.agentSubstitutionObserved === false && observations.unauthorizedToolOrEffectObserved === false;
 }
 
@@ -3616,7 +3743,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       if (message === "same_name_user_card_shadowing_requires_explicit_override" || message === "explicit_user_card_override_unavailable_or_mismatched") return invalidFor(request, "FURY_CARD_SELECTION_INVALID", message);
       return blockedFor(request, "BLOCKED_ADAPTER_GAP", message);
     }
-    const predecessorIdentity = deriveSessionIdentity(request, plan);
+    const predecessorIdentity = deriveSessionIdentity(request, plan, suppliedDependencies.correctedSuccessorBinding);
     let identity: ReturnType<typeof claimIdentity> = predecessorIdentity;
     let claimStartedAt = request.timestamp.value;
     packetId = predecessorIdentity.packetId;
@@ -3627,11 +3754,11 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     const existing = projections.filter((candidate) => candidate.receiptId === predecessorIdentity.receiptId);
     if (existing.length > 1) return invalidFor(request, "duplicate_start", "Existing packet claim is ambiguous.");
     packetConfiguration = sdkConfiguration(request, deriveCopilotSdkSessionIdV1(predecessorIdentity.childSessionId));
-    packetBytes = new TextEncoder().encode(canonicalJson(packetBody(packetRequest, plan, card, observation, packetConfiguration)));
+    packetBytes = new TextEncoder().encode(canonicalJson(packetBody(packetRequest, plan, card, observation, packetConfiguration, suppliedDependencies.correctedSuccessorBinding)));
     packetDigest = digestBase64Url(packetBytes);
     if (existing.length === 1 && request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION) {
       const legacyPacketConfiguration = sdkConfiguration(request, predecessorIdentity.childSessionId);
-      const legacyPacketBytes = new TextEncoder().encode(canonicalJson(packetBody(packetRequest, plan, card, observation, legacyPacketConfiguration)));
+      const legacyPacketBytes = new TextEncoder().encode(canonicalJson(packetBody(packetRequest, plan, card, observation, legacyPacketConfiguration, suppliedDependencies.correctedSuccessorBinding)));
       const legacyPacketDigest = digestBase64Url(legacyPacketBytes);
       const legacyBinding = `evidence:packet-binding:seat-dispatch-v1:${predecessorIdentity.claimKey}:${legacyPacketDigest}`;
       if (existing[0].inputEvidenceRefs.includes(legacyBinding)) {
@@ -3705,7 +3832,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     }
     try {
       reviewArtifactMap = await buildReviewArtifactMap(request, source, plan);
-      toolBinding = executionToolDescriptors(reviewArtifactMap.digest);
+      toolBinding = executionToolDescriptors(reviewArtifactMap.digest, request.allowedTools);
       validateReviewArtifactMap(reviewArtifactMap);
       validateExecutionToolBinding(toolBinding, reviewArtifactMap);
     } catch (error) {
@@ -3724,8 +3851,8 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     await suppliedDependencies.beforeClaim?.();
     await verifyLiveBinding(request, source, observation, planFile, card, reviewArtifactMap, suppliedDependencies.userCopilotHome);
     const callerInputEvidenceRefs = recoveryBinding === null
-      ? [...expectedPredecessorInputEvidence.slice(0, -1)]
-      : [plan.id, plan.digest, `sha256:${request.transitionPlanRawSha256}`, `sha256:${card.identity.contentDigest}`, observation.journalDigest, recoveryBinding.inputEvidenceBinding];
+      ? [...expectedPredecessorInputEvidence.slice(0, -1), ...(suppliedDependencies.correctedSuccessorEvidenceRefs ?? [])]
+      : [plan.id, plan.digest, `sha256:${request.transitionPlanRawSha256}`, `sha256:${card.identity.contentDigest}`, observation.journalDigest, recoveryBinding.inputEvidenceBinding, ...(suppliedDependencies.correctedSuccessorEvidenceRefs ?? [])];
     const claimedInputEvidenceRefs = [...callerInputEvidenceRefs, `evidence:packet-binding:seat-dispatch-v1:${identity.claimKey}:${packetDigest}`];
     const claim = await dependencies.claimDispatchPacket({
       repositoryRoot: request.repositoryRoot,
@@ -3784,7 +3911,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     const timestamp = new Date(Math.max(Date.parse(request.timestamp.value) + 1, Date.now())).toISOString();
     if (execution.state !== "completed") {
       const outcome = execution.state;
-      const evidence = evidenceWithDigest(evidenceBody({ request: packetRequest, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, packetConfiguration, executionConfiguration: configuration, outcome, dispositionCode: execution.code, modelResult: null, observations: execution.observations, errors: execution.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null }, recovery: recoveryBinding }));
+      const evidence = evidenceWithDigest(evidenceBody({ request: packetRequest, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, packetConfiguration, executionConfiguration: configuration, outcome, dispositionCode: execution.code, modelResult: null, observations: execution.observations, errors: execution.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null }, recovery: recoveryBinding, correctedSuccessorBinding: suppliedDependencies.correctedSuccessorBinding }));
       const evidenceBytes = `${canonicalJson(evidence)}\n`;
       const evidencePath = await writeContentAddressedArtifact(evidenceDirectory, "dispatch-evidence", evidence.evidenceDigest, evidenceBytes);
       if (execution.state === "interrupted") {
@@ -3851,7 +3978,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       reviewArtifactBytes = `${canonicalJson(review)}\n`;
       reviewArtifactPath = await writeContentAddressedArtifact(evidenceDirectory, "transition-plan-review", review.reviewDigest, reviewArtifactBytes);
     }
-    const evidence = evidenceWithDigest(evidenceBody({ request: packetRequest, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, packetConfiguration, executionConfiguration: configuration, outcome: result.value.verdict, dispositionCode: null, modelResult: result.value, observations: execution.observations, errors: [], artifacts: { transitionPlanPath, reviewArtifactPath }, recovery: recoveryBinding }));
+    const evidence = evidenceWithDigest(evidenceBody({ request: packetRequest, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, packetConfiguration, executionConfiguration: configuration, outcome: result.value.verdict, dispositionCode: null, modelResult: result.value, observations: execution.observations, errors: [], artifacts: { transitionPlanPath, reviewArtifactPath }, recovery: recoveryBinding, correctedSuccessorBinding: suppliedDependencies.correctedSuccessorBinding }));
     const evidencePath = await writeContentAddressedArtifact(evidenceDirectory, "dispatch-evidence", evidence.evidenceDigest, `${canonicalJson(evidence)}\n`);
     const refs = result.value.verdict === "PASS" && review !== null
       ? [review.reviewId, review.reviewDigest, review.reviewedArtifactId, review.reviewedArtifactRevision, evidence.evidenceDigest]
@@ -3916,7 +4043,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       }
       const outcome = terminalUncertain ? "interrupted" as const : "failed" as const;
       const disposition = terminalUncertain ? originalDisposition : { code: "DISPATCH_FAILED", errors: [message] };
-      const evidence = evidenceWithDigest(evidenceBody({ request: packetRequest, plan, packetId, packetDigest, receiptId: claimedReceipt.receiptId, card, observation, packetConfiguration, executionConfiguration: configuration, outcome, dispositionCode: disposition.code, modelResult: null, observations: {}, errors: disposition.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null }, recovery: recoveryBinding }));
+      const evidence = evidenceWithDigest(evidenceBody({ request: packetRequest, plan, packetId, packetDigest, receiptId: claimedReceipt.receiptId, card, observation, packetConfiguration, executionConfiguration: configuration, outcome, dispositionCode: disposition.code, modelResult: null, observations: {}, errors: disposition.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null }, recovery: recoveryBinding, correctedSuccessorBinding: suppliedDependencies.correctedSuccessorBinding }));
       const evidencePath = await writeContentAddressedArtifact(directory, "dispatch-evidence", evidence.evidenceDigest, `${canonicalJson(evidence)}\n`);
       const timestamp = new Date(Math.max(Date.parse(request.timestamp.value) + 1, Date.now())).toISOString();
       const receipt = terminalUncertain

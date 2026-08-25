@@ -4739,6 +4739,32 @@ test("revoked delegation begins ineligible and falls back to signed supervised a
   const approved = run(root, ["mission", "approve", "--mission-id", brief.missionId, "--evidence", "approval.json", "--json"]); assert.equal(approved.status, 0, approved.stderr); projection = JSON.parse(approved.stdout); assert.equal(projection.authorization.source, "supervised"); assert.equal(projection.governance.state, "approved");
 });
 
+test("issue 394 corrected-successor CLI is closed and rejects malformed input", async () => {
+  const current = await fixture();
+  assert.match(missionUsage(), /shield mission dispatch-fury-corrected-successor --input <file>/u);
+  await writeFile(join(current.root, "corrected-successor.json"), `${JSON.stringify({ request: {}, predecessorReceiptId: "receipt:test-predecessor" })}\n`);
+  const output = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = (chunk) => { output.push(String(chunk)); return true; };
+  try {
+    assert.equal(await runMissionCli([
+      "mission", "dispatch-fury-corrected-successor", "--input", "corrected-successor.json", "--root", current.root, "--json",
+    ]), 1);
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  const result = JSON.parse(output.join(""));
+  assert.equal(result.state, "invalid");
+  assert.equal(result.receiptId, null);
+  assert.doesNotMatch(JSON.stringify(result), /test-predecessor/u);
+  await assert.rejects(
+    runMissionCli([
+      "mission", "dispatch-fury-corrected-successor", "--input", "corrected-successor.json", "--request", "corrected-successor.json", "--predecessor-receipt-id", "receipt:test-predecessor", "--root", current.root, "--json",
+    ]),
+    /exactly one corrected-successor input form/u,
+  );
+});
+
 test("Copilot Fury dispatch CLI materializes the exact reviewed transition and replays it", async () => {
   const current = await profileAwareFixture();
   await mkdir(join(current.root, ".github", "agents"), { recursive: true });
