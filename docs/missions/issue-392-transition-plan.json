@@ -1,0 +1,44 @@
+{
+  "schemaId": "mission.transition-plan.v1",
+  "authority": "none",
+  "missionId": "mission:issue-392-ranged-read",
+  "subjectId": "github:RanSolo/shield-workspace/issue/392",
+  "repositoryId": "RanSolo/shield-workspace",
+  "planningBaseRevision": "90791997d05e98ddbf37cd613d6901c1564e3432",
+  "parentPlanCommit": "c92d952da7dc4f51a08edc5669ef3a05eac3ee62",
+  "parentPlanPath": "docs/missions/issue-392-ranged-read-plan.md",
+  "parentPlanRawSha256": "bf662ac1520b1f5588eea1b62f839bae8fedd1a332de71e3f2f9ad24b40a1c82",
+  "transitionKind": "fresh_authorize_wheels_up",
+  "boundedOutcome": "May extends the repository-owned Fury read admission with paired optional 1-based inclusive line_start and line_end safe integers bounded to 400 lines, deterministic UTF-8 tracked-Git-tree line semantics, canonical ranged JSON output, redacted recoverable admission diagnostics with fresh-successor guidance, exact model-facing shape guidance, and closed V1 FURY_TOOL_ADMISSION_DENIED/admissionFailure semantics, while preserving fail-closed security, authority-none capabilities, exact #390 replay identity, and no replay of the failed #392 evidence receipt.",
+  "approvedRelativePaths": [
+    "docs/missions/issue-392-ranged-read-plan.md",
+    "docs/missions/issue-392-transition-plan.json",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
+    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs"
+  ],
+  "publicationPaths": [
+    "docs/missions/issue-392-ranged-read-plan.md",
+    "docs/missions/issue-392-transition-plan.json",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts",
+    "packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs"
+  ],
+  "approvedActionIds": ["action:issue-392:implement", "action:issue-392:validate"],
+  "approvedEffectClasses": ["behavioral_implementation", "verification"],
+  "approvedEffectKeys": ["effect:issue-392:diagnostics", "effect:issue-392:ranged-read"],
+  "approvedCapabilities": ["filesystem_write", "process_execute"],
+  "validationCommandIds": ["validation:issue-392:affected", "validation:issue-392:focused"],
+  "modelId": "gpt-5.6-luna",
+  "reasoningRuntimeId": "runtime:codex-hosted-may-luna",
+  "toolExecutorId": "executor:codex-hosted-workspace-tools",
+  "exclusions": [
+    "review.comment.publish",
+    "review.pull_request.update_draft",
+    "review.pull_request.mark_ready",
+    "merge",
+    "deployment",
+    "release",
+    "final_acceptance"
+  ],
+  "id": "transition-plan:v5jZBmE1LvMEz8veR_KzU0fHFHoEeixa8RaG-1GOTdo",
+  "digest": "sha256:v5jZBmE1LvMEz8veR_KzU0fHFHoEeixa8RaG-1GOTdo"
+}

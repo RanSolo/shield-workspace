@@ -534,6 +534,45 @@ function executor(plan, verdict = "PASS", observationOverrides = {}) {
   };
 }
 
+function admissionFailureFixture(reason = "admission_argument_shape_denied") {
+  const argumentShape = { kind: "object", keys: ["path", "unknown"], entries: [{ kind: "string" }, { kind: "number" }] };
+  const admissionFailure = { schemaVersion: 1, reason, ordinal: 1, tool: "read", argumentShape, recovery: "fresh_corrected_successor_required" };
+  const callbackObservation = {
+    version: "shield.copilot-fury.callback-observation.v1",
+    totalCount: 1,
+    truncated: false,
+    records: [{
+      surface: "pre_tool",
+      ordinal: 1,
+      callbackIdentity: { sessionId: "present", toolCallId: "present" },
+      tool: "read",
+      permissionKind: "unknown",
+      argumentShape,
+      expectedSessionMatch: "match",
+      decision: "deny",
+      reason,
+      admission: { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 0, duplicate: false, validationAttempted: true },
+    }],
+  };
+  return { admissionFailure, callbackObservation };
+}
+
+function multipleAdmissionFailureFixture() {
+  const earliest = admissionFailureFixture();
+  const record = (ordinal, decision = "allow", reason = "exact_tool_allowed", argumentShape = earliest.callbackObservation.records[0].argumentShape) => ({ ...earliest.callbackObservation.records[0], ordinal, decision, reason, argumentShape });
+  const callbackObservation = {
+    version: "shield.copilot-fury.callback-observation.v1",
+    totalCount: 34,
+    truncated: true,
+    records: [
+      record(2, "deny", "admission_tool_denied"),
+      ...Array.from({ length: 30 }, (_, index) => record(index + 3)),
+      record(1, "deny", "admission_argument_shape_denied", earliest.admissionFailure.argumentShape),
+    ],
+  };
+  return { admissionFailure: earliest.admissionFailure, callbackObservation };
+}
+
 function productionConfiguration(current) {
   return {
     packageName: "@github/copilot-sdk",
@@ -1686,6 +1725,162 @@ test("failed, cancelled, and interrupted lifecycles replay without another model
   }
 });
 
+test("fresh admission evidence requires a failed terminal state", async () => {
+  for (const state of ["cancelled", "interrupted", "completed"]) {
+    const current = await fixture();
+    const expected = admissionFailureFixture();
+    const terminalExecutor = {
+      async preflight() { return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
+      async execute() {
+        if (state === "completed") return { state, outputText: productionPassOutput(current), observations: { admissionFailure: expected.admissionFailure, callbackObservation: expected.callbackObservation } };
+        return { state, code: "FURY_TOOL_ADMISSION_DENIED", errors: ["Fury tool admission denied; create a fresh corrected successor."], admissionFailure: expected.admissionFailure, observations: { admissionFailure: expected.admissionFailure, callbackObservation: expected.callbackObservation } };
+      },
+    };
+    const result = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: terminalExecutor, userCopilotHome: current.userCopilotHome });
+    assert.equal(result.state, "failed", `${state}: ${JSON.stringify(result)}`);
+    assert.equal(result.code, "DISPATCH_FAILED", state);
+    assert.match(result.errors.join(" "), /admission_failure_malformed/u, state);
+  }
+});
+
+test("replay rejects admission evidence for cancelled, interrupted, and completed outcomes", async () => {
+  for (const state of ["cancelled", "interrupted", "completed"]) {
+    const current = await fixture();
+    const request = v1Request(current);
+    const expected = admissionFailureFixture();
+    const ledger = historicalV1Ledger(current, request, state, {
+      mutateEvidence(evidence) {
+        return {
+          ...evidence,
+          dispositionCode: "FURY_TOOL_ADMISSION_DENIED",
+          errors: ["Fury tool admission denied; create a fresh corrected successor."],
+          observations: { admissionFailure: expected.admissionFailure, callbackObservation: expected.callbackObservation },
+        };
+      },
+    });
+    const result = await dispatchCopilotFuryPlanReviewV1(request, { executor: executor(current.plan).value, userCopilotHome: current.userCopilotHome, readDispatchLedger: ledger.readDispatchLedger });
+    assert.equal(result.state, "invalid", `${state}: ${JSON.stringify(result)}`);
+    assert.match(result.errors.join(" "), /replayed_admission_failure_malformed/u, state);
+  }
+});
+
+test("fresh and replay admission projections select the minimum ordinal across a terminal sentinel", async () => {
+  const current = await fixture();
+  const expected = multipleAdmissionFailureFixture();
+  const terminalExecutor = {
+    async preflight() { return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
+    async execute() {
+      return { state: "failed", code: "FURY_TOOL_ADMISSION_DENIED", errors: ["Fury tool admission denied; create a fresh corrected successor."], admissionFailure: expected.admissionFailure, observations: { admissionFailure: expected.admissionFailure, callbackObservation: expected.callbackObservation } };
+    },
+  };
+  const first = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: terminalExecutor, userCopilotHome: current.userCopilotHome });
+  assert.equal(first.state, "failed", JSON.stringify(first));
+  assert.deepEqual(first.admissionFailure, expected.admissionFailure, JSON.stringify(first));
+  const replay = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: executor(current.plan).value, userCopilotHome: current.userCopilotHome });
+  assert.equal(replay.state, "failed", JSON.stringify(replay));
+  assert.equal(replay.replayed, true);
+  assert.deepEqual(replay.admissionFailure, expected.admissionFailure);
+});
+
+test("fresh admission failures reject malformed and conflicting projections before persistence", async () => {
+  for (const [label, mutate] of [
+    ["malformed-reason", (failure) => ({ ...failure, reason: "admission_future_denied" })],
+    ["conflicting-projection", (failure) => ({ ...failure, reason: "admission_tool_denied" })],
+  ]) {
+    const current = await fixture();
+    const expected = admissionFailureFixture();
+    const returned = mutate(expected.admissionFailure);
+    const terminalExecutor = {
+      async preflight() { return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
+      async execute() {
+        return { state: "failed", code: "FURY_TOOL_ADMISSION_DENIED", errors: ["Fury tool admission denied; create a fresh corrected successor."], admissionFailure: returned, observations: { admissionFailure: expected.admissionFailure, callbackObservation: expected.callbackObservation } };
+      },
+    };
+    const first = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: terminalExecutor, userCopilotHome: current.userCopilotHome });
+    assert.equal(first.state, "failed", `${label}: ${JSON.stringify(first)}`);
+    assert.equal(first.code, "DISPATCH_FAILED", label);
+    assert.match(first.errors.join(" "), /admission_failure_malformed/u, label);
+    const evidence = JSON.parse(await readFile(join(current.root, first.evidencePath), "utf8"));
+    assert.equal(Object.hasOwn(evidence.observations, "admissionFailure"), false, label);
+    const replay = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: executor(current.plan).value, userCopilotHome: current.userCopilotHome });
+    assert.equal(replay.replayed, true, `${label}: ${JSON.stringify(replay)}`);
+    assert.equal(Object.hasOwn(replay, "admissionFailure"), false, label);
+  }
+});
+
+test("replay rejects malformed or conflicting new admission evidence and preserves legacy no-synthesis", async () => {
+  for (const [label, mutate] of [
+    ["malformed-reason", (failure, callbackObservation) => ({ admissionFailure: { ...failure, reason: "admission_future_denied" }, callbackObservation })],
+    ["conflicting-callback", (failure, callbackObservation) => ({ admissionFailure: failure, callbackObservation: { ...callbackObservation, records: [{ ...callbackObservation.records[0], reason: "admission_tool_denied" }] } })],
+  ]) {
+    const current = await fixture();
+    const request = v1Request(current);
+    const expected = admissionFailureFixture();
+    const ledger = historicalV1Ledger(current, request, "failed", {
+      mutateEvidence(evidence) {
+        const changed = mutate(expected.admissionFailure, expected.callbackObservation);
+        return { ...evidence, dispositionCode: "FURY_TOOL_ADMISSION_DENIED", errors: ["Fury tool admission denied; create a fresh corrected successor."], observations: { admissionFailure: changed.admissionFailure, callbackObservation: changed.callbackObservation } };
+      },
+    });
+    const replay = await dispatchCopilotFuryPlanReviewV1(request, { executor: executor(current.plan).value, userCopilotHome: current.userCopilotHome, readDispatchLedger: ledger.readDispatchLedger });
+    assert.equal(replay.state, "invalid", `${label}: ${JSON.stringify(replay)}`);
+    assert.match(replay.errors.join(" "), /replayed_admission_failure_malformed/u, label);
+  }
+
+  const legacy = await fixture();
+  const legacyRequest = v1Request(legacy);
+  const legacyLedger = historicalV1Ledger(legacy, legacyRequest, "failed");
+  const legacyReplay = await dispatchCopilotFuryPlanReviewV1(legacyRequest, { executor: executor(legacy.plan).value, userCopilotHome: legacy.userCopilotHome, readDispatchLedger: legacyLedger.readDispatchLedger });
+  assert.equal(legacyReplay.state, "failed", JSON.stringify(legacyReplay));
+  assert.equal(Object.hasOwn(legacyReplay, "admissionFailure"), false);
+  assert.deepEqual(legacyReplay.errors, ["historical failed"]);
+});
+
+test("legacy replay ignores qualifying callback denial without new admission evidence", async () => {
+  const current = await fixture();
+  const request = v1Request(current);
+  const expected = admissionFailureFixture();
+  const history = historicalV1Ledger(current, request, "failed", {
+    mutateEvidence(evidence) {
+      return { ...evidence, observations: { callbackObservation: expected.callbackObservation } };
+    },
+  });
+  const replayExecutor = executor(current.plan);
+  const replay = await dispatchCopilotFuryPlanReviewV1(request, {
+    executor: replayExecutor.value,
+    userCopilotHome: current.userCopilotHome,
+    readDispatchLedger: history.readDispatchLedger,
+  });
+  assert.equal(replay.state, "failed", JSON.stringify(replay));
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.code, "DISPATCH_FAILED");
+  assert.deepEqual(replay.errors, ["historical failed"]);
+  assert.equal(Object.hasOwn(replay, "admissionFailure"), false);
+  assert.equal(replayExecutor.calls.preflight, 0);
+  assert.equal(replayExecutor.calls.execute, 0);
+});
+
+test("replay rejects new admission code without observations before execution", async () => {
+  const current = await fixture();
+  const request = v1Request(current);
+  const history = historicalV1Ledger(current, request, "failed", {
+    mutateEvidence(evidence) {
+      const { observations, ...withoutObservations } = evidence;
+      return { ...withoutObservations, dispositionCode: "FURY_TOOL_ADMISSION_DENIED", errors: ["Fury tool admission denied; create a fresh corrected successor."] };
+    },
+  });
+  const replayExecutor = executor(current.plan);
+  const replay = await dispatchCopilotFuryPlanReviewV1(request, {
+    executor: replayExecutor.value,
+    userCopilotHome: current.userCopilotHome,
+    readDispatchLedger: history.readDispatchLedger,
+  });
+  assert.equal(replay.state, "invalid", JSON.stringify(replay));
+  assert.match(replay.errors.join(" "), /replayed_admission_failure_malformed/u);
+  assert.equal(replayExecutor.calls.preflight, 0);
+  assert.equal(replayExecutor.calls.execute, 0);
+});
+
 test("claim failure and unsafe evidence ancestry prevent model execution", async () => {
   const claimFailure = await fixture();
   const claimExecutor = executor(claimFailure.plan);
@@ -2488,6 +2683,65 @@ test("production admission rejects hostile JSON, byte, depth, path, key, and nam
     assert.equal(result.state, "failed", `${label}: ${JSON.stringify(result)}`);
     assert.deepEqual(harness.calls.toolResults, [], label);
   }
+});
+
+test("production ranged reads are paired, bounded, LF-deterministic, redacted, and replay-safe", async () => {
+  const current = await fixture();
+  const rangedPath = "ranged-read-fixture.txt";
+  await writeFile(join(current.root, rangedPath), "alpha\nbeta\ngamma\n", "utf8");
+  git(current.root, ["add", rangedPath]);
+  git(current.root, ["commit", "-qm", "add ranged read fixture"]);
+  current.request = { ...current.request, headRevision: git(current.root, ["rev-parse", "HEAD"]) };
+  const harness = productionSdkHarness({
+    preToolUseCalls: [
+      { toolName: "read", toolArgs: { path: rangedPath } },
+      { toolName: "read", toolArgs: { path: rangedPath, line_start: 1, line_end: 2 } },
+    ],
+    outputText: productionPassOutput(current),
+  });
+  const result = await runProductionExecutor(current, harness);
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  assert.deepEqual(harness.calls.sessionConfig.tools.find(({ name }) => name === "read").parameters.properties.line_start, { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: "Optional 1-based inclusive start line; must be paired with line_end." });
+  assert.equal(JSON.parse(harness.calls.toolResults[0].result).content, "alpha\nbeta\ngamma\n");
+  assert.deepEqual(JSON.parse(harness.calls.toolResults[1].result), { repositoryRevision: current.request.headRevision, path: rangedPath, line_start: 1, line_end: 2, content: "alpha\nbeta\n" });
+
+  for (const toolArgs of [
+    { path: rangedPath, line_start: 1 },
+    { path: rangedPath, line_end: 2 },
+    { path: rangedPath, line_start: 2, line_end: 1 },
+    { path: rangedPath, line_start: 1, line_end: 401 },
+    { path: rangedPath, line_start: 1, line_end: 4 },
+    { path: rangedPath, line_start: 1, line_end: 2, secret: "do-not-retain" },
+  ]) {
+    const denied = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [{ toolName: "read", toolArgs }] }));
+    assert.equal(denied.state, "failed", JSON.stringify(denied));
+    assert.equal(denied.code, "FURY_TOOL_ADMISSION_DENIED");
+    assert.deepEqual(denied.errors, ["Fury tool admission denied; create a fresh corrected successor."]);
+    assert.equal(denied.admissionFailure.schemaVersion, 1);
+    assert.equal(denied.admissionFailure.reason, "admission_argument_shape_denied");
+    assert.equal(denied.admissionFailure.ordinal, 1);
+    assert.equal(denied.admissionFailure.tool, "read");
+    assert.equal(denied.admissionFailure.recovery, "fresh_corrected_successor_required");
+    assert.equal(JSON.stringify(denied).includes("do-not-retain"), false);
+    assert.equal(JSON.stringify(denied).includes(rangedPath), false);
+  }
+
+  const resolved = await resolveCommittedTransitionPlanSourceV1(current.request);
+  assert.equal(resolved.state, "valid", JSON.stringify(resolved));
+  const firstHarness = productionSdkHarness({ preToolUseCalls: [{ toolName: "read", toolArgs: { path: rangedPath, line_start: 1 } }] });
+  const first = await dispatchCopilotFuryPlanReviewCoreV1(current.request, resolved.source, {
+    executor: createCopilotFuryPlanExecutorV1({ async loadSdk() { return firstHarness.module; }, async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; } }),
+  });
+  assert.equal(first.state, "failed", JSON.stringify(first));
+  assert.equal(first.code, "FURY_TOOL_ADMISSION_DENIED");
+  assert.deepEqual(first.admissionFailure, { schemaVersion: 1, reason: "admission_argument_shape_denied", ordinal: 1, tool: "read", argumentShape: { kind: "object", keys: ["path", "unknown"], entries: [{ kind: "string" }, { kind: "number" }] }, recovery: "fresh_corrected_successor_required" });
+  const secondHarness = productionSdkHarness({ outputText: productionPassOutput(current) });
+  const replay = await dispatchCopilotFuryPlanReviewCoreV1(current.request, resolved.source, {
+    executor: createCopilotFuryPlanExecutorV1({ async loadSdk() { return secondHarness.module; }, async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; } }),
+  });
+  assert.equal(replay.replayed, true, JSON.stringify(replay));
+  assert.deepEqual(replay.admissionFailure, first.admissionFailure);
+  assert.equal(secondHarness.calls.createSession, 0);
 });
 
 test("production admission callback diagnostics classify bounded denial branches without sensitive values", async () => {
