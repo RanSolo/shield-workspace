@@ -25,6 +25,7 @@ import {
   type MissionTransitionPlanReviewV1,
 } from "./mission-preparation-host-v1.mjs";
 import { journalByteSha256, readMissionJournalForDisplay, resolveSupervisedMissionPaths } from "./mission-store.mjs";
+import { validateWorktreeStateReceiptFileChainV1OrV2, validateWorktreeStateReceiptV1OrV2 } from "./worktree-state-v1.mjs";
 import { canonicalJson } from "./mission-v2.mjs";
 import {
   createSeatDispatchLifecycleEventV1,
@@ -1577,16 +1578,56 @@ function correctedSuccessorMarker(binding: CopilotFuryCorrectedSuccessorBindingV
   return `evidence:copilot-fury-corrected-successor-v1:${binding.predecessorReceiptId}:${token}`;
 }
 
+const REVIEWED_TRANSITION_SEED_FIELDS = Object.freeze([
+  "authority", "contractVersion", "furyCard", "logicalOperation", "missionJournal", "preparedWorktree", "request", "schemaVersion",
+] as const);
+const REVIEWED_TRANSITION_SEED_FURY_CARD_FIELDS = Object.freeze(["logicalRef", "rawSha256", "repositoryRevision"] as const);
+const REVIEWED_TRANSITION_SEED_LOGICAL_OPERATION_FIELDS = Object.freeze([
+  "missionId", "missionRevision", "parentSessionId", "repositoryId", "repositoryRevision", "repositoryWorkspaceId", "requestContractVersion", "reviewPhase", "transitionPlanDigest", "transitionPlanId",
+] as const);
+const REVIEWED_TRANSITION_SEED_JOURNAL_FIELDS = Object.freeze(["digest", "sequence"] as const);
+const REVIEWED_TRANSITION_SEED_WORKTREE_FIELDS = Object.freeze(["laneBranch", "receiptDigest", "receiptRawSha256"] as const);
+
+function reviewedTransitionSeedRequest(input: unknown): Readonly<{ state: "direct"; request: unknown } | { state: "seed"; request: unknown; seed: Plain } | { state: "invalid"; errors: readonly string[] }> {
+  if (!safePlain(input) || input.contractVersion !== "shield.copilot-fury-reviewed-transition-seed.v3") return { state: "direct", request: input };
+  if (!exact(input, REVIEWED_TRANSITION_SEED_FIELDS) || input.authority !== "none" || input.schemaVersion !== 3 ||
+      !exact(input.furyCard, REVIEWED_TRANSITION_SEED_FURY_CARD_FIELDS) || !exact(input.logicalOperation, REVIEWED_TRANSITION_SEED_LOGICAL_OPERATION_FIELDS) ||
+      !exact(input.missionJournal, REVIEWED_TRANSITION_SEED_JOURNAL_FIELDS) || !exact(input.preparedWorktree, REVIEWED_TRANSITION_SEED_WORKTREE_FIELDS) ||
+      !safePlain(input.request)) return { state: "invalid", errors: ["Reviewed-transition seed envelope is malformed or not closed."] };
+  const logical = input.logicalOperation;
+  const request = input.request;
+  if (!safePlain(request) || request.schemaVersion !== 2 || request.contractVersion !== COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2 || request.reviewPhase !== COPILOT_FURY_PLAN_REVIEW_PHASE_V2 ||
+      logical.requestContractVersion !== COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2 || logical.reviewPhase !== COPILOT_FURY_PLAN_REVIEW_PHASE_V2 || typeof input.missionJournal.sequence !== "number" || !Number.isSafeInteger(input.missionJournal.sequence) || input.missionJournal.sequence < 0 ||
+      typeof input.preparedWorktree.laneBranch !== "string" || typeof input.preparedWorktree.receiptDigest !== "string" || typeof input.preparedWorktree.receiptRawSha256 !== "string") {
+    return { state: "invalid", errors: ["Reviewed-transition seed envelope bindings are malformed."] };
+  }
+  return { state: "seed", request, seed: input };
+}
+
+function reviewedTransitionSeedBindingsMatch(seed: Plain, request: CopilotFuryPlanDispatchRequestV1OrV2): boolean {
+  const logical = seed.logicalOperation as Plain;
+  const furyCard = seed.furyCard as Plain;
+  const worktree = seed.preparedWorktree as Plain;
+  const requestReviewPhase = request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2 ? request.reviewPhase : null;
+  return logical.missionId === request.missionId && logical.missionRevision === request.missionRevision && logical.parentSessionId === request.parentSessionId &&
+    logical.repositoryId === request.repositoryId && logical.repositoryRevision === request.headRevision && logical.repositoryWorkspaceId === request.repositoryWorkspaceId &&
+    logical.requestContractVersion === request.contractVersion && logical.reviewPhase === requestReviewPhase &&
+    furyCard.repositoryRevision === request.headRevision && worktree.laneBranch === request.branch;
+}
+
 export async function dispatchCopilotFuryCorrectedSuccessorV1(
   input: unknown,
   suppliedDependencies: CopilotFuryPlanDispatchDependenciesV1 = {},
 ): Promise<CopilotFuryPlanDispatchResultV1> {
   if (!safePlain(input) || !exact(input, ["request", "predecessorReceiptId"]) || !id(input.predecessorReceiptId)) return invalid("MALFORMED_CORRECTED_SUCCESSOR", "Corrected successor input must contain exactly request and a valid predecessorReceiptId.");
-  const checkedRequest = validateCopilotFuryPlanDispatchRequestV1OrV2(input.request);
+  const normalized = reviewedTransitionSeedRequest(input.request);
+  if (normalized.state === "invalid") return invalid("MALFORMED_REQUEST", ...normalized.errors);
+  const checkedRequest = validateCopilotFuryPlanDispatchRequestV1OrV2(normalized.request);
   if (checkedRequest.state === "invalid") return invalid(checkedRequest.code, ...checkedRequest.errors);
-  const originalRequest = checkedRequest.value;
-  if (!sameArray(originalRequest.allowedTools, ["read", "search"])) return invalidFor(originalRequest, "CORRECTED_SUCCESSOR_CAPABILITY_INVALID", "Only the exact predecessor [read,search] capability tuple may be reduced.");
-  const repositoryRoot = suppliedDependencies.repositoryRootOverride ?? originalRequest.repositoryRoot;
+  const callerRequest = checkedRequest.value;
+  let originalRequest = callerRequest;
+  if (!sameArray(callerRequest.allowedTools, ["read", "search"])) return invalidFor(callerRequest, "CORRECTED_SUCCESSOR_CAPABILITY_INVALID", "Only the exact predecessor [read,search] capability tuple may be reduced.");
+  const repositoryRoot = suppliedDependencies.repositoryRootOverride ?? callerRequest.repositoryRoot;
   const readDispatchLedger = suppliedDependencies.readDispatchLedger ?? readSeatDispatchReceiptLedgerV1;
   try {
     const ledger = await readDispatchLedger({ repositoryRoot, repositoryId: originalRequest.repositoryId, repositoryWorkspaceId: originalRequest.repositoryWorkspaceId });
@@ -1610,6 +1651,12 @@ export async function dispatchCopilotFuryCorrectedSuccessorV1(
     } catch (error) {
       return invalidFor(originalRequest, "PREDECESSOR_EVIDENCE_INVALID", error instanceof Error ? error.message : "The predecessor admission failure evidence is malformed.");
     }
+    const durableRequest = validateCopilotFuryPlanDispatchRequestV1OrV2(evidence.packet.request);
+    if (durableRequest.state === "invalid") return invalidFor(callerRequest, "PREDECESSOR_EVIDENCE_INVALID", "The predecessor packet request is not a closed valid caller request.");
+    if (canonicalJson(durableRequest.value) !== canonicalJson(callerRequest) || (normalized.state === "seed" && !reviewedTransitionSeedBindingsMatch(normalized.seed, durableRequest.value))) {
+      return invalidFor(callerRequest, "PREDECESSOR_EVIDENCE_CONFLICTING", "The durable predecessor packet request, seed envelope, and caller bindings differ.");
+    }
+    originalRequest = durableRequest.value;
     const packetBytes = new TextEncoder().encode(canonicalJson(evidence.packet));
     const binding = deepFreeze({ predecessorReceiptId: predecessor.receiptId, predecessorTerminalEntryDigest: predecessor.lastEntryDigest, failedEvidenceDigest: evidenceDigest, originalPacketDigest: evidence.packetDigest as string });
     const correctedRequest = deepFreeze({ ...originalRequest, schemaVersion: 2 as const, contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2, allowedTools: ["read"] as ["read"], reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2 });
@@ -1624,6 +1671,28 @@ export async function dispatchCopilotFuryCorrectedSuccessorV1(
     const predecessorIdentity = deriveSessionIdentity(originalRequest, resolvedPlan.value);
     const predecessorObservation = await observeRepository(originalRequest);
     const predecessorCard = await resolveCard(originalRequest, suppliedDependencies.userCopilotHome);
+    if (normalized.state === "seed") {
+      const logical = normalized.seed.logicalOperation as Plain;
+      const furyCard = normalized.seed.furyCard as Plain;
+      const journal = normalized.seed.missionJournal as Plain;
+      const prepared = normalized.seed.preparedWorktree as Plain;
+      let preparedFile: StableFile;
+      let preparedReceipt: unknown;
+      try {
+        preparedFile = await stableTextFile(originalRequest.repositoryRoot, ".shield/worktree-state.json", "prepared_worktree_receipt");
+        preparedReceipt = JSON.parse(preparedFile.bytes);
+      } catch (error) {
+        return invalidFor(originalRequest, "PREDECESSOR_EVIDENCE_INVALID", error instanceof Error ? error.message : "Prepared worktree receipt is unavailable.");
+      }
+      const seedBindingsMatch = validateWorktreeStateReceiptV1OrV2(preparedReceipt) && await validateWorktreeStateReceiptFileChainV1OrV2(originalRequest.repositoryRoot, preparedReceipt) &&
+        logical.transitionPlanId === resolvedPlan.value.id && logical.transitionPlanDigest === resolvedPlan.value.digest &&
+        journal.sequence === predecessorObservation.journalSequence && journal.digest === predecessorObservation.journalDigest &&
+        furyCard.logicalRef === predecessorCard.identity.logicalRef && furyCard.rawSha256 === digestHex(predecessorCard.bytes) && furyCard.repositoryRevision === predecessorObservation.headRevision &&
+        prepared.receiptDigest === preparedReceipt.receiptDigest && prepared.receiptRawSha256 === preparedFile.rawSha256 && prepared.laneBranch === preparedReceipt.destination.branch && prepared.laneBranch === predecessorObservation.branch;
+      if (!seedBindingsMatch) {
+        return invalidFor(originalRequest, "PREDECESSOR_EVIDENCE_CONFLICTING", "Reviewed-transition seed bindings do not match the resolved plan, repository card, journal, or prepared worktree receipt.");
+      }
+    }
     const predecessorPacketConfiguration = sdkConfiguration(originalRequest, deriveCopilotSdkSessionIdV1(predecessorIdentity.childSessionId));
     const expectedPredecessorPacket = packetBody(originalRequest, resolvedPlan.value, predecessorCard, predecessorObservation, predecessorPacketConfiguration);
     if (evidence.packetId !== predecessorIdentity.packetId || digestBase64Url(packetBytes) !== evidence.packetDigest || canonicalJson(evidence.packet) !== canonicalJson(expectedPredecessorPacket) || !sameArray(predecessor.inputEvidenceRefs, predecessorClaimEvidence(originalRequest, resolvedPlan.value, predecessorCard, predecessorObservation, predecessorIdentity, evidence.packetDigest as string)) || evidence.missionId !== originalRequest.missionId || evidence.missionRevision !== originalRequest.missionRevision || evidence.subjectId !== originalRequest.subjectId || evidence.subjectRevision !== originalRequest.subjectRevision || evidence.repositoryId !== originalRequest.repositoryId || evidence.repositoryWorkspaceId !== originalRequest.repositoryWorkspaceId || evidence.repositoryRevision !== originalRequest.headRevision || evidence.transitionPlanRawSha256 !== originalRequest.transitionPlanRawSha256) return invalidFor(originalRequest, "PREDECESSOR_EVIDENCE_CONFLICTING", "The durable predecessor packet and evidence are not bound to the exact caller-supplied request.");

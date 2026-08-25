@@ -54,6 +54,7 @@ import {
 import { replaySeatDispatchReceiptsV1 } from "../dist/seat-dispatch-receipt-v1.mjs";
 import { appendSeatDispatchReceiptEntryV1, claimSeatDispatchPacketV1, readSeatDispatchReceiptLedgerV1 } from "../dist/seat-dispatch-store.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
+import { prepareWorktreeStateV1, validateWorktreeStateReceiptFileChainV1OrV2, validateWorktreeStateReceiptV1OrV2 } from "../dist/worktree-state-v1.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
 import { canonicalJson, computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
 import {
@@ -356,16 +357,30 @@ function recoveryClaimExpectation(receipt) {
   };
 }
 
-async function fixture({ repositoryCard = true } = {}) {
+async function fixture({ repositoryCard = true, preparedPolicy = false } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "shield-copilot-fury-dispatch-")));
   const userCopilotHome = await realpath(await mkdtemp(join(tmpdir(), "shield-copilot-fury-home-")));
-  await mkdir(join(root, ".shield", "journals"), { recursive: true });
+  await mkdir(join(root, ".shield"), { recursive: true });
+  if (!preparedPolicy) await mkdir(join(root, ".shield", "journals"), { recursive: true });
   await mkdir(join(root, ".github", "agents"), { recursive: true });
   await mkdir(join(root, "docs", "missions"), { recursive: true });
   await mkdir(join(userCopilotHome, "agents"), { recursive: true });
   const { publicKey } = generateKeyPairSync("ed25519");
   const publicKeySpkiBase64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
   const signingKeyRef = computeEd25519SigningKeyRef(publicKeySpkiBase64);
+  const coulsonBinding = {
+    schemaVersion: 1,
+    bindingId: "binding:coulson:dispatch",
+    humanPrincipalId: "human:coulson:dispatch",
+    seatId: "coulson",
+    missionScope: "*",
+    signingKeyRef,
+    publicKeySpkiBase64,
+    validFromSequence: 0,
+    validThroughSequence: null,
+    attestedBy: "repository-policy:maintainer",
+    provenanceRef: "repository-config:coulson",
+  };
   const binding = {
     schemaVersion: 1,
     bindingId: "binding:coulson:dispatch",
@@ -386,6 +401,8 @@ async function fixture({ repositoryCard = true } = {}) {
   });
   await writeFile(join(root, ".shield", "config.json"), formatShieldConfig(config));
   await writeFile(join(root, ".shield", ".gitignore"), "/journals/\n/audit/\n/dispatch-receipts.jsonl\n");
+  if (preparedPolicy) await writeFile(join(root, ".shield", "trusted-human-bindings.json"), `${JSON.stringify({ schemaVersion: 1, bindings: [coulsonBinding] }, null, 2)}\n`);
+  if (preparedPolicy) await writeFile(join(root, ".gitignore"), ".shield/\n");
   if (repositoryCard) await writeFile(join(root, ".github", "agents", "fury.agent.md"), FURY_CARD);
   await writeFile(join(root, "package.json"), "{\"private\":true}\n");
   const parentPlanPath = "docs/missions/issue-319-plan.md";
@@ -394,11 +411,6 @@ async function fixture({ repositoryCard = true } = {}) {
   git(root, ["init", "-q", "-b", "main"]);
   git(root, ["config", "user.email", "shield@example.invalid"]);
   git(root, ["config", "user.name", "SHIELD Fixture"]);
-  const basePaths = [".shield/config.json", ".shield/.gitignore", "package.json", parentPlanPath];
-  if (repositoryCard) basePaths.push(".github/agents/fury.agent.md");
-  git(root, ["add", ...basePaths]);
-  git(root, ["commit", "-qm", "dispatch base"]);
-  const baseRevision = git(root, ["rev-parse", "HEAD"]);
   const missionId = "mission:issue-319-fixture";
   const subjectId = "issue:319";
   const brief = createProfileAwareMissionBrief({
@@ -421,7 +433,12 @@ async function fixture({ repositoryCard = true } = {}) {
   const begun = createProfileAwareMissionBegunEntry(brief, [binding]);
   const journalPath = join(root, config.paths.journals, `${Buffer.from(missionId).toString("base64url")}.jsonl`);
   const journalBytes = `${JSON.stringify(begun)}\n`;
-  await writeFile(journalPath, journalBytes);
+  if (!preparedPolicy) await writeFile(journalPath, journalBytes);
+  const basePaths = preparedPolicy ? [".gitignore", "package.json", parentPlanPath] : [".shield/config.json", ".shield/.gitignore", "package.json", parentPlanPath];
+  if (repositoryCard) basePaths.push(".github/agents/fury.agent.md");
+  git(root, ["add", ...basePaths]);
+  git(root, ["commit", "-qm", "dispatch base"]);
+  const baseRevision = git(root, ["rev-parse", "HEAD"]);
   const built = buildMissionTransitionPlanV1({
     missionId,
     subjectId,
@@ -483,7 +500,7 @@ async function fixture({ repositoryCard = true } = {}) {
     timestamp: { value: "2026-08-18T12:01:00.000Z", provenance: "hostTrusted" },
     reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
   };
-  return { root, userCopilotHome, request, plan, journalDigest: `sha256:${sha256(journalBytes)}` };
+  return { root, userCopilotHome, request, plan, journalPath, journalBytes, journalDigest: `sha256:${sha256(journalBytes)}` };
 }
 
 function executor(plan, verdict = "PASS", observationOverrides = {}) {
@@ -2876,6 +2893,85 @@ test("production admission callback diagnostics classify bounded denial branches
   const capacityRecord = capacity.observations.callbackObservation.records.filter(({ surface }) => surface === "pre_tool").at(-1);
   assert.equal(capacityRecord.reason, "admission_capacity_exceeded");
   assert.deepEqual(capacityRecord.admission, { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 16, duplicate: false, validationAttempted: true });
+});
+
+test("issue 398 projects the closed reviewed-transition seed and durable packet request without rewriting evidence", async () => {
+  const current = await fixture({ preparedPolicy: true });
+  git(current.root, ["remote", "add", "origin", "git@github.com:RanSolo/fixture.git"]);
+  let sourceRoot = join(await mkdtemp(join(tmpdir(), "shield-398-source-")), "source");
+  git(current.root, ["worktree", "add", "--quiet", "-b", `issue-398-source-${process.pid}-${Date.now()}`, sourceRoot, "HEAD"]);
+  sourceRoot = await realpath(sourceRoot);
+  await mkdir(join(sourceRoot, ".shield"), { recursive: true });
+  await cp(join(current.root, ".shield", "config.json"), join(sourceRoot, ".shield", "config.json"));
+  await cp(join(current.root, ".shield", ".gitignore"), join(sourceRoot, ".shield", ".gitignore"));
+  await cp(join(current.root, ".shield", "trusted-human-bindings.json"), join(sourceRoot, ".shield", "trusted-human-bindings.json"));
+  await rm(join(current.root, ".shield", "config.json"), { force: true });
+  await rm(join(current.root, ".shield", ".gitignore"), { force: true });
+  await rm(join(current.root, ".shield", "trusted-human-bindings.json"), { force: true });
+  const prepared = await prepareWorktreeStateV1({ sourceRoot, destinationRoot: current.root });
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  const worktreeReceipt = prepared.receipt;
+  assert.ok(worktreeReceipt);
+  const worktreeBytes = await readFile(join(current.root, ".shield", "worktree-state.json"));
+  assert.equal(validateWorktreeStateReceiptV1OrV2(worktreeReceipt), true);
+  assert.equal(await validateWorktreeStateReceiptFileChainV1OrV2(current.root, worktreeReceipt), true);
+  await mkdir(join(current.root, ".shield", "journals"), { recursive: true });
+  await writeFile(current.journalPath, current.journalBytes);
+  const setup = await issue394PredecessorFixture(current);
+  const seed = {
+    authority: "none",
+    contractVersion: "shield.copilot-fury-reviewed-transition-seed.v3",
+    furyCard: { logicalRef: ".github/agents/fury.agent.md", rawSha256: sha256(await readFile(join(current.root, ".github", "agents", "fury.agent.md"))), repositoryRevision: current.request.headRevision },
+    logicalOperation: {
+      missionId: current.request.missionId,
+      missionRevision: current.request.missionRevision,
+      parentSessionId: current.request.parentSessionId,
+      repositoryId: current.request.repositoryId,
+      repositoryRevision: current.request.headRevision,
+      repositoryWorkspaceId: current.request.repositoryWorkspaceId,
+      requestContractVersion: current.request.contractVersion,
+      reviewPhase: current.request.reviewPhase,
+      transitionPlanDigest: current.plan.digest,
+      transitionPlanId: current.plan.id,
+    },
+    missionJournal: { digest: current.journalDigest, sequence: 0 },
+    preparedWorktree: { laneBranch: current.request.branch, receiptDigest: worktreeReceipt.receiptDigest, receiptRawSha256: sha256(worktreeBytes) },
+    request: current.request,
+    schemaVersion: 3,
+  };
+  const mismatches = [
+    ["extra", (value) => ({ ...value, extra: true }), "MALFORMED_REQUEST"],
+    ["transition plan id", (value) => ({ ...value, logicalOperation: { ...value.logicalOperation, transitionPlanId: "transition-plan:other" } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["transition plan digest", (value) => ({ ...value, logicalOperation: { ...value.logicalOperation, transitionPlanDigest: "sha256:" + "d".repeat(43) } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["journal sequence", (value) => ({ ...value, missionJournal: { ...value.missionJournal, sequence: 1 } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["journal digest", (value) => ({ ...value, missionJournal: { ...value.missionJournal, digest: "sha256:" + "e".repeat(64) } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["card logical ref", (value) => ({ ...value, furyCard: { ...value.furyCard, logicalRef: "user://agents/fury.agent.md" } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["card raw sha", (value) => ({ ...value, furyCard: { ...value.furyCard, rawSha256: "f".repeat(64) } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["card revision", (value) => ({ ...value, furyCard: { ...value.furyCard, repositoryRevision: "0".repeat(40) } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["receipt digest", (value) => ({ ...value, preparedWorktree: { ...value.preparedWorktree, receiptDigest: "1".repeat(64) } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["receipt raw sha", (value) => ({ ...value, preparedWorktree: { ...value.preparedWorktree, receiptRawSha256: "2".repeat(64) } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["lane branch", (value) => ({ ...value, preparedWorktree: { ...value.preparedWorktree, laneBranch: "other" } }), "PREDECESSOR_EVIDENCE_CONFLICTING"],
+  ];
+  for (const [label, mutate, expectedCode] of mismatches) {
+    const conflictExecutor = executor(current.plan);
+    const conflict = await dispatchCopilotFuryCorrectedSuccessorV1(
+      { request: mutate(seed), predecessorReceiptId: ISSUE_394_PREDECESSOR_RECEIPT_ID },
+      { ...setup.dependencies, executor: conflictExecutor.value },
+    );
+    assert.equal(conflict.state, "invalid", `${label}: ${JSON.stringify(conflict)}`);
+    assert.equal(conflict.code, expectedCode, label);
+    assert.equal(conflictExecutor.calls.preflight, 0, label);
+    assert.equal(conflict.receiptId, null, label);
+  }
+  const originalEvidenceBytes = await readFile(setup.evidencePath, "utf8");
+  const seedExecutor = executor(current.plan);
+  const result = await dispatchCopilotFuryCorrectedSuccessorV1(
+    { request: seed, predecessorReceiptId: ISSUE_394_PREDECESSOR_RECEIPT_ID },
+    { ...setup.dependencies, executor: seedExecutor.value },
+  );
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  assert.equal(seedExecutor.calls.preflight, 1);
+  assert.equal(await readFile(setup.evidencePath, "utf8"), originalEvidenceBytes);
 });
 
 test("issue 394 consumes the caller-supplied Kdums predecessor once, narrows tools, and retries idempotently", async () => {
