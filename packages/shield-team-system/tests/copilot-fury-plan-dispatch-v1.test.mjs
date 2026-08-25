@@ -47,11 +47,12 @@ import {
   buildCopilotFuryReviewArtifactMapV1,
   createCopilotFuryExecutionToolBindingV1,
   dispatchCopilotFuryPlanReviewCoreV1,
+  dispatchCopilotFuryCorrectedSuccessorV1,
   resolveCommittedTransitionPlanSourceV1,
   validateCopilotFuryReviewArtifactMapV1,
 } from "../dist/copilot-fury-plan-dispatch-core-v1.mjs";
 import { replaySeatDispatchReceiptsV1 } from "../dist/seat-dispatch-receipt-v1.mjs";
-import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptLedgerV1 } from "../dist/seat-dispatch-store.mjs";
+import { appendSeatDispatchReceiptEntryV1, claimSeatDispatchPacketV1, readSeatDispatchReceiptLedgerV1 } from "../dist/seat-dispatch-store.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
 import { canonicalJson, computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
@@ -100,6 +101,8 @@ const ISSUE_384_BATCH_ADMISSION_RECOVERY_FIXTURE = Object.freeze({
   errors: Object.freeze(["Copilot session identity or policy drifted."]),
   packetDigest: "sha256:z1jfC-m15ozX07UHP5hZaUMVNEvvAIIyyWGogi14fdM",
 });
+
+const ISSUE_394_PREDECESSOR_RECEIPT_ID = "receipt:KdumsbPE7B6iCeGF3sjSVrc8SEfrscQ6";
 
 function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
@@ -312,16 +315,17 @@ function architectureResult(current, overrides = {}) {
 }
 
 function executionObservation(input, overrides = {}) {
+  const tools = [...input.toolBinding.modelFacingToolNames];
   return {
     version: "shield.copilot-fury.execution-observation.v1",
     sdkVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
-    registeredToolNames: ["read", "search"],
-    sessionAvailableTools: ["custom:read", "custom:search"],
+    registeredToolNames: tools,
+    sessionAvailableTools: tools.map((tool) => `custom:${tool}`),
     sessionExcludedTools: [...input.toolBinding.sessionExcludedTools],
-    customAgentTools: ["read", "search"],
-    modelFacingToolNames: ["read", "search"],
-    runtimeMetadataNames: ["read", "search"],
-    runtimeMetadataDigest: digestBase64Url(canonicalJson([{ name: "read" }, { name: "search" }])),
+    customAgentTools: tools,
+    modelFacingToolNames: tools,
+    runtimeMetadataNames: tools,
+    runtimeMetadataDigest: digestBase64Url(canonicalJson(tools.map((name) => ({ name })))),
     artifactMapDigest: input.reviewArtifactMap.digest,
     ...overrides,
   };
@@ -534,9 +538,21 @@ function executor(plan, verdict = "PASS", observationOverrides = {}) {
   };
 }
 
-function admissionFailureFixture(reason = "admission_argument_shape_denied") {
-  const argumentShape = { kind: "object", keys: ["path", "unknown"], entries: [{ kind: "string" }, { kind: "number" }] };
-  const admissionFailure = { schemaVersion: 1, reason, ordinal: 1, tool: "read", argumentShape, recovery: "fresh_corrected_successor_required" };
+function admissionFailureFixture(reason = "admission_argument_shape_denied", { tool = "read", argumentShape = { kind: "object", keys: ["path", "unknown"], entries: [{ kind: "string" }, { kind: "number" }] } } = {}) {
+  const category = reason === "admission_search_path_denied" ? "search_path_denied"
+    : reason === "admission_search_scope_denied" ? "search_scope_denied"
+      : reason === "admission_read_path_denied" ? "read_path_denied"
+        : reason === "admission_read_target_denied" ? "read_target_denied"
+          : reason === "admission_tool_denied" ? "tool_denied"
+            : reason === "admission_session_denied" ? "session_denied"
+              : reason === "admission_capacity_exceeded" ? "capacity_denied"
+                : "argument_denied";
+  const correctionHint = reason === "admission_search_path_denied" ? "retry_with_repository_relative_search_path"
+    : reason === "admission_search_scope_denied" ? "retry_without_search_path"
+      : reason === "admission_read_path_denied" || reason === "admission_read_target_denied" ? "retry_with_known_review_artifact_path"
+        : reason === "admission_session_denied" || reason === "admission_capacity_exceeded" ? "retry_after_session_recovery"
+          : "retry_with_read_only_tools";
+  const admissionFailure = { schemaVersion: 1, reason, category, correctionHint, ordinal: 1, tool, argumentShape, recovery: "fresh_corrected_successor_required" };
   const callbackObservation = {
     version: "shield.copilot-fury.callback-observation.v1",
     totalCount: 1,
@@ -545,7 +561,7 @@ function admissionFailureFixture(reason = "admission_argument_shape_denied") {
       surface: "pre_tool",
       ordinal: 1,
       callbackIdentity: { sessionId: "present", toolCallId: "present" },
-      tool: "read",
+      tool,
       permissionKind: "unknown",
       argumentShape,
       expectedSessionMatch: "match",
@@ -555,6 +571,66 @@ function admissionFailureFixture(reason = "admission_argument_shape_denied") {
     }],
   };
   return { admissionFailure, callbackObservation };
+}
+
+async function issue394PredecessorFixture(current, { mutateEvidence = (value) => value, mutateProjection = (value) => value } = {}) {
+  const expected = admissionFailureFixture("admission_search_path_denied", { tool: "search", argumentShape: { kind: "string" } });
+  const predecessorExecutor = {
+    async preflight() { return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
+    async execute() {
+      return {
+        state: "failed",
+        code: "FURY_TOOL_ADMISSION_DENIED",
+        errors: ["Fury tool admission denied; create a fresh corrected successor."],
+        admissionFailure: expected.admissionFailure,
+        observations: { admissionFailure: expected.admissionFailure, callbackObservation: expected.callbackObservation },
+      };
+    },
+  };
+  const predecessor = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: predecessorExecutor, userCopilotHome: current.userCopilotHome });
+  assert.equal(predecessor.state, "failed", JSON.stringify(predecessor));
+  const actualEvidence = JSON.parse(await readFile(join(current.root, predecessor.evidencePath), "utf8"));
+  assert.deepEqual(actualEvidence.observations.admissionFailure, expected.admissionFailure);
+  assert.equal(actualEvidence.outcome, "failed");
+  assert.equal(actualEvidence.dispositionCode, "FURY_TOOL_ADMISSION_DENIED");
+  assert.deepEqual(actualEvidence.packet.request, current.request);
+  assert.equal(digestBase64Url(canonicalJson(actualEvidence.packet)), actualEvidence.packetDigest);
+  const callback = actualEvidence.observations.callbackObservation.records.find(({ surface }) => surface === "pre_tool");
+  assert.equal(callback.tool, "search");
+  assert.equal(callback.reason, "admission_search_path_denied");
+  assert.deepEqual(callback.argumentShape, { kind: "string" });
+  const actualLedger = await readSeatDispatchReceiptLedgerV1({ repositoryRoot: current.root, repositoryId: current.request.repositoryId, repositoryWorkspaceId: current.request.repositoryWorkspaceId });
+  assert.equal(actualLedger.state, "valid", JSON.stringify(actualLedger));
+  const actualProjection = actualLedger.value.projections.find(({ receiptId }) => receiptId === predecessor.receiptId);
+  assert.ok(actualProjection);
+  const actualBody = { ...actualEvidence, receiptId: ISSUE_394_PREDECESSOR_RECEIPT_ID };
+  delete actualBody.evidenceDigest;
+  const mutatedBody = mutateEvidence(actualBody);
+  const evidenceDigest = digestBase64Url(`${mutatedBody.contractVersion}\0${canonicalJson(mutatedBody)}`);
+  const evidence = { ...mutatedBody, evidenceDigest };
+  const evidencePath = join(current.root, ".shield", "audit", "copilot-fury-plan-dispatch", sha256(current.request.missionId), `dispatch-evidence-${evidenceDigest.slice("sha256:".length)}.json`);
+  await writeFile(evidencePath, `${canonicalJson(evidence)}\n`, { mode: 0o600 });
+  const predecessorProjection = mutateProjection({ ...actualProjection, receiptId: ISSUE_394_PREDECESSOR_RECEIPT_ID, outputEvidenceRefs: [evidenceDigest] });
+  await unlink(join(current.root, ".shield", "dispatch-receipts.jsonl"));
+  let successorClaimed = false;
+  const readDispatchLedger = async (scope) => {
+    if (!successorClaimed) return { state: "valid", value: { logPath: join(current.root, ".shield", "dispatch-receipts.jsonl"), entries: [], projections: [predecessorProjection] } };
+    const ledger = await readSeatDispatchReceiptLedgerV1(scope);
+    if (ledger.state === "invalid") return ledger;
+    return { state: "valid", value: { ...ledger.value, projections: [predecessorProjection, ...ledger.value.projections] } };
+  };
+  const claimDispatchPacket = async (input) => {
+    const claimed = await claimSeatDispatchPacketV1(input);
+    if (claimed.state === "valid" && claimed.value.claimStatus === "claimed") successorClaimed = true;
+    return claimed;
+  };
+  return {
+    predecessor,
+    predecessorProjection,
+    evidence,
+    evidencePath,
+    dependencies: { userCopilotHome: current.userCopilotHome, readDispatchLedger, claimDispatchPacket },
+  };
 }
 
 function multipleAdmissionFailureFixture() {
@@ -768,6 +844,10 @@ test("closed request rejects aliases, accessors, proxies, and non-read-only conf
   assert.equal(validateCopilotFuryPlanDispatchRequestV1({ ...current.request, extra: true }).state, "invalid");
   assert.equal(validateCopilotFuryPlanDispatchRequestV1(new Proxy(current.request, {})).state, "invalid");
   assert.equal(validateCopilotFuryPlanDispatchRequestV1({ ...current.request, allowedTools: ["read", "search", "web"] }).state, "invalid");
+  assert.equal(validateCopilotFuryPlanDispatchRequestV2({ ...current.request, allowedTools: ["read"] }).state, "valid");
+  for (const allowedTools of [["search"], ["search", "read"], ["read", "read"], ["read", "search", "read"]]) {
+    assert.equal(validateCopilotFuryPlanDispatchRequestV2({ ...current.request, allowedTools }).state, "invalid", JSON.stringify(allowedTools));
+  }
   const accessor = { ...current.request };
   Object.defineProperty(accessor, "missionId", { enumerable: true, get: () => current.request.missionId });
   assert.equal(validateCopilotFuryPlanDispatchRequestV2(accessor).state, "invalid");
@@ -2734,7 +2814,7 @@ test("production ranged reads are paired, bounded, LF-deterministic, redacted, a
   });
   assert.equal(first.state, "failed", JSON.stringify(first));
   assert.equal(first.code, "FURY_TOOL_ADMISSION_DENIED");
-  assert.deepEqual(first.admissionFailure, { schemaVersion: 1, reason: "admission_argument_shape_denied", ordinal: 1, tool: "read", argumentShape: { kind: "object", keys: ["path", "unknown"], entries: [{ kind: "string" }, { kind: "number" }] }, recovery: "fresh_corrected_successor_required" });
+  assert.deepEqual(first.admissionFailure, { schemaVersion: 1, reason: "admission_argument_shape_denied", category: "argument_denied", correctionHint: "retry_with_read_only_tools", ordinal: 1, tool: "read", argumentShape: { kind: "object", keys: ["path", "unknown"], entries: [{ kind: "string" }, { kind: "number" }] }, recovery: "fresh_corrected_successor_required" });
   const secondHarness = productionSdkHarness({ outputText: productionPassOutput(current) });
   const replay = await dispatchCopilotFuryPlanReviewCoreV1(current.request, resolved.source, {
     executor: createCopilotFuryPlanExecutorV1({ async loadSdk() { return secondHarness.module; }, async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; } }),
@@ -2796,6 +2876,111 @@ test("production admission callback diagnostics classify bounded denial branches
   const capacityRecord = capacity.observations.callbackObservation.records.filter(({ surface }) => surface === "pre_tool").at(-1);
   assert.equal(capacityRecord.reason, "admission_capacity_exceeded");
   assert.deepEqual(capacityRecord.admission, { callbackSessionMatch: true, invocationSessionMatch: true, latched: false, pendingAdmissionCount: 16, duplicate: false, validationAttempted: true });
+});
+
+test("issue 394 consumes the caller-supplied Kdums predecessor once, narrows tools, and retries idempotently", async () => {
+  const current = await fixture();
+  const setup = await issue394PredecessorFixture(current);
+  const sourceText = await readFile(new URL("../src/copilot-fury-plan-dispatch-core-v1.mts", import.meta.url), "utf8");
+  assert.doesNotMatch(sourceText, /Kdums/u);
+  const firstExecutor = executor(current.plan);
+  const first = await dispatchCopilotFuryCorrectedSuccessorV1(
+    { request: current.request, predecessorReceiptId: ISSUE_394_PREDECESSOR_RECEIPT_ID },
+    { ...setup.dependencies, executor: firstExecutor.value },
+  );
+  assert.equal(first.state, "completed", JSON.stringify(first));
+  assert.equal(first.disposition, "PASS");
+  assert.equal(firstExecutor.calls.preflight, 1);
+  assert.equal(firstExecutor.calls.execute, 1);
+  assert.notEqual(first.receiptId, ISSUE_394_PREDECESSOR_RECEIPT_ID);
+  const successorEvidencePath = join(current.root, first.evidencePath);
+  const successorEvidenceBytes = await readFile(successorEvidencePath, "utf8");
+  const successorEvidence = JSON.parse(successorEvidenceBytes);
+  assert.notEqual(successorEvidence.packetDigest, setup.evidence.packetDigest);
+  assert.deepEqual(successorEvidence.packet.request.allowedTools, ["read"]);
+  assert.deepEqual(successorEvidence.packet.sdkConfiguration.availableTools, ["read"]);
+  assert.deepEqual(successorEvidence.packet.predecessorBinding, {
+    predecessorReceiptId: ISSUE_394_PREDECESSOR_RECEIPT_ID,
+    predecessorTerminalEntryDigest: setup.predecessorProjection.lastEntryDigest,
+    failedEvidenceDigest: setup.evidence.evidenceDigest,
+    originalPacketDigest: setup.evidence.packetDigest,
+  });
+  assert.deepEqual(successorEvidence.predecessorBinding, successorEvidence.packet.predecessorBinding);
+  assert.ok(successorEvidence.packet.request.parentSessionId === current.request.parentSessionId);
+  assert.equal(successorEvidence.packet.sdkConfiguration.sessionId, firstExecutor.calls.configurations[0].sessionId);
+  assert.ok(successorEvidence.packet.request.allowedTools.length < current.request.allowedTools.length);
+  assert.ok(successorEvidence.packet.request.allowedTools.every((tool) => current.request.allowedTools.includes(tool)));
+  assert.ok(successorEvidence.packet.request.allowedEffects.every((effect) => current.request.allowedEffects.includes(effect)));
+  const successorLedger = await setup.dependencies.readDispatchLedger({ repositoryRoot: current.root, repositoryId: current.request.repositoryId, repositoryWorkspaceId: current.request.repositoryWorkspaceId });
+  assert.equal(successorLedger.state, "valid", JSON.stringify(successorLedger));
+  const successorProjection = successorLedger.value.projections.find(({ receiptId }) => receiptId === first.receiptId);
+  assert.ok(successorProjection);
+  const successorMarker = successorProjection.inputEvidenceRefs.find((ref) => ref.startsWith("evidence:copilot-fury-corrected-successor-v1:"));
+  assert.ok(successorMarker);
+  const ledgerBytesAfterFirst = await readFile(join(current.root, ".shield", "dispatch-receipts.jsonl"), "utf8");
+  const retryExecutor = executor(current.plan);
+  const retry = await dispatchCopilotFuryCorrectedSuccessorV1(
+    { request: current.request, predecessorReceiptId: ISSUE_394_PREDECESSOR_RECEIPT_ID },
+    { ...setup.dependencies, executor: retryExecutor.value },
+  );
+  assert.equal(retry.state, "completed", JSON.stringify(retry));
+  assert.equal(retry.receiptId, first.receiptId);
+  assert.equal(retry.replayed, true);
+  assert.equal(retryExecutor.calls.preflight, 0);
+  assert.equal(retryExecutor.calls.execute, 0);
+  assert.equal(await readFile(join(current.root, ".shield", "dispatch-receipts.jsonl"), "utf8"), ledgerBytesAfterFirst);
+  assert.equal(await readFile(successorEvidencePath, "utf8"), successorEvidenceBytes);
+
+  const conflictRead = async (scope) => {
+    const ledger = await setup.dependencies.readDispatchLedger(scope);
+    assert.equal(ledger.state, "valid", JSON.stringify(ledger));
+    return { state: "valid", value: { ...ledger.value, projections: [...ledger.value.projections, { ...successorProjection, receiptId: "receipt:conflicting-consumer", inputEvidenceRefs: [...successorProjection.inputEvidenceRefs, successorMarker] }] } };
+  };
+  const conflict = await dispatchCopilotFuryCorrectedSuccessorV1(
+    { request: current.request, predecessorReceiptId: ISSUE_394_PREDECESSOR_RECEIPT_ID },
+    { ...setup.dependencies, readDispatchLedger: conflictRead, executor: retryExecutor.value },
+  );
+  assert.equal(conflict.state, "invalid", JSON.stringify(conflict));
+  assert.equal(conflict.code, "CORRECTED_SUCCESSOR_CONSUMPTION_CONFLICT");
+});
+
+test("issue 394 corrected-successor preclaim fails closed for malformed, stale, and conflicting predecessor evidence", async (t) => {
+  const malformedCurrent = await fixture();
+  const malformedExecutor = executor(malformedCurrent.plan);
+  const malformedId = await dispatchCopilotFuryCorrectedSuccessorV1(
+    { request: malformedCurrent.request, predecessorReceiptId: "" },
+    { executor: malformedExecutor.value },
+  );
+  assert.equal(malformedId.state, "invalid", JSON.stringify(malformedId));
+  assert.equal(malformedId.code, "MALFORMED_CORRECTED_SUCCESSOR");
+  assert.equal(malformedExecutor.calls.preflight, 0);
+  assert.equal(malformedExecutor.calls.execute, 0);
+
+  const cases = [
+    ["malformed", { mutateEvidence: () => ({}) }, "PREDECESSOR_EVIDENCE_INVALID"],
+    ["stale", { mutateProjection: (value) => ({ ...value, repositoryRevision: "f".repeat(40) }) }, "PREDECESSOR_RECEIPT_STALE_OR_CONFLICTING"],
+    ["conflicting", { mutateEvidence: (value) => ({ ...value, packet: { ...value.packet, request: { ...value.packet.request, allowedTools: ["read"] } } }) }, "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["cross-bound", { mutateEvidence: (value) => ({ ...value, missionId: "mission:other" }) }, "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["input evidence missing", { mutateProjection: (value) => ({ ...value, inputEvidenceRefs: value.inputEvidenceRefs.slice(0, -1) }) }, "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["input evidence extra", { mutateProjection: (value) => ({ ...value, inputEvidenceRefs: [...value.inputEvidenceRefs, "evidence:unexpected"] }) }, "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["input evidence reordered", { mutateProjection: (value) => ({ ...value, inputEvidenceRefs: [...value.inputEvidenceRefs].reverse() }) }, "PREDECESSOR_EVIDENCE_CONFLICTING"],
+    ["input evidence conflicting", { mutateProjection: (value) => ({ ...value, inputEvidenceRefs: ["evidence:conflicting", ...value.inputEvidenceRefs.slice(1)] }) }, "PREDECESSOR_EVIDENCE_CONFLICTING"],
+  ];
+  for (const [label, options, expectedCode] of cases) {
+    await t.test(label, async () => {
+      const current = await fixture();
+      const setup = await issue394PredecessorFixture(current, options);
+      const retryExecutor = executor(current.plan);
+      const result = await dispatchCopilotFuryCorrectedSuccessorV1(
+        { request: current.request, predecessorReceiptId: ISSUE_394_PREDECESSOR_RECEIPT_ID },
+        { ...setup.dependencies, executor: retryExecutor.value },
+      );
+      assert.equal(result.state, "invalid", JSON.stringify(result));
+      assert.equal(result.code, expectedCode, label);
+      assert.equal(retryExecutor.calls.preflight, 0, label);
+      assert.equal(retryExecutor.calls.execute, 0, label);
+    });
+  }
 });
 
 test("production callback-8 evidence distinguishes argument decoding from later sticky handler denial", async () => {
