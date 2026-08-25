@@ -5,9 +5,9 @@
   "subjectId": "github:RanSolo/shield-workspace/issue/394",
   "repositoryId": "RanSolo/shield-workspace",
   "planningBaseRevision": "68f68a9ea8fa4652f6bc96a9a057c25cee3bcd1d",
-  "parentPlanCommit": "9e872530c8dd6c8ae949abd3ae3afa1c54646a5e",
+  "parentPlanCommit": "f09906dad55542d4c777898357c65225d9078518",
   "parentPlanPath": "docs/missions/issue-394-corrected-successor-plan.md",
-  "parentPlanRawSha256": "eb61b3274b7eba06e08203426f682fb5faf617ed7ed58481870a4098939cbc36",
+  "parentPlanRawSha256": "b03016113f036dfe80359ed884dc353fd2aa49f24feccb62b9c49dc915fdb716",
   "transitionKind": "fresh_authorize_wheels_up",
   "boundedOutcome": "May adds closed non-sensitive Fury search-path denial categories and correction hints, plus one repository-owned authority-none operation that consumes the exact failed receipt and original request without replaying it, revalidates unchanged bindings, and emits one fresh predecessor-bound corrected successor. It may reduce the fixed read-only tool set from [read,search] to [read] only, but cannot broaden tools, effects, repository scope, plan, model/runtime/executor, authority, or sensitive evidence; malformed, stale, conflicting, ambiguous, consumed, and non-recoverable evidence fails closed; identical retry is idempotent.",
   "approvedRelativePaths": [
@@ -43,6 +43,6 @@
     "release",
     "final_acceptance"
   ],
-  "id": "transition-plan:KmL_Z_6goPzKm_03Zw7-JGElbIQZCBgctDIIU9ldTak",
-  "digest": "sha256:KmL_Z_6goPzKm_03Zw7-JGElbIQZCBgctDIIU9ldTak"
+  "id": "transition-plan:UKrIo-sFRdJehkDpjsN0CVH5DRHAjH_8ac6BM8eM7wA",
+  "digest": "sha256:UKrIo-sFRdJehkDpjsN0CVH5DRHAjH_8ac6BM8eM7wA"
 }
