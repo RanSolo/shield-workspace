@@ -5,9 +5,9 @@
   "subjectId": "github:RanSolo/shield-workspace/issue/398",
   "repositoryId": "RanSolo/shield-workspace",
   "planningBaseRevision": "35d5ea49f2af9ebe1f674aa60d642b6939441fbe",
-  "parentPlanCommit": "8410cdd90561082ffcd3e6276c74e48e6f15a865",
+  "parentPlanCommit": "a8d6febb4be7f4e53f3127f8d9a49a689f58f1ba",
   "parentPlanPath": "docs/missions/issue-398-reviewed-transition-seed-envelope-compatibility-plan.md",
-  "parentPlanRawSha256": "837c5b9a0f127713452cb0e397ac3b6d93dec2385cdced889d450c81e51c4216",
+  "parentPlanRawSha256": "2b1c845f69890a3e569bbd6cfba1ca9d9fba5d2fa5a7558b8fb4361094449f80",
   "transitionKind": "fresh_authorize_wheels_up",
   "boundedOutcome": "May adds one authority-none compatibility adapter at corrected-successor dispatch that accepts the exact closed reviewed-transition seed envelope, extracts its nested request in memory, preserves direct request behavior, validates immutable bindings before preflight, and never mutates GitHub, rewrites evidence, invents authority, or replays the failed predecessor receipt.",
   "approvedRelativePaths": [
@@ -43,6 +43,6 @@
     "release",
     "final_acceptance"
   ],
-  "id": "transition-plan:au58MlxJB5qHCKuo80m6BoXPa9lxKJn2VMZuW1is1Co",
-  "digest": "sha256:au58MlxJB5qHCKuo80m6BoXPa9lxKJn2VMZuW1is1Co"
+  "id": "transition-plan:DrEJ-oouCl8Bhx8ryGGLt96Vy-pDDeWwyCJaLmazYIQ",
+  "digest": "sha256:DrEJ-oouCl8Bhx8ryGGLt96Vy-pDDeWwyCJaLmazYIQ"
 }
