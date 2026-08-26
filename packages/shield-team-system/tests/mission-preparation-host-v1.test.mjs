@@ -20,6 +20,7 @@ import {
   resolvePreparedMissionTransitionV1ForTest,
   resolveSeatDispatchIdentityByReceiptIdV1,
   stableRegularTextFileV1ForTest,
+  bindBreakGlassPublicationPreparationV1,
 } from "../dist/mission-preparation-host-v1.mjs";
 import {
   computeCanonicalContractDigestV1,
@@ -88,6 +89,105 @@ const LEGACY_SUBJECT_REVISION = "1".repeat(40);
 const LEGACY_PARENT_MISSION_REVISION = "2".repeat(40);
 const LEGACY_ARTIFACT_REVISION = "3".repeat(40);
 const BASE_TIMESTAMP = "2026-08-01T00:00:00.000Z";
+
+function breakGlassPreparationInput(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    contractVersion: "shield.break-glass-publication-preparation.v1",
+    authority: "none",
+    preparationId: "preparation:issue-416:1",
+    missionId: "mission:issue-416",
+    subjectId: "github:RanSolo/shield-workspace/issue/416",
+    repositoryId: "RanSolo/shield-workspace",
+    canonicalRepositoryRoot: "/workspace/shield-workspace",
+    branch: "agent/issue-416-track-layer-mode",
+    manualDecision: {
+      text: "Coulson authorized the bounded break-glass construction contract.",
+      sourceKind: "manual_non_canonical",
+      provenanceRef: "transcript:issue-416:coulson",
+    },
+    plan: {
+      authority: "none",
+      planCommit: "1".repeat(40),
+      planPath: "docs/missions/issue-416-track-layer-mode-plan.md",
+      planRawSha256: "2".repeat(64),
+      transitionPlanId: `transition-plan:${"a".repeat(43)}`,
+      transitionPlanDigest: `sha256:${"b".repeat(43)}`,
+    },
+    implementation: {
+      headRevision: "3".repeat(40),
+      approvedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts"],
+    },
+    publication: {
+      approvedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts"],
+      permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
+    },
+    exclusions: ["merge", "deployment", "release", "final_acceptance", "issue_closure", "expanded_scope", "evidence_rewrite", "receipt_replay"],
+    mackEvidence: {
+      evidenceId: "evidence:issue-416:mack",
+      evidenceDigest: `sha256:${"d".repeat(43)}`,
+      reviewedRevision: "3".repeat(40),
+      verdict: "PASS",
+    },
+    furyEvidence: {
+      evidenceId: "evidence:issue-416:fury",
+      evidenceDigest: `sha256:${"e".repeat(43)}`,
+      reviewedRevision: "3".repeat(40),
+      verdict: "APPROVE",
+    },
+    failedOperation: {
+      operationId: "operation:issue-416:failed-publication-preparation",
+      operationDigest: `sha256:${"f".repeat(43)}`,
+      outcome: "failed",
+      reasonCode: "canonical_publication_authority_missing",
+      headRevision: "3".repeat(40),
+    },
+    ...overrides,
+  };
+}
+
+test("break-glass publication preparation binds exact evidence and derives draft-only PIN input", () => {
+  const input = breakGlassPreparationInput();
+  const result = bindBreakGlassPublicationPreparationV1(input);
+  assert.equal(result.state, "ready", JSON.stringify(result));
+  assert.equal(result.authority, "none");
+  assert.equal(result.writerSeatId, "may");
+  assert.equal(result.repairLedger.singleConsumer, true);
+  assert.match(result.repairLedger.bindingDigest, /^sha256:/u);
+  assert.equal(result.bindings.manualDecision.text, input.manualDecision.text);
+  assert.equal(result.bindings.plan.transitionPlanDigest, input.plan.transitionPlanDigest);
+  assert.equal(result.bindings.implementationHead, input.implementation.headRevision);
+  assert.deepEqual(result.publicationPinInput.requestedEffects, input.publication.permittedEffects);
+  assert.deepEqual(result.publicationPinInput.authority.permittedEffects, input.publication.permittedEffects);
+  assert.deepEqual(result.publicationPinInput.authority.authorizedPaths, input.publication.approvedPaths);
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.bindings), true);
+  assert.equal(Object.isFrozen(result.repairLedger), true);
+  assert.equal(Object.isFrozen(result.publicationPinInput.authority), true);
+  assert.deepEqual(bindBreakGlassPublicationPreparationV1(input), result);
+  const changedDecision = bindBreakGlassPublicationPreparationV1({
+    ...input,
+    manualDecision: { ...input.manualDecision, text: "A different manual decision." },
+  });
+  assert.equal(changedDecision.state, "ready");
+  assert.notEqual(changedDecision.repairLedger.bindingDigest, result.repairLedger.bindingDigest);
+  assert.equal(input.failedOperation.outcome, "failed");
+});
+
+test("break-glass publication preparation fails closed for stale, widened, conflicting, and malformed evidence", () => {
+  const cases = [
+    ["stale Mack evidence", { mackEvidence: { ...breakGlassPreparationInput().mackEvidence, reviewedRevision: "4".repeat(40) } }, "evidence_binding_invalid"],
+    ["widened effects", { publication: { ...breakGlassPreparationInput().publication, permittedEffects: ["review.branch.push", "review.pull_request.create_draft", "review.comment.publish"] } }, "effect_scope_invalid"],
+    ["widened publication paths", { publication: { ...breakGlassPreparationInput().publication, approvedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "README.md"] } }, "path_scope_invalid"],
+    ["conflicting failed replay", { failedOperation: { ...breakGlassPreparationInput().failedOperation, headRevision: "4".repeat(40) } }, "failed_operation_invalid"],
+    ["extra field", { unexpected: true }, "malformed"],
+  ];
+  for (const [name, overrides, reasonCode] of cases) {
+    const result = bindBreakGlassPublicationPreparationV1(breakGlassPreparationInput(overrides));
+    assert.equal(result.state, "blocked", name);
+    assert.equal(result.reasonCode, reasonCode, name);
+  }
+});
 
 test("prepared publication semantic tuple delegates to the shared closed identity material", () => {
   const preparedAuthority = {

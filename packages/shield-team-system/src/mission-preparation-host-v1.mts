@@ -65,6 +65,7 @@ import {
 import {
   computeReviewPublicationAuthorityDigest,
   computeReviewPublicationAuthoritySemanticIdentityV1,
+  isSensitiveReviewPublicationPath,
   type ReviewPublicationAuthorityV1,
   type ReviewPublicationEffect,
 } from "./review-publication-v1.mjs";
@@ -3042,4 +3043,284 @@ export async function prepareStandingBreakGlassImplementationV1(input: unknown):
     bindingId: binding.bindingId,
     artifacts: Object.freeze({ ...outputSet, projectionDigest }),
   });
+}
+
+export interface BreakGlassPublicationPreparationInputV1 {
+  readonly schemaVersion: 1;
+  readonly contractVersion: "shield.break-glass-publication-preparation.v1";
+  readonly authority: "none";
+  readonly preparationId: string;
+  readonly missionId: string;
+  readonly subjectId: string;
+  readonly repositoryId: string;
+  readonly canonicalRepositoryRoot: string;
+  readonly branch: string;
+  readonly manualDecision: Readonly<{
+    text: string;
+    sourceKind: "manual_non_canonical";
+    provenanceRef: string;
+  }>;
+  readonly plan: Readonly<{
+    authority: "none";
+    planCommit: string;
+    planPath: string;
+    planRawSha256: string;
+    transitionPlanId: string;
+    transitionPlanDigest: string;
+  }>;
+  readonly implementation: Readonly<{
+    headRevision: string;
+    approvedPaths: readonly string[];
+  }>;
+  readonly publication: Readonly<{
+    approvedPaths: readonly string[];
+    permittedEffects: readonly ["review.branch.push", "review.pull_request.create_draft"];
+  }>;
+  readonly exclusions: readonly string[];
+  readonly mackEvidence: Readonly<{
+    evidenceId: string;
+    evidenceDigest: string;
+    reviewedRevision: string;
+    verdict: "PASS";
+  }>;
+  readonly furyEvidence: Readonly<{
+    evidenceId: string;
+    evidenceDigest: string;
+    reviewedRevision: string;
+    verdict: "APPROVE";
+  }>;
+  readonly failedOperation: Readonly<{
+    operationId: string;
+    operationDigest: string;
+    outcome: "failed";
+    reasonCode: string;
+    headRevision: string;
+  }>;
+}
+
+export type BreakGlassPublicationPreparationResultV1 = Readonly<
+  | {
+    readonly state: "ready";
+    readonly authority: "none";
+    readonly contractVersion: "shield.break-glass-publication-preparation.v1";
+    readonly preparationId: string;
+    readonly writerSeatId: "may";
+    readonly bindings: Readonly<{
+      readonly missionId: string;
+      readonly subjectId: string;
+      readonly repositoryId: string;
+      readonly manualDecision: BreakGlassPublicationPreparationInputV1["manualDecision"];
+      readonly plan: BreakGlassPublicationPreparationInputV1["plan"];
+      readonly implementationHead: string;
+      readonly approvedImplementationPaths: readonly string[];
+      readonly approvedPublicationPaths: readonly string[];
+      readonly exclusions: readonly string[];
+      readonly mackEvidence: BreakGlassPublicationPreparationInputV1["mackEvidence"];
+      readonly furyEvidence: BreakGlassPublicationPreparationInputV1["furyEvidence"];
+    }>;
+    readonly repairLedger: Readonly<{
+      readonly entryId: string;
+      readonly entryDigest: string;
+      readonly writerSeatId: "may";
+      readonly singleConsumer: true;
+      readonly failedOperationId: string;
+      readonly failedOperationDigest: string;
+      readonly bindingDigest: string;
+      readonly evidenceRefs: readonly string[];
+    }>;
+    readonly publicationPinInput: Readonly<{
+      readonly authority: Readonly<ReviewPublicationAuthorityV1>;
+      readonly authorityDigest: string;
+      readonly semanticIdentity: string;
+      readonly requestedEffects: readonly ["review.branch.push", "review.pull_request.create_draft"];
+    }>;
+  }
+  | { readonly state: "blocked"; readonly reasonCode: BreakGlassPublicationPreparationInvalidCodeV1; readonly errors: readonly string[] }
+>;
+
+export type BreakGlassPublicationPreparationInvalidCodeV1 =
+  | "malformed"
+  | "manual_provenance_invalid"
+  | "plan_binding_invalid"
+  | "implementation_binding_invalid"
+  | "path_scope_invalid"
+  | "evidence_binding_invalid"
+  | "failed_operation_invalid"
+  | "effect_scope_invalid"
+  | "replay_conflict";
+
+const BREAK_GLASS_PREPARATION_FIELDS = [
+  "schemaVersion", "contractVersion", "authority", "preparationId", "missionId", "subjectId", "repositoryId",
+  "canonicalRepositoryRoot", "branch", "manualDecision", "plan", "implementation", "publication", "exclusions",
+  "mackEvidence", "furyEvidence", "failedOperation",
+] as const;
+const BREAK_GLASS_MANUAL_FIELDS = ["text", "sourceKind", "provenanceRef"] as const;
+const BREAK_GLASS_PLAN_FIELDS = ["authority", "planCommit", "planPath", "planRawSha256", "transitionPlanId", "transitionPlanDigest"] as const;
+const BREAK_GLASS_IMPLEMENTATION_FIELDS = ["headRevision", "approvedPaths"] as const;
+const BREAK_GLASS_PUBLICATION_FIELDS = ["approvedPaths", "permittedEffects"] as const;
+const BREAK_GLASS_EVIDENCE_FIELDS = ["evidenceId", "evidenceDigest", "reviewedRevision", "verdict"] as const;
+const BREAK_GLASS_OPERATION_FIELDS = ["operationId", "operationDigest", "outcome", "reasonCode", "headRevision"] as const;
+const BREAK_GLASS_EFFECTS = Object.freeze(["review.branch.push", "review.pull_request.create_draft"] as const);
+const BREAK_GLASS_EXCLUSIONS = Object.freeze([
+  "merge", "deployment", "release", "final_acceptance", "issue_closure", "expanded_scope", "evidence_rewrite", "receipt_replay",
+] as const);
+
+function breakGlassClosed(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
+  if (!plain(value)) return false;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== fields.length || keys.some((key) => typeof key !== "string") || fields.some((field) => !keys.includes(field))) return false;
+  return fields.every((field) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, field);
+    return descriptor !== undefined && "value" in descriptor && descriptor.get === undefined && descriptor.set === undefined && descriptor.enumerable === true;
+  });
+}
+
+function breakGlassArray(value: unknown, allowEmpty = false): readonly unknown[] | null {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > 256 || (!allowEmpty && value.length === 0)) return null;
+    if (Reflect.ownKeys(value).length !== value.length + 1) return null;
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (descriptor === undefined || !("value" in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined || descriptor.enumerable !== true) return null;
+    }
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function breakGlassDigest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(`shield.break-glass-publication-preparation.v1\0${canonicalJson(value)}`).digest("base64url")}`;
+}
+
+function breakGlassPathSet(value: unknown): readonly string[] | null {
+  const paths = breakGlassArray(value);
+  if (paths === null || paths.some((path) => typeof path !== "string" || path.length > 4096 || path !== path.normalize("NFC") || path.startsWith("/") || path.includes("\\") || path.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..") || isSensitiveReviewPublicationPath(path))) return null;
+  const strings = paths as readonly string[];
+  for (let index = 1; index < strings.length; index += 1) if (strings[index - 1] >= strings[index]) return null;
+  return strings;
+}
+
+function breakGlassDigestValue(value: unknown): value is string {
+  return typeof value === "string" && /^sha256:[A-Za-z0-9_-]{43}$/u.test(value);
+}
+
+function breakGlassRevision(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{40}$/u.test(value);
+}
+
+function breakGlassRoot(value: unknown): value is string {
+  return typeof value === "string" && value.startsWith(sep) && value.length <= 4096 && !value.includes("\\") && !value.split(sep).some((segment, index) => index > 0 && (segment === "" || segment === "." || segment === ".."));
+}
+
+function breakGlassError(reasonCode: BreakGlassPublicationPreparationInvalidCodeV1, message: string): BreakGlassPublicationPreparationResultV1 {
+  return Object.freeze({ state: "blocked" as const, reasonCode, errors: Object.freeze([message]) });
+}
+
+function breakGlassFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) breakGlassFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+export function bindBreakGlassPublicationPreparationV1(input: unknown): BreakGlassPublicationPreparationResultV1 {
+  if (!breakGlassClosed(input, BREAK_GLASS_PREPARATION_FIELDS)) return breakGlassError("malformed", "Break-glass publication preparation input must be closed.");
+  const candidate = input as unknown as BreakGlassPublicationPreparationInputV1;
+  if (candidate.schemaVersion !== 1 || candidate.contractVersion !== "shield.break-glass-publication-preparation.v1" || candidate.authority !== "none" ||
+      !identifier(candidate.preparationId) || !identifier(candidate.missionId) || !identifier(candidate.subjectId) || !identifier(candidate.repositoryId) ||
+      !breakGlassRoot(candidate.canonicalRepositoryRoot) || !identifier(candidate.branch)) return breakGlassError("malformed", "Break-glass publication preparation identity is malformed.");
+  if (!breakGlassClosed(candidate.manualDecision, BREAK_GLASS_MANUAL_FIELDS) || candidate.manualDecision.sourceKind !== "manual_non_canonical" ||
+      !standingText(candidate.manualDecision.text) || !identifier(candidate.manualDecision.provenanceRef)) return breakGlassError("manual_provenance_invalid", "Manual decision provenance must be explicit and non-canonical.");
+  if (!breakGlassClosed(candidate.plan, BREAK_GLASS_PLAN_FIELDS) || candidate.plan.authority !== "none" || !breakGlassRevision(candidate.plan.planCommit) ||
+      !transitionPlanPath(candidate.plan.planPath) || !SHA256.test(candidate.plan.planRawSha256) || !TRANSITION_PLAN_ID.test(candidate.plan.transitionPlanId) ||
+      !breakGlassDigestValue(candidate.plan.transitionPlanDigest)) return breakGlassError("plan_binding_invalid", "Plan and transition identities are not exact.");
+  if (!breakGlassClosed(candidate.implementation, BREAK_GLASS_IMPLEMENTATION_FIELDS) || !breakGlassRevision(candidate.implementation.headRevision)) return breakGlassError("implementation_binding_invalid", "Implementation HEAD binding is malformed.");
+  const implementationPaths = breakGlassPathSet(candidate.implementation.approvedPaths);
+  const publicationPaths = breakGlassPathSet(candidate.publication?.approvedPaths);
+  if (implementationPaths === null || !breakGlassClosed(candidate.publication, BREAK_GLASS_PUBLICATION_FIELDS) || publicationPaths === null) return breakGlassError("path_scope_invalid", "Approved implementation and publication paths are not exact safe sets.");
+  if (publicationPaths.some((path) => !implementationPaths.includes(path))) return breakGlassError("path_scope_invalid", "Publication paths must be contained by the approved implementation paths.");
+  const effects = breakGlassArray(candidate.publication.permittedEffects);
+  if (effects === null || canonicalJson(effects) !== canonicalJson(BREAK_GLASS_EFFECTS)) return breakGlassError("effect_scope_invalid", "Only branch push and draft pull-request effects are permitted.");
+  const exclusions = breakGlassArray(candidate.exclusions);
+  if (exclusions === null || exclusions.some((value) => typeof value !== "string") || canonicalJson(exclusions) !== canonicalJson(BREAK_GLASS_EXCLUSIONS)) return breakGlassError("path_scope_invalid", "Break-glass exclusions are incomplete or widened.");
+  for (const [evidence, verdict] of [[candidate.mackEvidence, "PASS"], [candidate.furyEvidence, "APPROVE"]] as const) {
+    if (!breakGlassClosed(evidence, BREAK_GLASS_EVIDENCE_FIELDS) || evidence.verdict !== verdict || !identifier(evidence.evidenceId) || !breakGlassDigestValue(evidence.evidenceDigest) || evidence.reviewedRevision !== candidate.implementation.headRevision) {
+      return breakGlassError("evidence_binding_invalid", "Mack and Fury evidence must bind the exact implementation HEAD.");
+    }
+  }
+  if (!breakGlassClosed(candidate.failedOperation, BREAK_GLASS_OPERATION_FIELDS) || candidate.failedOperation.outcome !== "failed" || !identifier(candidate.failedOperation.operationId) ||
+      !breakGlassDigestValue(candidate.failedOperation.operationDigest) || !identifier(candidate.failedOperation.reasonCode) || candidate.failedOperation.headRevision !== candidate.implementation.headRevision) {
+    return breakGlassError("failed_operation_invalid", "The unchanged failed operation must bind the exact implementation HEAD.");
+  }
+  const evidenceRefs = Object.freeze([candidate.manualDecision.provenanceRef, candidate.plan.transitionPlanDigest, candidate.mackEvidence.evidenceDigest, candidate.furyEvidence.evidenceDigest, candidate.failedOperation.operationDigest]);
+  const authority: ReviewPublicationAuthorityV1 = {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    authorityKind: "review.publish",
+    authorityRef: `break-glass-publication:${candidate.preparationId}`,
+    missionId: candidate.missionId,
+    subjectId: candidate.subjectId,
+    missionRevisionId: candidate.plan.transitionPlanDigest,
+    repositoryId: candidate.repositoryId,
+    canonicalRepositoryRoot: candidate.canonicalRepositoryRoot,
+    branch: candidate.branch,
+    baseRevisionId: candidate.plan.planCommit,
+    headRevisionId: candidate.implementation.headRevision,
+    authorizedPaths: [...publicationPaths],
+    permittedEffects: [...BREAK_GLASS_EFFECTS],
+  };
+  const semantic = computeReviewPublicationAuthoritySemanticIdentityV1(authority);
+  if (semantic.state === "blocked") return breakGlassError("replay_conflict", "Derived publication PIN input is not a valid review-publication identity.");
+  const bindingDigest = breakGlassDigest({
+    manualDecision: candidate.manualDecision,
+    plan: candidate.plan,
+    implementation: { headRevision: candidate.implementation.headRevision, approvedPaths: implementationPaths },
+    publication: { approvedPaths: publicationPaths, permittedEffects: BREAK_GLASS_EFFECTS },
+    exclusions,
+    mackEvidence: candidate.mackEvidence,
+    furyEvidence: candidate.furyEvidence,
+    failedOperation: candidate.failedOperation,
+  });
+  const ledgerBody = {
+    contractVersion: "shield.break-glass-publication-preparation.v1" as const,
+    entryId: `repair:${candidate.preparationId}`,
+    writerSeatId: "may" as const,
+    singleConsumer: true as const,
+    failedOperationId: candidate.failedOperation.operationId,
+    failedOperationDigest: candidate.failedOperation.operationDigest,
+    bindingDigest,
+    evidenceRefs,
+    implementationHead: candidate.implementation.headRevision,
+    transitionPlanDigest: candidate.plan.transitionPlanDigest,
+  };
+  const result = {
+    state: "ready" as const,
+    authority: "none" as const,
+    contractVersion: "shield.break-glass-publication-preparation.v1" as const,
+    preparationId: candidate.preparationId,
+    writerSeatId: "may" as const,
+    bindings: {
+      missionId: candidate.missionId,
+      subjectId: candidate.subjectId,
+      repositoryId: candidate.repositoryId,
+      manualDecision: structuredClone(candidate.manualDecision),
+      plan: structuredClone(candidate.plan),
+      implementationHead: candidate.implementation.headRevision,
+      approvedImplementationPaths: [...implementationPaths],
+      approvedPublicationPaths: [...publicationPaths],
+      exclusions: [...exclusions] as string[],
+      mackEvidence: structuredClone(candidate.mackEvidence),
+      furyEvidence: structuredClone(candidate.furyEvidence),
+    },
+    repairLedger: { ...ledgerBody, entryDigest: breakGlassDigest(ledgerBody) },
+    publicationPinInput: {
+      authority: structuredClone(authority),
+      authorityDigest: computeReviewPublicationAuthorityDigest(authority),
+      semanticIdentity: semantic.semanticIdentity,
+      requestedEffects: [...BREAK_GLASS_EFFECTS] as ["review.branch.push", "review.pull_request.create_draft"],
+    },
+  };
+  return breakGlassFreeze(result);
 }
