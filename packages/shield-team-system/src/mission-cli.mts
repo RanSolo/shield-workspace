@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { execFile as execFileNode } from "node:child_process";
-import { access, chmod, lstat, mkdir, open, readFile, realpath as fsRealpath, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, open, readFile, readdir, realpath as fsRealpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { stdin as input, stdout as outputStream } from "node:process";
 import { createInterface } from "node:readline/promises";
@@ -67,7 +67,13 @@ import {
   type IssueIntakeCompiledMissionV1,
 } from "./mission-intake-v1.mjs";
 import { getMissionProfileV1, type MissionProfileId } from "./mission-profile-v1.mjs";
-import { inspectWorktreeStateV1 } from "./worktree-state-v1.mjs";
+import {
+  WORKTREE_STATE_RECEIPT_ARCHIVE_RELATIVE_PATH,
+  WORKTREE_STATE_RELATIVE_PATH,
+  inspectWorktreeStateV1,
+  validateWorktreeStateReceiptV1OrV2,
+  type WorktreeStateReceiptV1OrV2,
+} from "./worktree-state-v1.mjs";
 // @ts-expect-error The host adapter is JavaScript; its paired public declaration is not a build input.
 import { observeGitHubIssueV1 } from "../github/adapter-v1.mjs";
 
@@ -447,6 +453,129 @@ async function preparedWorktreeReceiptDigest(root: string): Promise<string> {
   return state.receiptDigest;
 }
 
+const ISSUE_402_MISSION_ID = "mission:issue-intake:Liy3ctt9LcJbt5Cswk9oqX85Au-RJz5mT3EesOPKKlo";
+const ISSUE_402_TRANSITION_PLAN_ID = "transition-plan:2JongiCaa9Oqj-cLqiMcO_SqRhWlv_FHMQP33lyzhxs";
+const ISSUE_402_TRANSITION_PLAN_DIGEST = "sha256:2JongiCaa9Oqj-cLqiMcO_SqRhWlv_FHMQP33lyzhxs";
+const ISSUE_402_PLANNING_BASE = "8b2be46720a9246beace0b287653bf54123e5f6f";
+const ISSUE_402_PARENT_PLAN_COMMIT = "89266e270fb57ee78bc0562769aa02d5acb1277a";
+const ISSUE_402_PARENT_PLAN_PATH = "docs/missions/issue-402-source-binding-rebind-plan.md";
+const ISSUE_402_PARENT_PLAN_RAW_SHA256 = "07f29eaee91720c093b11959d8da59e0c05af83f65fc415169ba9acbf9391177";
+const ISSUE_402_TRANSITION_PLAN_PATH = "docs/missions/issue-402-transition-plan.json";
+const ISSUE_402_REPOSITORY_ID = "RanSolo/shield-workspace";
+const ISSUE_402_APPROVED_PATHS = Object.freeze([
+  ISSUE_402_PARENT_PLAN_PATH,
+  ISSUE_402_TRANSITION_PLAN_PATH,
+  "packages/shield-team-system/src/mission-cli.mts",
+  "packages/shield-team-system/tests/supervised-cli.test.mjs",
+]);
+const ISSUE_402_APPROVED_ACTION_IDS = Object.freeze(["action:issue-402:implement", "action:issue-402:validate"]);
+const ISSUE_402_APPROVED_EFFECT_CLASSES = Object.freeze(["behavioral_implementation", "verification"]);
+const ISSUE_402_APPROVED_EFFECT_KEYS = Object.freeze(["effect:issue-402:source-rebind", "effect:issue-402:validation"]);
+const ISSUE_402_APPROVED_CAPABILITIES = Object.freeze(["filesystem_write", "process_execute"]);
+const ISSUE_402_VALIDATION_COMMAND_IDS = Object.freeze(["validation:issue-402:affected", "validation:issue-402:focused"]);
+const ISSUE_402_MODEL_ID = "gpt-5.6-sol";
+const ISSUE_402_REASONING_RUNTIME_ID = "runtime:codex-hosted-fury-sol";
+const ISSUE_402_TOOL_EXECUTOR_ID = "executor:codex-hosted-workspace-tools";
+
+type NativeIssueIntakeFileSnapshotV1 = Readonly<{
+  bytes: string;
+  identity: string;
+}>;
+
+type NativeIssueIntakeReceiptSnapshotV1 = Readonly<{
+  receipt: WorktreeStateReceiptV1OrV2;
+  active: NativeIssueIntakeFileSnapshotV1;
+  archiveDirectoryIdentity: string | null;
+  archive: readonly Readonly<{ path: string; file: NativeIssueIntakeFileSnapshotV1 }>[];
+}>;
+
+type NativeIssueIntakeTransitionBindingV1 = Readonly<{
+  transitionPlanId: string;
+  transitionPlanDigest: string;
+  planningBaseRevision: string;
+  parentPlanCommit: string;
+  acceptedPlanningTip: string;
+  planningCommitRange: readonly string[];
+}>;
+
+async function readNativeIssueIntakeFileSnapshot(path: string, label: string): Promise<NativeIssueIntakeFileSnapshotV1> {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = await handle.stat();
+    if (!before.isFile() || before.nlink !== 1 || (Number(before.mode) & 0o7777) !== 0o644) {
+      throw new Error(`${label} is not a singly linked regular file with mode 0644.`);
+    }
+    const bytes = await handle.readFile("utf8");
+    const after = await handle.stat();
+    const current = await lstat(path);
+    if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1 ||
+        before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size ||
+        before.dev !== current.dev || before.ino !== current.ino || before.size !== current.size) {
+      throw new Error(`${label} identity or state changed during snapshot.`);
+    }
+    return { bytes, identity: nativeIssueIntakeJournalIdentity(before) };
+  } catch (error) {
+    if (error instanceof Error && error.message.endsWith("during snapshot.")) throw error;
+    throw new Error(`${label} is missing, unsafe, or unreadable.`);
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+function parseNativeIssueIntakeReceipt(bytes: string, label: string): WorktreeStateReceiptV1OrV2 {
+  let value: unknown;
+  try { value = JSON.parse(bytes); }
+  catch { throw new Error(`${label} contains malformed JSON.`); }
+  if (!validateWorktreeStateReceiptV1OrV2(value) || `${canonicalJson(value)}\n` !== bytes) {
+    throw new Error(`${label} is malformed or not canonically encoded.`);
+  }
+  return value;
+}
+
+async function preparedWorktreeReceiptSnapshot(root: string): Promise<NativeIssueIntakeReceiptSnapshotV1> {
+  const digest = await preparedWorktreeReceiptDigest(root);
+  const active = await readNativeIssueIntakeFileSnapshot(join(root, WORKTREE_STATE_RELATIVE_PATH), "Active prepared-worktree receipt");
+  const receipt = parseNativeIssueIntakeReceipt(active.bytes, "Active prepared-worktree receipt");
+  if (receipt.receiptDigest !== digest) throw new Error("Active prepared-worktree receipt digest changed during snapshot.");
+  let archiveDirectoryIdentity: string | null = null;
+  const archive: Array<Readonly<{ path: string; file: NativeIssueIntakeFileSnapshotV1 }>> = [];
+  const archivePath = join(root, WORKTREE_STATE_RECEIPT_ARCHIVE_RELATIVE_PATH);
+  try {
+    const directory = await lstat(archivePath);
+    if (directory.isSymbolicLink() || !directory.isDirectory()) throw new Error("Prepared-worktree receipt archive is not a real directory.");
+    archiveDirectoryIdentity = nativeIssueIntakeJournalIdentity(directory);
+    const names = (await readdir(archivePath)).sort();
+    if (names.some((name) => !/^[0-9a-f]{64}\.json$/u.test(name))) {
+      throw new Error("Prepared-worktree receipt archive contains an unexpected entry.");
+    }
+    for (const name of names) {
+      archive.push({ path: name, file: await readNativeIssueIntakeFileSnapshot(join(archivePath, name), `Archived prepared-worktree receipt ${name}`) });
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const archived = new Map(archive.map(({ path, file }) => [path, parseNativeIssueIntakeReceipt(file.bytes, `Archived prepared-worktree receipt ${path}`)]));
+  const expected = new Set<string>();
+  const seen = new Set<string>();
+  let current = receipt;
+  while (current.contractVersion === "worktree.state.v2") {
+    const predecessorPath = `${current.supersedes.receiptDigest}.json`;
+    if (seen.has(predecessorPath)) throw new Error("Prepared-worktree receipt archive contains a cycle.");
+    seen.add(predecessorPath);
+    expected.add(predecessorPath);
+    const predecessor = archived.get(predecessorPath);
+    if (predecessor === undefined || predecessor.receiptDigest !== current.supersedes.receiptDigest ||
+        predecessor.contractVersion !== current.supersedes.contractVersion) {
+      throw new Error("Prepared-worktree receipt archive is incomplete or mismatched.");
+    }
+    current = predecessor;
+  }
+  if (archive.some(({ path }) => !expected.has(path))) throw new Error("Prepared-worktree receipt archive contains an extra entry.");
+  if (expected.size !== archive.length) throw new Error("Prepared-worktree receipt archive is incomplete.");
+  return { receipt, active, archiveDirectoryIdentity, archive: Object.freeze(archive) };
+}
+
 function requireGitHubConfiguration(snapshot: RepositoryConfigSnapshot): void {
   if (!configuredAdapterIds(snapshot.config).includes("github")) {
     throw new MissionCliError("GitHub review publication requires github in the frozen repository configuration.", 1);
@@ -506,7 +635,7 @@ type AuthorizeDaisyCoordinationIntent = {
   modelId: string;
   executorId: string;
 };
-type RepositoryObservation = { canonicalRoot: string; branch: string; head: string };
+type RepositoryObservation = { canonicalRoot: string; branch: string; head: string; porcelainStatus: string };
 type PublicationAuthorizationIntent = {
   baseRevision: string;
   authorizedPaths: string[];
@@ -724,10 +853,11 @@ async function observeRepository(root: string): Promise<RepositoryObservation> {
     const canonicalTop = await fsRealpath(top);
     const branch = await gitValue(canonicalRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
     const head = await gitValue(canonicalRoot, ["rev-parse", "HEAD"]);
+    const porcelainStatus = await gitOutput(canonicalRoot, ["status", "--porcelain=v1", "--untracked-files=all"]);
     if (canonicalTop !== canonicalRoot || branch.length === 0 || branch === "HEAD" || head.length === 0) {
       throw new Error("repository identity is not a real attached checkout");
     }
-    return { canonicalRoot, branch, head };
+    return { canonicalRoot, branch, head, porcelainStatus };
   } catch (error) {
     throw new MissionCliError(`Repository observation failed: ${error instanceof Error ? error.message : String(error)}.`, 1);
   }
@@ -761,7 +891,8 @@ async function validateBaseRevision(observation: RepositoryObservation, baseRevi
 }
 
 function sameObservation(left: RepositoryObservation, right: RepositoryObservation): boolean {
-  return left.canonicalRoot === right.canonicalRoot && left.branch === right.branch && left.head === right.head;
+  return left.canonicalRoot === right.canonicalRoot && left.branch === right.branch && left.head === right.head &&
+    left.porcelainStatus === right.porcelainStatus;
 }
 
 async function signMissionPayload(binding: TrustedHumanBinding, passcode: string, payload: unknown, missionId: string): Promise<string> {
@@ -2052,9 +2183,12 @@ type NativeIssueIntakePlanningSnapshotV1 = Readonly<{
   configuration: RepositoryConfigSnapshot;
   registry: RepositoryBindingRegistrySnapshot;
   preparedWorktreeReceiptDigest: string;
+  preparedWorktreeReceipt: NativeIssueIntakeReceiptSnapshotV1;
   repository: RepositoryObservation;
+  originRepositoryId: string;
   issueObservation: GitHubIssueObservationV1;
   sourceBinding: IssueIntakeSourceBindingV1;
+  transitionBinding: NativeIssueIntakeTransitionBindingV1 | null;
 }>;
 
 type NativeIssueIntakeAuthorizationReadyV1 = Readonly<{
@@ -2269,6 +2403,14 @@ function nativeIssueIntakePlanningStable(
   initialPacket: NativeIssueIntakePlanningPacketV1,
   freshPacket: NativeIssueIntakePlanningPacketV1,
 ): boolean {
+  const receiptStable = initial.preparedWorktreeReceipt.active.bytes === fresh.preparedWorktreeReceipt.active.bytes &&
+    initial.preparedWorktreeReceipt.active.identity === fresh.preparedWorktreeReceipt.active.identity &&
+    initial.preparedWorktreeReceipt.archiveDirectoryIdentity === fresh.preparedWorktreeReceipt.archiveDirectoryIdentity &&
+    initial.preparedWorktreeReceipt.archive.length === fresh.preparedWorktreeReceipt.archive.length &&
+    initial.preparedWorktreeReceipt.archive.every(({ path, file }, index) => {
+      const other = fresh.preparedWorktreeReceipt.archive[index];
+      return other?.path === path && other.file.bytes === file.bytes && other.file.identity === file.identity;
+    });
   return nativeIssueIntakeJournalStable(initial.journal, fresh.journal) &&
     initial.configuration.bytes === fresh.configuration.bytes &&
     initial.configuration.identity === fresh.configuration.identity &&
@@ -2276,11 +2418,131 @@ function nativeIssueIntakePlanningStable(
     initial.registry.bytes === fresh.registry.bytes &&
     initial.registry.identity === fresh.registry.identity &&
     initial.preparedWorktreeReceiptDigest === fresh.preparedWorktreeReceiptDigest &&
+    receiptStable &&
     sameObservation(initial.repository, fresh.repository) &&
+    initial.originRepositoryId === fresh.originRepositoryId &&
     issueObservationMatchesNativeIssueIntakeBinding(initial.issueObservation, initial.sourceBinding) &&
     issueObservationMatchesNativeIssueIntakeBinding(fresh.issueObservation, fresh.sourceBinding) &&
     canonicalJson(initial.sourceBinding) === canonicalJson(fresh.sourceBinding) &&
+    canonicalJson(initial.transitionBinding) === canonicalJson(fresh.transitionBinding) &&
     canonicalJson(initialPacket) === canonicalJson(freshPacket);
+}
+
+function nativeIssueIntakeLines(output: string): string[] {
+  const trimmed = output.trimEnd();
+  return trimmed.length === 0 ? [] : trimmed.split("\n");
+}
+
+function nativeIssueIntakeExactArray(actual: readonly string[], expected: readonly string[]): boolean {
+  return actual.length === expected.length && actual.every((value, index) => value === expected[index]);
+}
+
+function nativeIssueIntakeCommitParents(output: string): string[] {
+  const fields = output.trim().split(/\s+/u);
+  return fields.length < 1 || fields[0].length === 0 ? [] : fields.slice(1);
+}
+
+async function validateIssue402NativeSourceRebind(
+  root: string,
+  missionId: string,
+  config: ShieldConfig,
+  repository: RepositoryObservation,
+  originRepositoryId: string,
+  sourceBinding: IssueIntakeSourceBindingV1,
+  receiptSnapshot: NativeIssueIntakeReceiptSnapshotV1,
+): Promise<Readonly<{ transitionBinding: NativeIssueIntakeTransitionBindingV1 }> | Readonly<{ errors: readonly string[] }>> {
+  const fail = (...errors: string[]) => ({ errors: Object.freeze(errors) });
+  if (missionId !== ISSUE_402_MISSION_ID || config.repositoryId !== ISSUE_402_REPOSITORY_ID ||
+      originRepositoryId !== ISSUE_402_REPOSITORY_ID || sourceBinding.repositoryId !== ISSUE_402_REPOSITORY_ID ||
+      sourceBinding.repositoryNameWithOwner !== ISSUE_402_REPOSITORY_ID) {
+    return fail("Issue-intake source binding rebind is not authorized for this mission or repository.");
+  }
+  if (repository.porcelainStatus !== "") return fail("Issue-intake source binding rebind requires a clean worktree.");
+  if (sourceBinding.branch !== repository.branch) return fail("Issue-intake source binding repository branch is stale.");
+  if (sourceBinding.headRevision === repository.head) return fail("Issue-intake source binding rebind requires a descendant HEAD.");
+  if (receiptSnapshot.receipt.contractVersion !== "worktree.state.v2" ||
+      receiptSnapshot.receipt.destination.root !== repository.canonicalRoot ||
+      receiptSnapshot.receipt.destination.branch !== repository.branch ||
+      receiptSnapshot.receipt.destination.head !== repository.head ||
+      receiptSnapshot.receipt.receiptDigest === sourceBinding.preparedWorktreeReceiptDigest) {
+    return fail("Issue-intake source binding rebind requires the exact refreshed prepared-worktree receipt.");
+  }
+  try {
+    await gitValue(repository.canonicalRoot, ["cat-file", "-e", `${sourceBinding.headRevision}^{commit}`]);
+    await gitValue(repository.canonicalRoot, ["merge-base", "--is-ancestor", sourceBinding.headRevision, repository.head]);
+  } catch {
+    return fail("Issue-intake source binding HEAD is not an ancestor of the current HEAD.");
+  }
+
+  let planBytes: string;
+  let planInput: unknown;
+  try {
+    const planFile = await readNativeIssueIntakeFileSnapshot(join(root, ISSUE_402_TRANSITION_PLAN_PATH), "Issue #402 transition plan");
+    planBytes = planFile.bytes;
+    planInput = JSON.parse(planBytes) as unknown;
+  } catch {
+    return fail("Issue #402 transition plan is missing, unsafe, or malformed.");
+  }
+  const checkedPlan = validateTransitionPlanV1OrV2({ artifact: planInput });
+  if (checkedPlan.state === "invalid" || checkedPlan.value.schemaId !== "mission.transition-plan.v1") {
+    return fail("Issue #402 transition plan is invalid or unsupported.");
+  }
+  const plan = checkedPlan.value;
+  if (plan.authority !== "none" || plan.id !== ISSUE_402_TRANSITION_PLAN_ID || plan.digest !== ISSUE_402_TRANSITION_PLAN_DIGEST ||
+      plan.missionId !== ISSUE_402_MISSION_ID || plan.subjectId !== "github:RanSolo/shield-workspace/issue/402" ||
+      plan.repositoryId !== ISSUE_402_REPOSITORY_ID || plan.planningBaseRevision !== ISSUE_402_PLANNING_BASE ||
+      plan.parentPlanCommit !== ISSUE_402_PARENT_PLAN_COMMIT || plan.parentPlanPath !== ISSUE_402_PARENT_PLAN_PATH ||
+      plan.parentPlanRawSha256 !== ISSUE_402_PARENT_PLAN_RAW_SHA256 || plan.transitionKind !== "fresh_authorize_wheels_up" ||
+      plan.boundedOutcome !== "Allow an authorized native issue-intake mission to rebind after its own validated clean same-branch authority-none planning commit while preserving journal, authorization, and predecessor source-binding evidence exactly." ||
+      !nativeIssueIntakeExactArray(plan.approvedRelativePaths, ISSUE_402_APPROVED_PATHS) ||
+      !nativeIssueIntakeExactArray(plan.publicationPaths, ISSUE_402_APPROVED_PATHS) ||
+      !nativeIssueIntakeExactArray(plan.approvedActionIds, ISSUE_402_APPROVED_ACTION_IDS) ||
+      !nativeIssueIntakeExactArray(plan.approvedEffectClasses, ISSUE_402_APPROVED_EFFECT_CLASSES) ||
+      !nativeIssueIntakeExactArray(plan.approvedEffectKeys, ISSUE_402_APPROVED_EFFECT_KEYS) ||
+      !nativeIssueIntakeExactArray(plan.approvedCapabilities, ISSUE_402_APPROVED_CAPABILITIES) ||
+      !nativeIssueIntakeExactArray(plan.validationCommandIds, ISSUE_402_VALIDATION_COMMAND_IDS) ||
+      plan.modelId !== ISSUE_402_MODEL_ID || plan.reasoningRuntimeId !== ISSUE_402_REASONING_RUNTIME_ID ||
+      plan.toolExecutorId !== ISSUE_402_TOOL_EXECUTOR_ID) {
+    return fail("Issue #402 transition plan does not match the frozen transition binding.");
+  }
+  if (sourceBinding.headRevision !== plan.planningBaseRevision) {
+    return fail("Issue #402 transition plan planning base does not match the bound HEAD.");
+  }
+
+  try {
+    const parentParents = nativeIssueIntakeCommitParents(await gitOutput(root, ["rev-list", "--parents", "-n", "1", plan.parentPlanCommit]));
+    const headParents = nativeIssueIntakeCommitParents(await gitOutput(root, ["rev-list", "--parents", "-n", "1", repository.head]));
+    const commits = nativeIssueIntakeLines(await gitOutput(root, ["rev-list", "--reverse", `${plan.planningBaseRevision}..${repository.head}`]));
+    if (!nativeIssueIntakeExactArray(commits, [plan.parentPlanCommit, repository.head]) ||
+        !nativeIssueIntakeExactArray(parentParents, [plan.planningBaseRevision]) ||
+        !nativeIssueIntakeExactArray(headParents, [plan.parentPlanCommit])) {
+      return fail("Issue #402 transition commit range is missing, extra, reordered, merged, or squashed.");
+    }
+    const parentDiff = nativeIssueIntakeLines(await gitOutput(root, ["diff-tree", "--no-commit-id", "--name-status", "-r", plan.parentPlanCommit]));
+    const headDiff = nativeIssueIntakeLines(await gitOutput(root, ["diff-tree", "--no-commit-id", "--name-status", "-r", repository.head]));
+    if (!nativeIssueIntakeExactArray(parentDiff, [`A\t${ISSUE_402_PARENT_PLAN_PATH}`]) ||
+        !nativeIssueIntakeExactArray(headDiff, [`A\t${ISSUE_402_TRANSITION_PLAN_PATH}`])) {
+      return fail("Issue #402 transition commit range contains unrelated or ambiguous changes.");
+    }
+    const parentPlanBytes = await gitOutput(root, [`show`, `${plan.parentPlanCommit}:${ISSUE_402_PARENT_PLAN_PATH}`]);
+    const committedTransitionPlanBytes = await gitOutput(root, [`show`, `${repository.head}:${ISSUE_402_TRANSITION_PLAN_PATH}`]);
+    if (createHash("sha256").update(parentPlanBytes).digest("hex") !== ISSUE_402_PARENT_PLAN_RAW_SHA256 ||
+        committedTransitionPlanBytes !== planBytes) {
+      return fail("Issue #402 transition plan provenance is ambiguous or stale.");
+    }
+    return {
+      transitionBinding: Object.freeze({
+        transitionPlanId: plan.id,
+        transitionPlanDigest: plan.digest,
+        planningBaseRevision: plan.planningBaseRevision,
+        parentPlanCommit: plan.parentPlanCommit,
+        acceptedPlanningTip: repository.head,
+        planningCommitRange: Object.freeze([...commits]),
+      }),
+    };
+  } catch {
+    return fail("Issue #402 transition commit provenance is missing, malformed, or unavailable.");
+  }
 }
 
 async function classifyNativeIssueIntakePlanningJournal(
@@ -2313,13 +2575,15 @@ async function classifyNativeIssueIntakePlanningJournal(
     };
   }
   let registry: RepositoryBindingRegistrySnapshot;
-  let receiptDigest: string;
+  let receiptSnapshot: NativeIssueIntakeReceiptSnapshotV1;
   let repository: RepositoryObservation;
+  let originRepositoryId: string;
   try {
-    [registry, receiptDigest, repository] = await Promise.all([
+    [registry, receiptSnapshot, repository, originRepositoryId] = await Promise.all([
       repositoryBindingRegistrySnapshot(root),
-      preparedWorktreeReceiptDigest(root),
+      preparedWorktreeReceiptSnapshot(root),
       observeRepository(root),
+      gitValue(root, ["remote", "get-url", "origin"]).then(repositoryIdFromOrigin),
     ]);
   } catch (error) {
     return {
@@ -2339,12 +2603,12 @@ async function classifyNativeIssueIntakePlanningJournal(
   if (configuration.config.repositoryId !== sourceBinding.repositoryId || sourceBinding.repositoryId !== sourceBinding.repositoryNameWithOwner) {
     sourceErrors.push("Issue-intake source binding repository identity is stale.");
   }
-  if (sourceBinding.branch !== repository.branch || sourceBinding.headRevision !== repository.head) {
-    sourceErrors.push("Issue-intake source binding repository branch or HEAD is stale.");
-  }
-  if (sourceBinding.preparedWorktreeReceiptDigest !== receiptDigest) {
-    sourceErrors.push("Issue-intake source binding prepared-worktree receipt is stale.");
-  }
+  if (originRepositoryId !== configuration.config.repositoryId) sourceErrors.push("Issue-intake repository origin is not the registered repository.");
+  const branchDrifted = sourceBinding.branch !== repository.branch;
+  const headDrifted = sourceBinding.headRevision !== repository.head;
+  const receiptDrifted = sourceBinding.preparedWorktreeReceiptDigest !== receiptSnapshot.receipt.receiptDigest;
+  if (branchDrifted) sourceErrors.push("Issue-intake source binding repository branch is stale.");
+  if (!headDrifted && receiptDrifted) sourceErrors.push("Issue-intake source binding prepared-worktree receipt is stale.");
   if (sourceBinding.configBytesDigest !== journalByteSha256(configuration.bytes)) {
     sourceErrors.push("Issue-intake source binding configuration digest is stale.");
   }
@@ -2357,7 +2621,9 @@ async function classifyNativeIssueIntakePlanningJournal(
     sourceErrors.push("Issue-intake source binding does not match the replayed mission brief.");
   }
   if (sourceErrors.length > 0) {
-    return { state: "invalid", code: "source_binding_drifted", errors: sourceErrors, missionId, repositoryRoot: repository.canonicalRoot };
+    if (!headDrifted || branchDrifted) {
+      return { state: "invalid", code: "source_binding_drifted", errors: sourceErrors, missionId, repositoryRoot: repository.canonicalRoot };
+    }
   }
   const issueRef = `github:${sourceBinding.repositoryNameWithOwner}/issues/${sourceBinding.issueNumber}`;
   const observed = await issueObserver(issueRef, { cwd: root });
@@ -2373,6 +2639,33 @@ async function classifyNativeIssueIntakePlanningJournal(
       repositoryRoot: repository.canonicalRoot,
     };
   }
+  let transitionBinding: NativeIssueIntakeTransitionBindingV1 | null = null;
+  if (headDrifted) {
+    const rebind = await validateIssue402NativeSourceRebind(
+      root,
+      missionId,
+      configuration.config,
+      repository,
+      originRepositoryId,
+      sourceBinding,
+      receiptSnapshot,
+    );
+    if ("errors" in rebind) {
+      return {
+        state: "invalid",
+        code: "source_binding_drifted",
+        errors: [...sourceErrors, ...rebind.errors],
+        missionId,
+        repositoryRoot: repository.canonicalRoot,
+      };
+    }
+    transitionBinding = rebind.transitionBinding;
+  }
+  if (sourceErrors.length > 0) {
+    return { state: "invalid", code: "source_binding_drifted", errors: sourceErrors, missionId, repositoryRoot: repository.canonicalRoot };
+  }
+  const packetBranch = transitionBinding?.acceptedPlanningTip === repository.head ? repository.branch : sourceBinding.branch;
+  const packetHeadRevision = transitionBinding?.acceptedPlanningTip ?? sourceBinding.headRevision;
   const packet = canonicalSnapshot({
     schemaVersion: 1 as const,
     contractVersion: "mission.issue-intake-planning.v1" as const,
@@ -2384,8 +2677,8 @@ async function classifyNativeIssueIntakePlanningJournal(
     pinRequired: false as const,
     missionId: journal.value.journal.projection.missionId,
     repositoryId: sourceBinding.repositoryId,
-    branch: sourceBinding.branch,
-    headRevision: sourceBinding.headRevision,
+    branch: packetBranch,
+    headRevision: packetHeadRevision,
     subjectId: journal.value.journal.projection.brief.subjectId,
     repositoryRoot: repository.canonicalRoot,
     issueUrl: sourceBinding.issueUrl,
@@ -2403,10 +2696,13 @@ async function classifyNativeIssueIntakePlanningJournal(
       journal: journal.value,
       configuration,
       registry,
-      preparedWorktreeReceiptDigest: receiptDigest,
+      preparedWorktreeReceiptDigest: receiptSnapshot.receipt.receiptDigest,
+      preparedWorktreeReceipt: receiptSnapshot,
       repository,
+      originRepositoryId,
       issueObservation: observed.observation,
       sourceBinding,
+      transitionBinding,
     },
   };
 }

@@ -73,6 +73,7 @@ import {
 import { prepareOrRefreshWorktreeStateV2, prepareWorktreeStateV1 } from "../dist/worktree-state-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const workspaceRoot = resolve(packageRoot, "../..");
 const cli = join(packageRoot, "dist", "cli.mjs");
 
 test("publish-reviewed final publication command has a closed base assertion and concise documented surface", async () => {
@@ -2958,6 +2959,25 @@ test("prepare-next fails closed on source, repository, HEAD, and journal drift b
     else assert.equal(blocked.code, scenario.expectedCode, scenario.label);
     assert.equal(await readFile(current.missionJournalPath, "utf8"), scenario.label === "journal" ? `${current.authorizedBytes} ` : journalBefore, scenario.label);
   }
+});
+
+test("Issue #402 rebind test inputs remain bound to the exact transition artifact", async () => {
+  const artifact = JSON.parse(await readFile(join(workspaceRoot, "docs/missions/issue-402-transition-plan.json"), "utf8"));
+  assert.equal(artifact.id, "transition-plan:2JongiCaa9Oqj-cLqiMcO_SqRhWlv_FHMQP33lyzhxs");
+  assert.equal(artifact.digest, "sha256:2JongiCaa9Oqj-cLqiMcO_SqRhWlv_FHMQP33lyzhxs");
+  assert.equal(artifact.missionId, "mission:issue-intake:Liy3ctt9LcJbt5Cswk9oqX85Au-RJz5mT3EesOPKKlo");
+  assert.equal(artifact.planningBaseRevision, "8b2be46720a9246beace0b287653bf54123e5f6f");
+  assert.equal(artifact.parentPlanCommit, "89266e270fb57ee78bc0562769aa02d5acb1277a");
+  assert.deepEqual(artifact.approvedRelativePaths, [
+    "docs/missions/issue-402-source-binding-rebind-plan.md",
+    "docs/missions/issue-402-transition-plan.json",
+    "packages/shield-team-system/src/mission-cli.mts",
+    "packages/shield-team-system/tests/supervised-cli.test.mjs",
+  ]);
+  assert.deepEqual(artifact.exclusions, [
+    "review.comment.publish", "review.pull_request.update_draft", "review.pull_request.mark_ready",
+    "merge", "deployment", "release", "final_acceptance",
+  ]);
 });
 
 test("spawned prepare-next derives Issue #349 legacy authority and reaches the publication gate", async () => {
