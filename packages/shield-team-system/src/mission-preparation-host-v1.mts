@@ -1,4 +1,6 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { constants } from "node:fs";
 import { lstat, open, readFile, realpath } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
@@ -74,6 +76,8 @@ import {
   type ProfileAwareMissionBriefContentV1,
   type ProfileAwareMissionEntryV1,
 } from "./profile-aware-mission-v1.mjs";
+
+const execFile = promisify(execFileCallback);
 
 
 export const MISSION_TRANSITION_PLAN_REVIEW_SCHEMA_VERSION = 1 as const;
@@ -2700,6 +2704,8 @@ export async function bindStandingBreakGlassImplementationV1(repositoryRoot: str
   try {
     const canonicalRoot = await canonicalRepositoryRoot(repositoryRoot);
     if (canonicalRoot === null) return { state: "invalid", code: "binding_invalid", errors: ["Repository root is not canonical."] };
+    const gitRoot = (await execFile("git", ["-C", canonicalRoot, "rev-parse", "--show-toplevel"], { shell: false })).stdout.trim();
+    if (await realpath(gitRoot) !== canonicalRoot) return { state: "invalid", code: "binding_invalid", errors: ["Repository root is not a registered Git root."] };
     const shieldRoot = join(canonicalRoot, ".shield");
     const stable = async (path: string): Promise<{ bytes: string; value: unknown } | null> => { const snapshot = await stableRegularTextFile(canonicalRoot, relative(canonicalRoot, path)); return snapshot === null ? null : { bytes: snapshot.bytes, value: JSON.parse(snapshot.bytes) as unknown }; };
     const authorizationFile = await stable(join(shieldRoot, "standing-break-glass-authorization.json"));
