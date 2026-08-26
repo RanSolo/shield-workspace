@@ -84,6 +84,46 @@ type GitHubIssueObservationV1 = {
 type GitHubIssueObserverV1 = (input: string, options?: { cwd?: string }) =>
   | { state: "observed"; observation: GitHubIssueObservationV1 }
   | { state: "blocked"; reason: string };
+
+const ISSUE_OBSERVATION_DIAGNOSTIC_REASONS = [
+  "acceptance_criteria_invalid",
+  "adapter_unavailable",
+  "authentication_failed",
+  "authorization_failed",
+  "credential_environment_unsafe",
+  "credential_state_unavailable",
+  "invalid_issue_reference",
+  "invalid_utf8",
+  "issue_not_found",
+  "issue_identity_mismatch",
+  "issue_not_open",
+  "malformed_response",
+  "network_failed",
+  "not_found",
+  "observation_time_invalid",
+  "rate_limited",
+  "repository_identity_mismatch",
+  "timeout",
+  "host_rejected",
+  "unknown",
+] as const;
+type IssueObservationDiagnosticReason = typeof ISSUE_OBSERVATION_DIAGNOSTIC_REASONS[number];
+type IssueObservationDiagnostic = Readonly<{
+  stage: "initial" | "consistency";
+  reason: IssueObservationDiagnosticReason;
+}>;
+
+function createIssueObservationDiagnostic(
+  stage: IssueObservationDiagnostic["stage"],
+  reason: unknown,
+): IssueObservationDiagnostic {
+  const safeReason = typeof reason === "string" &&
+    (ISSUE_OBSERVATION_DIAGNOSTIC_REASONS as readonly string[]).includes(reason)
+    ? reason as IssueObservationDiagnosticReason
+    : "unknown";
+  return Object.freeze({ stage, reason: safeReason });
+}
+
 import {
   validateAdapterCandidate,
   type CommunicationOperation,
@@ -205,8 +245,15 @@ const CONFIG_PATH = join(".shield", "config.json");
 const BINDINGS_PATH = join(".shield", "trusted-human-bindings.json");
 
 export class MissionCliError extends Error {
-  constructor(message: string, readonly exitCode: 1 | 2 = 2) {
+  readonly issueObservationDiagnostic?: IssueObservationDiagnostic;
+
+  constructor(
+    message: string,
+    readonly exitCode: 1 | 2 = 2,
+    issueObservationDiagnostic?: IssueObservationDiagnostic,
+  ) {
     super(message);
+    if (issueObservationDiagnostic !== undefined) this.issueObservationDiagnostic = issueObservationDiagnostic;
   }
 }
 
@@ -883,7 +930,10 @@ async function beginIssueIntake(options: ParsedOptions, profileId: MissionProfil
   const repositoryA = await observeRepository(root);
   const observer = dependencies.issueObserver ?? observeGitHubIssueV1;
   const observedA = await observer(issueRef, { cwd: root });
-  if (observedA.state !== "observed") throw new MissionCliError(`issue_observation_blocked: ${observedA.reason}`, 1);
+  if (observedA.state !== "observed") {
+    const diagnostic = createIssueObservationDiagnostic("initial", observedA.reason);
+    throw new MissionCliError(`issue_observation_blocked: ${diagnostic.reason}`, 1, diagnostic);
+  }
   const compiledA = compileIssueMission(configuration, registry, observedA.observation, profileId, repositoryA.branch, repositoryA.head, receiptA);
   const existing = await existingIssueMission(root, configuration.config, compiledA.brief.missionId);
   if (existing !== null) {
@@ -912,7 +962,10 @@ async function beginIssueIntake(options: ParsedOptions, profileId: MissionProfil
   const repositoryB = await observeRepository(root);
   if (!sameObservation(repositoryA, repositoryB)) throw new MissionCliError("repository_drifted: Repository root, branch, or HEAD changed before issue-intake initialization.", 1);
   const observedB = await observer(issueRef, { cwd: root });
-  if (observedB.state !== "observed") throw new MissionCliError(`issue_observation_blocked: ${observedB.reason}`, 1);
+  if (observedB.state !== "observed") {
+    const diagnostic = createIssueObservationDiagnostic("consistency", observedB.reason);
+    throw new MissionCliError(`issue_observation_blocked: ${diagnostic.reason}`, 1, diagnostic);
+  }
   if (!issueObservationMatches(observedA.observation, observedB.observation)) {
     throw new MissionCliError("issue_drifted: GitHub repository or issue identity changed before issue-intake initialization.", 1);
   }

@@ -29,6 +29,7 @@ import {
   assertRepositoryConfigFresh,
   emitFinalPublicationClassificationV1ForTest,
   emitFinalPublicationTransitionV1ForTest,
+  MissionCliError,
   missionUsage,
   readInteractivePasscode,
   renderFinalPublicationDecisionV1ForTest,
@@ -467,6 +468,12 @@ async function nativePlanningFixture() {
   };
 }
 
+async function issueBeginFixture() {
+  const current = await nativePlanningFixture();
+  await unlink(current.missionJournalPath);
+  return current;
+}
+
 async function runMissionCliCaptured(args, dependencies) {
   const stdout = [];
   const stderr = [];
@@ -482,6 +489,137 @@ async function runMissionCliCaptured(args, dependencies) {
     process.stderr.write = originalStderrWrite;
   }
 }
+
+test("profile-aware issue observation diagnostics identify initial and consistency failures", async () => {
+  for (const stage of ["initial", "consistency"]) {
+    for (const reason of ["network_failed", "authentication_failed", "timeout", "issue_identity_mismatch"]) {
+      const current = await issueBeginFixture();
+      let calls = 0;
+      let captured;
+      await assert.rejects(
+        runMissionCliCaptured(
+          ["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/374", "--profile", "standard", "--root", current.root, "--json"],
+          {
+            issueObserver: async () => {
+              calls += 1;
+              if (stage === "initial" || calls === 2) return { state: "blocked", reason };
+              return { state: "observed", observation: current.issueObservation };
+            },
+          },
+        ),
+        (error) => {
+          captured = error;
+          return error instanceof MissionCliError;
+        },
+      );
+      assert.equal(captured.message, `issue_observation_blocked: ${reason}`);
+      assert.deepEqual(captured.issueObservationDiagnostic, { stage, reason });
+      assert.equal(Object.isFrozen(captured.issueObservationDiagnostic), true);
+      assert.deepEqual(Object.keys(captured.issueObservationDiagnostic).sort(), ["reason", "stage"]);
+      assert.equal(calls, stage === "initial" ? 1 : 2);
+      await assert.rejects(lstat(current.missionJournalPath), { code: "ENOENT" });
+      assert.deepEqual(await readdir(join(current.root, ".shield", "journals")), []);
+    }
+  }
+});
+
+test("profile-aware issue observation diagnostics close malformed reasons and redact supplied payloads", async () => {
+  const cases = [
+    ["missing", undefined],
+    ["non-string", { token: "SECRET_TOKEN", path: "/private/tmp/secret-credential", query: "SECRET_QUERY" }],
+    ["unlisted", "adapter detail SECRET_TOKEN /private/tmp/secret-credential"],
+  ];
+  for (const stage of ["initial", "consistency"]) {
+    for (const [label, suppliedReason] of cases) {
+      const current = await issueBeginFixture();
+      let calls = 0;
+      let captured;
+      await assert.rejects(
+        runMissionCli(
+          ["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/374", "--profile", "standard", "--root", current.root, "--json"],
+          {
+            issueObserver: async () => {
+              calls += 1;
+              if (stage === "initial" || calls === 2) {
+                return label === "missing" ? { state: "blocked" } : { state: "blocked", reason: suppliedReason };
+              }
+              return { state: "observed", observation: current.issueObservation };
+            },
+          },
+        ),
+        (error) => {
+          captured = error;
+          return error instanceof MissionCliError;
+        },
+      );
+      assert.equal(captured.message, "issue_observation_blocked: unknown");
+      assert.deepEqual(captured.issueObservationDiagnostic, { stage, reason: "unknown" });
+      assert.deepEqual(Object.keys(captured.issueObservationDiagnostic).sort(), ["reason", "stage"]);
+      assert.doesNotMatch(`${captured.message}${JSON.stringify(captured.issueObservationDiagnostic)}`, /SECRET_TOKEN|secret-credential|SECRET_QUERY|adapter detail/iu);
+      assert.equal(calls, stage === "initial" ? 1 : 2);
+      await assert.rejects(lstat(current.missionJournalPath), { code: "ENOENT" });
+    }
+  }
+});
+
+test("profile-aware issue intake preserves success, mismatch, and exact replay behavior", async () => {
+  const successful = await issueBeginFixture();
+  let successCalls = 0;
+  const first = await runMissionCliCaptured(
+    ["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/374", "--profile", "standard", "--root", successful.root, "--json"],
+    {
+      issueObserver: async () => {
+        successCalls += 1;
+        return { state: "observed", observation: successful.issueObservation };
+      },
+    },
+  );
+  assert.equal(first.status, 0);
+  assert.equal(first.stderr, "");
+  assert.equal(JSON.parse(first.stdout).replayed, false);
+  assert.equal(successCalls, 2);
+
+  const mismatch = await issueBeginFixture();
+  let mismatchCalls = 0;
+  let mismatchError;
+  await assert.rejects(
+    runMissionCli(
+      ["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/374", "--profile", "standard", "--root", mismatch.root, "--json"],
+      {
+        issueObserver: async () => {
+          mismatchCalls += 1;
+          if (mismatchCalls === 1) return { state: "observed", observation: mismatch.issueObservation };
+          return { state: "observed", observation: { ...mismatch.issueObservation, issueRevisionId: "rev:issue-mismatch" } };
+        },
+      },
+    ),
+    (error) => {
+      mismatchError = error;
+      return error instanceof MissionCliError;
+    },
+  );
+  assert.equal(mismatchError.message, "issue_drifted: GitHub repository or issue identity changed before issue-intake initialization.");
+  assert.equal(mismatchError.issueObservationDiagnostic, undefined);
+  assert.equal(mismatchCalls, 2);
+  await assert.rejects(lstat(mismatch.missionJournalPath), { code: "ENOENT" });
+
+  const replayBytes = await readFile(successful.missionJournalPath, "utf8");
+  let replayCalls = 0;
+  const replay = await runMissionCliCaptured(
+    ["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/374", "--profile", "standard", "--root", successful.root, "--json"],
+    {
+      issueObserver: async () => {
+        replayCalls += 1;
+        return { state: "observed", observation: successful.issueObservation };
+      },
+    },
+  );
+  assert.equal(replay.status, 0);
+  assert.equal(replay.stderr, "");
+  assert.equal(JSON.parse(replay.stdout).replayed, true);
+  assert.equal(replayCalls, 1);
+  assert.equal(await readFile(successful.missionJournalPath, "utf8"), replayBytes);
+});
 
 function profileBriefContent(missionId, profileId, requireSimmons) {
   const requiredExecutionGateRoleIds = profileId === "standard"
