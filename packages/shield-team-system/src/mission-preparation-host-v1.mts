@@ -2657,7 +2657,7 @@ function standingText(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 512;
 }
 
-export function bindStandingBreakGlassImplementationV1(input: unknown, dependencies: StandingBreakGlassBindingDependenciesV1): StandingBreakGlassBindingResultV1 {
+function bindStandingBreakGlassImplementationFromLoadedV1(input: unknown, dependencies: StandingBreakGlassBindingDependenciesV1): StandingBreakGlassBindingResultV1 {
   if (!standingClosed(input, ["authorizationLocator", "dispatch"]) || !standingClosed(dependencies, ["loadAuthorization", "expectedDispatch"])) return { state: "invalid", code: "malformed", errors: ["Standing break-glass input must be closed."] };
   const candidate = input as unknown as StandingBreakGlassBindingInputV1;
   if (!standingClosed(candidate.authorizationLocator, STANDING_LOCATOR_FIELDS) || !standingClosed(candidate.dispatch, STANDING_DISPATCH_FIELDS) || !Array.isArray(candidate.dispatch.approvedPaths) || !Array.isArray(candidate.dispatch.actionIds) || !Array.isArray(candidate.dispatch.effectKeys) || !Array.isArray(candidate.dispatch.capabilityClasses) || !Array.isArray(candidate.dispatch.validationCommandIds) || !Array.isArray(candidate.dispatch.exclusions) || [candidate.dispatch.approvedPaths, candidate.dispatch.actionIds, candidate.dispatch.effectKeys, candidate.dispatch.capabilityClasses, candidate.dispatch.validationCommandIds, candidate.dispatch.exclusions].some((values) => values.some((value) => !standingText(value)))) {
@@ -2686,4 +2686,21 @@ export function bindStandingBreakGlassImplementationV1(input: unknown, dependenc
   const projectedDispatch = structuredClone(dispatch);
   const bindingId = standingDigest({ authorization: auth.authorizationDigest, dispatch: projectedDispatch });
   return { state: "valid", bindingId, dispatch: projectedDispatch, authorizationDigest: auth.authorizationDigest };
+}
+
+export function bindStandingBreakGlassImplementationV1ForTest(input: unknown, dependencies: StandingBreakGlassBindingDependenciesV1): StandingBreakGlassBindingResultV1 {
+  return bindStandingBreakGlassImplementationFromLoadedV1(input, dependencies);
+}
+
+export async function bindStandingBreakGlassImplementationV1(repositoryRoot: string, input: unknown): Promise<StandingBreakGlassBindingResultV1> {
+  if (typeof repositoryRoot !== "string" || !repositoryRoot.startsWith(sep)) return { state: "invalid", code: "malformed", errors: ["Repository root is invalid."] };
+  if (!standingClosed(input, ["authorizationLocator", "dispatch"])) return { state: "invalid", code: "malformed", errors: ["Standing break-glass input must be closed."] };
+  try {
+    const shieldRoot = join(repositoryRoot, ".shield");
+    const authorizationEnvelope = JSON.parse(await readFile(join(shieldRoot, "standing-break-glass-authorization.json"), "utf8")) as unknown;
+    const expectedDispatch = JSON.parse(await readFile(join(shieldRoot, "standing-break-glass-dispatch.json"), "utf8")) as unknown;
+    if (!standingClosed(authorizationEnvelope, ["authorization", "trustedBinding", "authorizationEvidenceDigest"]) || !standingClosed(expectedDispatch, STANDING_DISPATCH_FIELDS)) return { state: "invalid", code: "binding_invalid", errors: ["Repository break-glass artifacts are not closed."] };
+    const loaded = { authorization: authorizationEnvelope.authorization as StandingBreakGlassAuthorizationV1, trustedBinding: authorizationEnvelope.trustedBinding as TrustedHumanBinding, authorizationEvidenceDigest: authorizationEnvelope.authorizationEvidenceDigest as string };
+    return bindStandingBreakGlassImplementationFromLoadedV1(input, { loadAuthorization: (locator) => locator.authorizationId === loaded.authorization.authorizationId && locator.authorizationDigest === loaded.authorization.authorizationDigest ? loaded : null, expectedDispatch: expectedDispatch as unknown as StandingBreakGlassDispatchV1 });
+  } catch { return { state: "invalid", code: "binding_invalid", errors: ["Repository break-glass artifacts could not be loaded."] }; }
 }

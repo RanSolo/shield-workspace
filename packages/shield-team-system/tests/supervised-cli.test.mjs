@@ -53,6 +53,7 @@ import {
   buildMissionTransitionPlanReviewV1,
   materializeReviewedMissionTransitionV1,
   resolvePreparedMissionTransitionV1,
+  bindStandingBreakGlassImplementationV1ForTest,
   bindStandingBreakGlassImplementationV1,
 } from "../dist/mission-preparation-host-v1.mjs";
 import { deriveMissionReviewedTransitionGraphMaterializationPathV1 } from "../dist/mission-preparation-store-v1.mjs";
@@ -73,7 +74,7 @@ import {
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import { prepareOrRefreshWorktreeStateV2, prepareWorktreeStateV1 } from "../dist/worktree-state-v1.mjs";
 
-test("standing break-glass binding is closed, deterministic, and read-only", () => {
+test("standing break-glass binding is closed, deterministic, and read-only", async () => {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const publicKeySpkiBase64 = publicKey.export({ type: "spki", format: "der" }).toString("base64");
   const digest = (value) => `sha256:${createHash("sha256").update(canonicalJson(value)).digest("base64url")}`;
@@ -85,12 +86,18 @@ test("standing break-glass binding is closed, deterministic, and read-only", () 
   const dispatch = { missionId: "mission:issue-411", subjectId: "github:RanSolo/shield-workspace/issue/411", repositoryId: "RanSolo/shield-workspace", branch: "agent/issue-411-standing-break-glass", planId: "plan:411", planDigest: "sha256:" + "A".repeat(43), baseRevision: "1".repeat(40), headRevision: "2".repeat(40), approvedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts"], actionIds: ["implementation.apply"], effectKeys: ["implementation.commit"], capabilityClasses: ["repository.write"], maySeatId: "may", mayModelId: "gpt-5.6-luna", mayRuntimeId: "runtime:may", mayExecutorId: "executor:may", dispatchId: "dispatch:411", receiptId: "receipt:411", validationCommandIds: ["test:411"], authorizationEvidenceDigest: "evidence:411", exclusions: ["publication", "merge", "deployment", "release", "final_acceptance", "credential_security_expansion", "destructive_effect", "material_scope_expansion"] };
   const input = { authorizationLocator: { authorizationId: authorization.authorizationId, authorizationDigest }, dispatch };
   const dependencies = { loadAuthorization(locator) { return locator.authorizationId === authorization.authorizationId ? { authorization, trustedBinding, authorizationEvidenceDigest: dispatch.authorizationEvidenceDigest } : null; }, expectedDispatch: dispatch };
-  const first = bindStandingBreakGlassImplementationV1(input, dependencies);
+  const first = bindStandingBreakGlassImplementationV1ForTest(input, dependencies);
   assert.equal(first.state, "valid");
-  assert.deepEqual(bindStandingBreakGlassImplementationV1(structuredClone(input), dependencies), first);
+  assert.deepEqual(bindStandingBreakGlassImplementationV1ForTest(structuredClone(input), dependencies), first);
   const tampered = structuredClone(input); tampered.dispatch.approvedPaths = ["packages/shield-team-system/src/mission-cli.mts", "../escape"];
-  assert.equal(bindStandingBreakGlassImplementationV1(tampered, dependencies).state, "invalid");
+  assert.equal(bindStandingBreakGlassImplementationV1ForTest(tampered, dependencies).state, "invalid");
   assert.deepEqual(input, structuredClone(input));
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-standing-break-glass-"));
+  await mkdir(join(repositoryRoot, ".shield"));
+  await writeFile(join(repositoryRoot, ".shield", "standing-break-glass-authorization.json"), JSON.stringify({ authorization, trustedBinding, authorizationEvidenceDigest: dispatch.authorizationEvidenceDigest }));
+  await writeFile(join(repositoryRoot, ".shield", "standing-break-glass-dispatch.json"), JSON.stringify(dispatch));
+  assert.equal((await bindStandingBreakGlassImplementationV1(repositoryRoot, input)).state, "valid");
+  assert.equal((await bindStandingBreakGlassImplementationV1(repositoryRoot, tampered)).state, "invalid");
 });
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
