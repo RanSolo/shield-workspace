@@ -1,4 +1,6 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { constants } from "node:fs";
 import { lstat, open, readFile, realpath } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
@@ -74,6 +76,8 @@ import {
   type ProfileAwareMissionBriefContentV1,
   type ProfileAwareMissionEntryV1,
 } from "./profile-aware-mission-v1.mjs";
+
+const execFile = promisify(execFileCallback);
 
 export const MISSION_TRANSITION_PLAN_REVIEW_SCHEMA_VERSION = 1 as const;
 export const MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION = "mission.transition-plan-review.v1" as const;
@@ -2694,18 +2698,15 @@ export function bindStandingBreakGlassImplementationV1ForTest(input: unknown, de
 
 export async function bindStandingBreakGlassImplementationV1(repositoryRoot: string, input: unknown): Promise<StandingBreakGlassBindingResultV1> {
   if (typeof repositoryRoot !== "string" || !repositoryRoot.startsWith(sep)) return { state: "invalid", code: "malformed", errors: ["Repository root is invalid."] };
-  if (!standingClosed(input, ["authorizationLocator", "dispatch"])) return { state: "invalid", code: "malformed", errors: ["Standing break-glass input must be closed."] };
+  if (!standingClosed(input, ["authorizationLocator"]) || !standingClosed(input.authorizationLocator, STANDING_LOCATOR_FIELDS)) return { state: "invalid", code: "malformed", errors: ["Standing break-glass input must be locator-only."] };
   try {
     const canonicalRoot = await realpath(repositoryRoot);
-    const gitStat = await lstat(join(canonicalRoot, ".git"));
-    if (!gitStat.isDirectory() && !gitStat.isFile()) return { state: "invalid", code: "binding_invalid", errors: ["Repository root is not a registered Git worktree."] };
+    const gitRoot = (await execFile("git", ["-C", canonicalRoot, "rev-parse", "--show-toplevel"])).stdout.trim();
+    if (await realpath(gitRoot) !== canonicalRoot) return { state: "invalid", code: "binding_invalid", errors: ["Repository root is not the canonical Git root."] };
     const shieldRoot = join(canonicalRoot, ".shield");
     const stable = async (path: string): Promise<{ bytes: string; value: unknown } | null> => {
-      const before = await lstat(path); if (!before.isFile()) return null;
-      const bytes = await readFile(path, "utf8");
-      const after = await lstat(path);
-      if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) return null;
-      return { bytes, value: JSON.parse(bytes) as unknown };
+      const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try { const before = await handle.stat(); if (!before.isFile()) return null; const bytes = await handle.readFile("utf8"); const after = await handle.stat(); if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) return null; return { bytes, value: JSON.parse(bytes) as unknown }; } finally { await handle.close(); }
     };
     const authorizationFile = await stable(join(shieldRoot, "standing-break-glass-authorization.json"));
     const registryFile = await stable(join(shieldRoot, "trusted-human-bindings.json"));
@@ -2720,6 +2721,7 @@ export async function bindStandingBreakGlassImplementationV1(repositoryRoot: str
     const loaded = { authorization, trustedBinding, authorizationEvidenceDigest: standingDigest({ authorizationFile: authorizationFile.bytes, registryFile: registryFile.bytes }) };
     if (authorization.trustedRegistryDigest !== standingDigest(registryFile.bytes)) return { state: "invalid", code: "binding_invalid", errors: ["Authorization does not bind the exact trusted registry bytes."] };
     if (loaded.authorizationEvidenceDigest !== (dispatchFile.value as unknown as StandingBreakGlassDispatchV1).authorizationEvidenceDigest) return { state: "invalid", code: "binding_invalid", errors: ["Dispatch does not bind immutable authorization evidence."] };
-    return bindStandingBreakGlassImplementationFromLoadedV1(input, { loadAuthorization: (locator) => locator.authorizationId === loaded.authorization.authorizationId && locator.authorizationDigest === loaded.authorization.authorizationDigest ? loaded : null, expectedDispatch: dispatchFile.value as unknown as StandingBreakGlassDispatchV1 });
+    const internalInput = { authorizationLocator: input.authorizationLocator, dispatch: dispatchFile.value as unknown as StandingBreakGlassDispatchV1 };
+    return bindStandingBreakGlassImplementationFromLoadedV1(internalInput, { loadAuthorization: (locator) => locator.authorizationId === loaded.authorization.authorizationId && locator.authorizationDigest === loaded.authorization.authorizationDigest ? loaded : null, expectedDispatch: dispatchFile.value as unknown as StandingBreakGlassDispatchV1 });
   } catch { return { state: "invalid", code: "binding_invalid", errors: ["Repository break-glass artifacts could not be loaded."] }; }
 }

@@ -98,12 +98,13 @@ test("standing break-glass binding is closed, deterministic, and read-only", asy
   assert.deepEqual(input, structuredClone(input));
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-standing-break-glass-"));
   await mkdir(join(repositoryRoot, ".shield"));
-  await mkdir(join(repositoryRoot, ".git"));
+  assert.equal(spawnSync("git", ["init", "-q"], { cwd: repositoryRoot, stdio: "ignore" }).status, 0);
   await writeFile(join(repositoryRoot, ".shield", "standing-break-glass-authorization.json"), authorizationBytes);
   await writeFile(join(repositoryRoot, ".shield", "trusted-human-bindings.json"), registryBytes);
   await writeFile(join(repositoryRoot, ".shield", "standing-break-glass-dispatch.json"), JSON.stringify(dispatch));
-  assert.equal((await bindStandingBreakGlassImplementationV1(repositoryRoot, input)).state, "valid");
-  assert.equal((await bindStandingBreakGlassImplementationV1(repositoryRoot, tampered)).state, "invalid");
+  const locatorOnly = { authorizationLocator: input.authorizationLocator };
+  assert.equal((await bindStandingBreakGlassImplementationV1(repositoryRoot, locatorOnly)).state, "valid");
+  assert.equal((await bindStandingBreakGlassImplementationV1(repositoryRoot, { authorizationLocator: input.authorizationLocator, dispatch: tampered.dispatch })).state, "invalid");
 });
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
