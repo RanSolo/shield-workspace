@@ -54,14 +54,17 @@ destructive effects, and material scope expansion.
 Instrument the issue-observation wrapper at the repository-owned boundary to
 record a closed, secret-free diagnostic with allowlisted stage enums
 (`direct_observation`, `wrapper_observation`, `consistency_observation`,
-`error_mapping`), call ordinal/order (`direct`, `wrapper`, `consistency`),
+`error_mapping`), call ordinal/order (`direct:1`, `wrapper:2`, `consistency:3`),
 adapter/tool (`github`, `gh_cli`), executable (`repository_adapter`,
 `gh_issue_view`), cwd (`approved_root`), timeout (`default`, `bounded`), and
 outcome (`success`, `network_failed`, `auth_failed`, `wrapper_failed`,
-`consistency_failed`, `wrapper_failure_after_direct_success`). Redact tokens, paths
+`consistency_failed`, `wrapper_failure_after_direct_success`). The only admitted
+transitions are `direct:1/success -> wrapper:2/success`,
+`direct:1/success -> wrapper:2/wrapper_failed -> error_mapping:3/wrapper_failure_after_direct_success`,
+and `direct:1/success -> wrapper:2/success -> consistency:3/success`.
+Every other stage/order/outcome combination is rejected closed. Redact tokens, paths
 outside the approved root, and raw errors; return a failure diagnostic only
-(never persist failure). Admitted sequences are direct observation; wrapper
-observation; or direct → wrapper → consistency when consistency is claimed.
+(never persist failure).
 Authenticated direct-success followed by wrapper failure remains explicitly
 `wrapper_failure_after_direct_success`.
 Preserve fail-closed behavior and zero effect on failure or replay.
