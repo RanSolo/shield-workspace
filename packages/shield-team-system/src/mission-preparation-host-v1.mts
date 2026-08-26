@@ -1,6 +1,4 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { execFile as execFileCallback } from "node:child_process";
-import { promisify } from "node:util";
 import { constants } from "node:fs";
 import { lstat, open, readFile, realpath } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
@@ -77,7 +75,6 @@ import {
   type ProfileAwareMissionEntryV1,
 } from "./profile-aware-mission-v1.mjs";
 
-const execFile = promisify(execFileCallback);
 
 export const MISSION_TRANSITION_PLAN_REVIEW_SCHEMA_VERSION = 1 as const;
 export const MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION = "mission.transition-plan-review.v1" as const;
@@ -2701,15 +2698,10 @@ export async function bindStandingBreakGlassImplementationV1(repositoryRoot: str
   if (typeof repositoryRoot !== "string" || !repositoryRoot.startsWith(sep)) return { state: "invalid", code: "malformed", errors: ["Repository root is invalid."] };
   if (!standingClosed(input, ["authorizationLocator"]) || !standingClosed(input.authorizationLocator, STANDING_LOCATOR_FIELDS)) return { state: "invalid", code: "malformed", errors: ["Standing break-glass input must be locator-only."] };
   try {
-    const canonicalRoot = await realpath(repositoryRoot);
-    const gitRoot = (await execFile("git", ["-C", canonicalRoot, "rev-parse", "--show-toplevel"])).stdout.trim();
-    if (await realpath(gitRoot) !== canonicalRoot) return { state: "invalid", code: "binding_invalid", errors: ["Repository root is not the canonical Git root."] };
+    const canonicalRoot = await canonicalRepositoryRoot(repositoryRoot);
+    if (canonicalRoot === null) return { state: "invalid", code: "binding_invalid", errors: ["Repository root is not canonical."] };
     const shieldRoot = join(canonicalRoot, ".shield");
-    if (await realpath(shieldRoot) !== shieldRoot) return { state: "invalid", code: "binding_invalid", errors: ["Break-glass storage parent is not stable."] };
-    const stable = async (path: string): Promise<{ bytes: string; value: unknown } | null> => {
-      const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-      try { const before = await handle.stat(); if (!before.isFile()) return null; const bytes = await handle.readFile("utf8"); const after = await handle.stat(); if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) return null; return { bytes, value: JSON.parse(bytes) as unknown }; } finally { await handle.close(); }
-    };
+    const stable = async (path: string): Promise<{ bytes: string; value: unknown } | null> => { const snapshot = await stableRegularTextFile(canonicalRoot, relative(canonicalRoot, path)); return snapshot === null ? null : { bytes: snapshot.bytes, value: JSON.parse(snapshot.bytes) as unknown }; };
     const authorizationFile = await stable(join(shieldRoot, "standing-break-glass-authorization.json"));
     const registryFile = await stable(join(shieldRoot, "trusted-human-bindings.json"));
     const dispatchFile = await stable(join(shieldRoot, "standing-break-glass-dispatch.json"));
