@@ -2,7 +2,7 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { constants } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { isProxy } from "node:util/types";
 
@@ -2841,6 +2841,13 @@ async function writeStandingOutputSetOnce(
     try { directoryStats = await lstat(finalDirectory); }
     catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? false : "conflict"; }
     if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) return "conflict";
+    let directoryEntries;
+    try { directoryEntries = await readdir(finalDirectory, { withFileTypes: true }); }
+    catch { return "conflict"; }
+    const expectedNames = new Set(expected.map(([path]) => relative(finalDirectory, path)));
+    if (directoryEntries.length !== expectedNames.size || directoryEntries.some((entry) => !expectedNames.has(entry.name) || !entry.isFile() || entry.isSymbolicLink())) {
+      return "conflict";
+    }
     for (const [path, bytes] of expected) {
       const snapshot = await stableRegularTextFile(finalDirectory, relative(finalDirectory, path));
       if (snapshot === null) return "conflict";
