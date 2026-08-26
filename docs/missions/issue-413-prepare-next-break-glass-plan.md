@@ -22,8 +22,10 @@ or canonical authority.
 
 Frozen sources are `.shield/standing-break-glass-authorization.json`,
 `.shield/trusted-human-bindings.json`, `.shield/standing-break-glass-dispatch.json`,
-its digest sidecar, the exact reviewed-plan artifact, and the stable Git
-HEAD/tree snapshot. The #411 v1 contracts apply. The signed anchor covers the
+its digest sidecar, the exact reviewed-plan artifact, the stable Git HEAD/tree
+snapshot, and the repository-owned May seat/runtime/executor profile. These
+are immutable inputs; dispatch, digest sidecar, and projection are
+create-once outputs. The #411 v1 contracts apply. The signed anchor covers the
 canonical dispatch tuple with `authorizationEvidenceDigest` set to null;
 evidence is the canonical authorization-file plus registry-file byte digest.
 May identity comes only from the repository-owned dispatch artifact.
@@ -35,9 +37,11 @@ all four required repository-owned artifact paths present and valid),
 implementation-dispatch result before legacy, #408, guided-review, or
 publication branches. Absent artifacts return the closed waiting result;
 malformed/stale/conflicting artifacts return closed blocked results. Only the
-mission ID, repository root, `--json`, and configured Fury model are permitted
-CLI inputs; no locator, authority, tuple, identity, path, or effect fields are
-caller-selectable. The terminal result cannot fall through.
+mission ID, repository root, and mutually exclusive `--json`/human output
+mode are the only permitted CLI inputs; Fury and May identities are derived
+from repository-owned inputs. No locator, authority, tuple, identity, path,
+effect, or model field is caller-selectable. The terminal result cannot fall
+through.
 
 Bind the dispatch to the exact mission, plan, repository, branch, HEAD,
 approved paths, effects, May identity, validation commands, exclusions, and
@@ -48,8 +52,11 @@ destructive effects, and material scope expansion.
 Instrument the issue-observation wrapper at the repository-owned boundary to
 record a closed, secret-free diagnostic with allowlisted stage enums
 (`direct_observation`, `wrapper_observation`, `consistency_observation`,
-`error_mapping`), call ordinal/order, adapter/tool identity, executable
-binding, cwd class, timeout class, and outcome enum. Redact tokens, paths
+`error_mapping`), call ordinal/order (`direct`, `wrapper`, `consistency`),
+adapter/tool (`github`, `gh_cli`), executable (`repository_adapter`,
+`gh_issue_view`), cwd (`approved_root`), timeout (`default`, `bounded`), and
+outcome (`success`, `network_failed`, `auth_failed`, `wrapper_failed`,
+`consistency_failed`, `wrapper_failure_after_direct_success`). Redact tokens, paths
 outside the approved root, and raw errors; return a failure diagnostic only
 (never persist failure). Admitted sequences are direct observation; wrapper
 observation; or direct → wrapper → consistency when consistency is claimed.
