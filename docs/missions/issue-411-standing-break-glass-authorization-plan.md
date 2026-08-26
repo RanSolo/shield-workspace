@@ -9,12 +9,26 @@
 
 ## Smallest bounded correction
 
-Add a repository-owned closed input/result that binds an explicit
-standing/manual human authorization to one bounded implementation dispatch.
-The binding must include the exact mission, plan identity, repository
-revision, approved relative paths, approved action/effect/capability classes,
-and exclusions. It must be authority-neutral and must never fabricate a
-signature, journal entry, dispatch receipt, or canonical authority.
+Add a repository-owned closed input/result that binds one repository-loaded,
+signature-verified Coulson authorization contract to one bounded
+implementation dispatch. The contract is versioned and includes the
+authorization ID and digest, human principal/binding/signing-key identity,
+decision, source kind, active validity/revocation state, and exact trusted
+registry digest. Callers may provide only an ID/digest locator; caller fields
+are never authoritative. The binding/result must include the exact mission,
+subject, repository, branch, plan ID and digest, base and HEAD, approved
+relative paths, approved action/effect/capability classes, May seat/model/
+runtime/tool-executor identities, dispatch and receipt identities, action and
+effect keys, validation-command IDs, and authorization-evidence digest. Derive
+a content-addressed identity from this complete tuple; identical input is
+deterministic, while any changed field fails stale or conflicting.
+
+Validation and projection are read-only for every outcome, including initial
+success: never append or rewrite canonical authority, mission journals,
+dispatch receipts, locks, or preparation receipts. Any optional result is a
+separate content-addressed artifact created atomically once. The adapter must
+never fabricate a signature, journal entry, dispatch receipt, or canonical
+authority.
 
 Reject missing, stale, conflicting, widened, malformed, or caller-only
 authorization. Identical replay must be deterministic and must preserve all
@@ -29,7 +43,6 @@ destructive effects, and material issue-scope expansion remain excluded.
 
 - `packages/shield-team-system/src/mission-cli.mts`
 - `packages/shield-team-system/src/mission-preparation-host-v1.mts`
-- `packages/shield-team-system/src/review-publication-executor-v1.mts`
 - `packages/shield-team-system/tests/supervised-cli.test.mjs`
 
 ## Required focused coverage
