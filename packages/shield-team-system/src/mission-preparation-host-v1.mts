@@ -2,7 +2,7 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { constants } from "node:fs";
-import { lstat, open, readFile, realpath } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { isProxy } from "node:util/types";
 
@@ -76,6 +76,7 @@ import {
   type ProfileAwareMissionBriefContentV1,
   type ProfileAwareMissionEntryV1,
 } from "./profile-aware-mission-v1.mjs";
+import { isStandingManualBreakGlassImplementationReadyV1 } from "./mission-intake-v1.mjs";
 
 const execFile = promisify(execFileCallback);
 
@@ -2728,4 +2729,317 @@ export async function bindStandingBreakGlassImplementationV1(repositoryRoot: str
     const internalInput = { authorizationLocator: input.authorizationLocator, dispatch: dispatchFile.value as unknown as StandingBreakGlassDispatchV1 };
     return bindStandingBreakGlassImplementationFromLoadedV1(internalInput, { loadAuthorization: (locator) => locator.authorizationId === loaded.authorization.authorizationId && locator.authorizationDigest === loaded.authorization.authorizationDigest ? loaded : null, expectedDispatch: dispatchFile.value as unknown as StandingBreakGlassDispatchV1 });
   } catch { return { state: "invalid", code: "binding_invalid", errors: ["Repository break-glass artifacts could not be loaded."] }; }
+}
+
+export type StandingBreakGlassPreparationResultV1 = Readonly<
+  | {
+    state: "implementation_dispatch_ready";
+    authority: "none";
+    profile: "standing_manual_break_glass.v1";
+    missionId: string;
+    dispatch: StandingBreakGlassDispatchV1;
+    bindingId: string;
+    artifacts: Readonly<{
+      dispatchPath: string;
+      dispatchDigestPath: string;
+      projectionPath: string;
+      projectionDigest: string;
+    }>;
+  }
+  | { state: "waiting"; reasonCode: "standing_break_glass_artifacts_missing"; missionId: string; errors: readonly string[] }
+  | { state: "blocked"; reasonCode: "standing_break_glass_invalid" | "standing_break_glass_conflict"; missionId: string; errors: readonly string[] }
+>;
+
+const STANDING_IMPLEMENTATION_PATHS = Object.freeze([
+  "packages/shield-team-system/src/mission-cli.mts",
+  "packages/shield-team-system/src/mission-preparation-host-v1.mts",
+  "packages/shield-team-system/src/mission-intake-v1.mts",
+  "packages/shield-team-system/tests/supervised-cli.test.mjs",
+]);
+const STANDING_PLAN_PATH = "docs/missions/issue-413-prepare-next-break-glass-plan.md";
+const STANDING_PLAN_ID = "plan:413";
+const STANDING_ACTION_IDS = Object.freeze(["implementation.apply", "implementation.validate"]);
+const STANDING_EFFECT_KEYS = Object.freeze(["implementation.commit", "implementation.validation"]);
+const STANDING_CAPABILITY_CLASSES = Object.freeze(["repository.write", "process.execute"]);
+const STANDING_VALIDATION_COMMAND_IDS = Object.freeze(["validation:issue-413:focused", "validation:issue-413:nx"]);
+const STANDING_MAY_PROFILE_PATH = ".codex/agents/may.toml";
+const STANDING_MAY_PROFILE_BY_MODEL = Object.freeze({
+  "gpt-5.6-luna": Object.freeze({
+    runtimeId: "runtime:codex-hosted-may-luna",
+    executorId: "executor:codex-hosted-workspace-tools",
+  }),
+});
+
+export async function standingBreakGlassSourcePresentV1(repositoryRoot: string): Promise<boolean> {
+  const canonicalRoot = await canonicalRepositoryRoot(repositoryRoot);
+  if (canonicalRoot === null) return false;
+  return (await standingFilePresent(canonicalRoot, ".shield/standing-break-glass-authorization.json")) ||
+    (await standingFilePresent(canonicalRoot, "docs/missions/issue-413-prepare-next-break-glass-plan.md")) ||
+    (await standingFilePresent(canonicalRoot, ".codex/agents/may.toml"));
+}
+
+async function standingFilePresent(repositoryRoot: string, relativePath: string): Promise<boolean> {
+  try {
+    await lstat(join(repositoryRoot, relativePath));
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+}
+
+function standingPreparationResult(
+  state: "waiting" | "blocked",
+  reasonCode: "standing_break_glass_artifacts_missing" | "standing_break_glass_invalid" | "standing_break_glass_conflict",
+  missionId: string,
+  ...errors: readonly string[]
+): StandingBreakGlassPreparationResultV1 {
+  return Object.freeze({ state, reasonCode, missionId, errors: Object.freeze(errors.length === 0 ? ["Standing break-glass preparation is unavailable."] : errors) } as StandingBreakGlassPreparationResultV1);
+}
+
+function standingBytesDigest(bytes: string): string {
+  return `sha256:${createHash("sha256").update(bytes, "utf8").digest("base64url")}`;
+}
+
+function standingMayProfile(bytes: string): Readonly<{ modelId: string; runtimeId: string; executorId: string }> | null {
+  const name = /^name\s*=\s*"may"\s*$/mu.test(bytes);
+  const model = /^model\s*=\s*"([^"]+)"\s*$/mu.exec(bytes)?.[1] ?? null;
+  if (!name || model === null) return null;
+  const frozen = STANDING_MAY_PROFILE_BY_MODEL[model as keyof typeof STANDING_MAY_PROFILE_BY_MODEL];
+  return frozen === undefined ? null : Object.freeze({ modelId: model, ...frozen });
+}
+
+function standingRepositoryId(origin: string): string | null {
+  const normalized = origin.trim().replace(/\.git$/u, "");
+  const match = /^(?:git@github\.com:|https:\/\/github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/u.exec(normalized);
+  return match?.[1] ?? null;
+}
+
+type StandingOutputSetV1 = Readonly<{
+  dispatchPath: string;
+  dispatchDigestPath: string;
+  projectionPath: string;
+}>;
+
+async function writeStandingOutputSetOnce(
+  parent: string,
+  setName: string,
+  files: Readonly<{ dispatch: string; dispatchDigest: string; projection: string }>,
+): Promise<StandingOutputSetV1 | "conflict"> {
+  const finalDirectory = join(parent, setName);
+  const output = {
+    dispatchPath: join(finalDirectory, "dispatch.json"),
+    dispatchDigestPath: join(finalDirectory, "dispatch.json.sha256"),
+    projectionPath: join(finalDirectory, "preparation.json"),
+  } as const;
+  const expected = [
+    [output.dispatchPath, files.dispatch],
+    [output.dispatchDigestPath, files.dispatchDigest],
+    [output.projectionPath, files.projection],
+  ] as const;
+  const existingSet = async (): Promise<true | false | "conflict"> => {
+    let directoryStats;
+    try { directoryStats = await lstat(finalDirectory); }
+    catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? false : "conflict"; }
+    if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) return "conflict";
+    let directoryEntries;
+    try { directoryEntries = await readdir(finalDirectory, { withFileTypes: true }); }
+    catch { return "conflict"; }
+    const expectedNames = new Set(expected.map(([path]) => relative(finalDirectory, path)));
+    if (directoryEntries.length !== expectedNames.size || directoryEntries.some((entry) => !expectedNames.has(entry.name) || !entry.isFile() || entry.isSymbolicLink())) {
+      return "conflict";
+    }
+    for (const [path, bytes] of expected) {
+      const snapshot = await stableRegularTextFile(finalDirectory, relative(finalDirectory, path));
+      if (snapshot === null) return "conflict";
+      if (snapshot.bytes !== bytes) return "conflict";
+    }
+    return true;
+  };
+  const current = await existingSet();
+  if (current === true) return output;
+  if (current === "conflict") return "conflict";
+
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  let stagingDirectory: string | null = null;
+  try {
+    stagingDirectory = await mkdtemp(join(parent, ".standing-break-glass-set-"));
+    for (const [path, bytes] of expected) {
+      const stagedPath = join(stagingDirectory, relative(finalDirectory, path));
+      const handle = await open(stagedPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try {
+        await handle.writeFile(bytes, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    }
+    const directoryHandle = await open(stagingDirectory, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0));
+    try { await directoryHandle.sync(); }
+    finally { await directoryHandle.close(); }
+    await rename(stagingDirectory, finalDirectory);
+    stagingDirectory = null;
+    return output;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      const raced = await existingSet();
+      if (raced === true) return output;
+    }
+    return "conflict";
+  } finally {
+    if (stagingDirectory !== null) await rm(stagingDirectory, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+export async function prepareStandingBreakGlassImplementationV1(input: unknown): Promise<StandingBreakGlassPreparationResultV1> {
+  if (!plain(input) || Reflect.ownKeys(input).length !== 2 || !Object.hasOwn(input, "repositoryRoot") || !Object.hasOwn(input, "projection") ||
+      typeof input.repositoryRoot !== "string" || !isStandingManualBreakGlassImplementationReadyV1(input.projection)) {
+    return standingPreparationResult("blocked", "standing_break_glass_invalid", "unknown", "Standing break-glass preparation input is not the exact implementation-ready projection.");
+  }
+  const repositoryRoot = await canonicalRepositoryRoot(input.repositoryRoot);
+  const projection = input.projection as Record<string, unknown>;
+  const missionId = typeof projection.missionId === "string" ? projection.missionId : "unknown";
+  if (repositoryRoot === null) return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Repository root is not canonical.");
+  const config = await readConfig(repositoryRoot);
+  if (config === null) return standingPreparationResult("waiting", "standing_break_glass_artifacts_missing", missionId, "Repository configuration is unavailable.");
+  let repositoryId: string;
+  let branch: string;
+  let headRevision: string;
+  let headTree: string;
+  let origin: string;
+  try {
+    origin = (await execFile("git", ["-C", repositoryRoot, "config", "--get", "remote.origin.url"], { shell: false })).stdout.trim();
+    repositoryId = standingRepositoryId(origin) ?? "";
+    branch = (await execFile("git", ["-C", repositoryRoot, "rev-parse", "--abbrev-ref", "HEAD"], { shell: false })).stdout.trim();
+    headRevision = (await execFile("git", ["-C", repositoryRoot, "rev-parse", "HEAD"], { shell: false })).stdout.trim();
+    headTree = (await execFile("git", ["-C", repositoryRoot, "rev-parse", "HEAD^{tree}"], { shell: false })).stdout.trim();
+    if (repositoryId.length === 0 || branch.length === 0 || branch === "HEAD" || !/^[0-9a-f]{40}$/u.test(headRevision) || !/^[0-9a-f]{40}$/u.test(headTree)) throw new Error("invalid repository snapshot");
+  } catch {
+    return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Repository identity could not be observed.");
+  }
+  const authorizationSnapshot = await stableRegularTextFile(repositoryRoot, ".shield/standing-break-glass-authorization.json");
+  if (authorizationSnapshot === null) {
+    return await standingFilePresent(repositoryRoot, ".shield/standing-break-glass-authorization.json")
+      ? standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Standing authorization artifact is not a stable regular file.")
+      : standingPreparationResult("waiting", "standing_break_glass_artifacts_missing", missionId, "Standing authorization artifact is unavailable.");
+  }
+  let authorizationValue: unknown;
+  try { authorizationValue = JSON.parse(authorizationSnapshot.bytes) as unknown; }
+  catch { return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Standing authorization artifact is malformed."); }
+  if (!standingClosed(authorizationValue, ["authorization"]) || !standingClosed(authorizationValue.authorization, STANDING_AUTH_FIELDS)) {
+    return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Standing authorization artifact is not closed.");
+  }
+  const authorization = authorizationValue.authorization as unknown as StandingBreakGlassAuthorizationV1;
+  const planSnapshot = await stableRegularTextFile(repositoryRoot, STANDING_PLAN_PATH);
+  const mayProfileSnapshot = await stableRegularTextFile(repositoryRoot, STANDING_MAY_PROFILE_PATH);
+  const mayProfile = mayProfileSnapshot === null ? null : standingMayProfile(mayProfileSnapshot.bytes);
+  if (planSnapshot === null || mayProfileSnapshot === null || mayProfile === null) {
+    const malformed = (planSnapshot === null && await standingFilePresent(repositoryRoot, STANDING_PLAN_PATH)) ||
+      (mayProfileSnapshot === null && await standingFilePresent(repositoryRoot, STANDING_MAY_PROFILE_PATH));
+    return malformed
+      ? standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Reviewed plan or repository-owned May profile is malformed or unstable.")
+      : standingPreparationResult("waiting", "standing_break_glass_artifacts_missing", missionId, "Reviewed plan or repository-owned May profile is unavailable.");
+  }
+  const brief = projection.brief;
+  if (!plain(brief) || config.repositoryId !== repositoryId || planSnapshot === null || mayProfileSnapshot === null) {
+    return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Standing dispatch does not match the exact live implementation tuple.");
+  }
+  const dispatchBase: StandingBreakGlassDispatchV1 = {
+    missionId,
+    subjectId: typeof brief.subjectId === "string" ? brief.subjectId : "",
+    repositoryId,
+    branch,
+    planId: STANDING_PLAN_ID,
+    planDigest: standingBytesDigest(planSnapshot.bytes),
+    baseRevision: headRevision,
+    headRevision,
+    approvedPaths: STANDING_IMPLEMENTATION_PATHS,
+    actionIds: STANDING_ACTION_IDS,
+    effectKeys: STANDING_EFFECT_KEYS,
+    capabilityClasses: STANDING_CAPABILITY_CLASSES,
+    maySeatId: "may",
+    mayModelId: mayProfile.modelId,
+    mayRuntimeId: mayProfile.runtimeId,
+    mayExecutorId: mayProfile.executorId,
+    dispatchId: "dispatch:413",
+    receiptId: "receipt:413",
+    validationCommandIds: STANDING_VALIDATION_COMMAND_IDS,
+    authorizationEvidenceDigest: "pending",
+    exclusions: STANDING_EXCLUSIONS,
+  };
+  const registrySnapshot = await stableRegularTextFile(repositoryRoot, ".shield/trusted-human-bindings.json");
+  if (registrySnapshot === null) {
+    return await standingFilePresent(repositoryRoot, ".shield/trusted-human-bindings.json")
+      ? standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Trusted human binding registry is not a stable regular file.")
+      : standingPreparationResult("waiting", "standing_break_glass_artifacts_missing", missionId, "Trusted human binding registry is unavailable.");
+  }
+  let registryValue: unknown;
+  try { registryValue = JSON.parse(registrySnapshot.bytes) as unknown; }
+  catch { return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Trusted human binding registry is malformed."); }
+  if (!standingClosed(registryValue, ["schemaVersion", "bindings"]) || !Array.isArray(registryValue.bindings)) {
+    return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Trusted human binding registry is not closed.");
+  }
+  if (authorization.trustedRegistryDigest !== standingDigest(registrySnapshot.bytes)) {
+    return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Authorization does not bind the exact trusted registry bytes.");
+  }
+  const matches = registryValue.bindings.filter((value: unknown) => plain(value) && value.bindingId === authorization.humanBindingId && value.humanPrincipalId === authorization.humanPrincipalId && value.seatId === "coulson");
+  if (matches.length !== 1) return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Repository requires exactly one trusted Coulson binding.");
+  const trustedBinding = matches[0] as unknown as TrustedHumanBinding;
+  const authorizationEvidenceDigest = standingDigest({ authorizationFile: authorizationSnapshot.bytes, registryFile: registrySnapshot.bytes });
+  const dispatch = { ...dispatchBase, authorizationEvidenceDigest };
+  if (authorization.dispatchAnchorDigest !== standingDigest({ ...dispatch, authorizationEvidenceDigest: null })) {
+    return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Authorization does not bind the exact derived dispatch tuple.");
+  }
+  const binding = bindStandingBreakGlassImplementationFromLoadedV1(
+    { authorizationLocator: { authorizationId: authorization.authorizationId, authorizationDigest: authorization.authorizationDigest }, dispatch },
+    { loadAuthorization: () => ({ authorization, trustedBinding, authorizationEvidenceDigest }), expectedDispatch: dispatch },
+  );
+  if (binding.state !== "valid") return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, ...binding.errors);
+  const finalPlanSnapshot = await stableRegularTextFile(repositoryRoot, STANDING_PLAN_PATH);
+  const finalMayProfileSnapshot = await stableRegularTextFile(repositoryRoot, STANDING_MAY_PROFILE_PATH);
+  const finalAuthorizationSnapshot = await stableRegularTextFile(repositoryRoot, ".shield/standing-break-glass-authorization.json");
+  const finalRegistrySnapshot = await stableRegularTextFile(repositoryRoot, ".shield/trusted-human-bindings.json");
+  let finalHead = "";
+  let finalBranch = "";
+  let finalTree = "";
+  try {
+    finalBranch = (await execFile("git", ["-C", repositoryRoot, "rev-parse", "--abbrev-ref", "HEAD"], { shell: false })).stdout.trim();
+    finalHead = (await execFile("git", ["-C", repositoryRoot, "rev-parse", "HEAD"], { shell: false })).stdout.trim();
+    finalTree = (await execFile("git", ["-C", repositoryRoot, "rev-parse", "HEAD^{tree}"], { shell: false })).stdout.trim();
+  } catch { /* closed below */ }
+  if (finalPlanSnapshot === null || finalMayProfileSnapshot === null || finalAuthorizationSnapshot === null || finalRegistrySnapshot === null ||
+      finalPlanSnapshot.identity !== planSnapshot.identity || finalMayProfileSnapshot.identity !== mayProfileSnapshot.identity ||
+      finalAuthorizationSnapshot.identity !== authorizationSnapshot.identity || finalRegistrySnapshot.identity !== registrySnapshot.identity ||
+      finalBranch !== branch || finalHead !== headRevision || finalTree !== headTree) {
+    return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Reviewed plan or repository-owned May profile changed during preparation.");
+  }
+  const body = {
+    schemaVersion: 1 as const,
+    contractVersion: "shield.standing-break-glass-preparation.v1" as const,
+    state: "implementation_dispatch_ready" as const,
+    authority: "none" as const,
+    profile: "standing_manual_break_glass.v1" as const,
+    missionId,
+    dispatch,
+    bindingId: binding.bindingId,
+  };
+  const projectionDigest = standingDigest(body);
+  const outputRoot = join(repositoryRoot, ".shield", "audit", "standing-break-glass", "sets");
+  const dispatchBytes = canonicalJson(dispatch);
+  const outputSet = await writeStandingOutputSetOnce(outputRoot, projectionDigest.slice("sha256:".length), {
+    dispatch: dispatchBytes,
+    dispatchDigest: canonicalJson(standingBytesDigest(dispatchBytes)),
+    projection: canonicalJson({ ...body, projectionDigest }),
+  });
+  if (outputSet === "conflict") {
+    return standingPreparationResult("blocked", "standing_break_glass_conflict", missionId, "A standing break-glass output set differs from its deterministic derivation.");
+  }
+  return Object.freeze({
+    state: "implementation_dispatch_ready" as const,
+    authority: "none" as const,
+    profile: "standing_manual_break_glass.v1" as const,
+    missionId,
+    dispatch,
+    bindingId: binding.bindingId,
+    artifacts: Object.freeze({ ...outputSet, projectionDigest }),
+  });
 }

@@ -64,6 +64,8 @@ import {
 import {
   compileIssueIntakeV1,
   computeIssueIntakeMissionIdV1,
+  isStandingManualBreakGlassImplementationReadyV1,
+  validateIssueObservationDiagnosticSequenceV1,
   type IssueIntakeCompiledMissionV1,
 } from "./mission-intake-v1.mjs";
 import { getMissionProfileV1, type MissionProfileId } from "./mission-profile-v1.mjs";
@@ -88,6 +90,13 @@ type GitHubIssueObservationV1 = {
   acceptanceCriteria: { items: readonly string[]; digest: string };
 };
 type GitHubIssueObserverV1 = (input: string, options?: { cwd?: string }) =>
+  | { state: "observed"; observation: GitHubIssueObservationV1 }
+  | { state: "blocked"; reason: string };
+type GitHubIssueObservationWrapperV1 = (
+  input: string,
+  observation: GitHubIssueObservationV1,
+  options?: { cwd?: string },
+) =>
   | { state: "observed"; observation: GitHubIssueObservationV1 }
   | { state: "blocked"; reason: string };
 
@@ -147,6 +156,8 @@ import {
 } from "./authorize-wheels-up-executor-v1.mjs";
 import {
   materializeReviewedMissionTransitionV1,
+  prepareStandingBreakGlassImplementationV1,
+  standingBreakGlassSourcePresentV1,
   prepareMissionTransitionSessionV1,
   resolvePreparedMissionTransitionV1,
   resolveSeatDispatchIdentityByReceiptIdV1,
@@ -2115,6 +2126,7 @@ type PrepareNextDependenciesV1 = Readonly<{
   prepareSession?: typeof prepareMissionTransitionSessionV1;
   continueLegacy?: typeof continueLegacyReviewedTransitionV1;
   issueObserver?: GitHubIssueObserverV1;
+  issueObservationWrapper?: GitHubIssueObservationWrapperV1;
   preflightProtectedGraphAbsence?: typeof preflightLegacyProtectedGraphAbsenceV1;
   beforeProtectedGraphFinalRevalidation?: () => void | Promise<void>;
   beforeNativeIssueIntakeReadback?: () => void | Promise<void>;
@@ -2143,6 +2155,10 @@ type NativeIssueIntakeClassificationV1 =
   }>
   | Readonly<{ state: "valid_non_applicable" }>
   | Readonly<{
+    state: "authorized_implementation_ready";
+    snapshot: NativeIssueIntakeJournalSnapshotV1;
+  }>
+  | Readonly<{
     state: "planning_ready";
     packet: NativeIssueIntakePlanningPacketV1;
     snapshot: NativeIssueIntakePlanningSnapshotV1;
@@ -2153,6 +2169,11 @@ type NativeIssueIntakeClassificationV1 =
     errors: readonly string[];
     missionId: string;
     repositoryRoot: string;
+    diagnostic?: Readonly<{
+      schemaVersion: 1;
+      contractVersion: "mission.issue-observation-diagnostic.v1";
+      events: readonly unknown[];
+    }>;
   }>;
 
 type NativeIssueIntakePlanningPacketV1 = Readonly<{
@@ -2395,7 +2416,35 @@ function nativeIssueIntakePlanningInvalidBlocked(
     repositoryRoot: classification.repositoryRoot,
     code: classification.code,
     errors: [...classification.errors],
+    ...(classification.diagnostic === undefined ? {} : { diagnostic: classification.diagnostic }),
   });
+}
+
+function issueObservationDiagnosticEvent(
+  stage: "direct_observation" | "wrapper_observation" | "consistency_observation" | "error_mapping",
+  callOrder: "direct:1" | "wrapper:2" | "consistency:3" | "error_mapping:2" | "error_mapping:3" | "error_mapping:4",
+  outcome: "success" | "network_failed" | "auth_failed" | "wrapper_failed" | "consistency_failed" | "wrapper_failure_after_direct_success",
+  adapter: "github" | "gh_cli" = "github",
+  executable: "repository_adapter" | "gh_issue_view" = "repository_adapter",
+): Readonly<Record<string, string>> {
+  return { stage, callOrder, adapter, executable, cwd: "approved_root", timeout: "bounded", outcome };
+}
+
+function issueObservationDirectOutcome(reason: unknown): "network_failed" | "auth_failed" | null {
+  if (reason === "network_failed" || reason === "timeout" || reason === "rate_limited") return "network_failed";
+  if (reason === "auth_failed" || reason === "authentication_failed" || reason === "authorization_failed") return "auth_failed";
+  return null;
+}
+
+function closedIssueObservationDiagnostic(events: readonly Record<string, string>[]): Readonly<{
+  schemaVersion: 1;
+  contractVersion: "mission.issue-observation-diagnostic.v1";
+  events: readonly unknown[];
+}> | undefined {
+  const checked = validateIssueObservationDiagnosticSequenceV1({ schemaVersion: 1, contractVersion: "mission.issue-observation-diagnostic.v1", events });
+  return checked.state === "valid"
+    ? Object.freeze({ schemaVersion: 1 as const, contractVersion: "mission.issue-observation-diagnostic.v1" as const, events: checked.events })
+    : undefined;
 }
 
 function nativeIssueIntakePlanningStable(
@@ -2555,6 +2604,7 @@ async function classifyNativeIssueIntakePlanningJournal(
   missionId: string,
   parser: NativeIssueIntakeJournalParserV1,
   issueObserver: GitHubIssueObserverV1,
+  issueObservationWrapper: GitHubIssueObservationWrapperV1,
   afterHandleRead?: () => void | Promise<void>,
 ): Promise<NativeIssueIntakeClassificationV1> {
   let pathConfiguration: ShieldConfig;
@@ -2633,13 +2683,36 @@ async function classifyNativeIssueIntakePlanningJournal(
   const issueRef = `github:${sourceBinding.repositoryNameWithOwner}/issues/${sourceBinding.issueNumber}`;
   const observed = await issueObserver(issueRef, { cwd: root });
   if (observed.state !== "observed") {
-    return { state: "invalid", code: "issue_observation_blocked", errors: [observed.reason], missionId, repositoryRoot: repository.canonicalRoot };
+    const directOutcome = issueObservationDirectOutcome(observed.reason);
+    const diagnostic = directOutcome === null ? undefined : closedIssueObservationDiagnostic([
+      issueObservationDiagnosticEvent("direct_observation", "direct:1", directOutcome),
+      issueObservationDiagnosticEvent("error_mapping", "error_mapping:2", directOutcome),
+    ]);
+    const safeReason = createIssueObservationDiagnostic("consistency", observed.reason).reason;
+    return { state: "invalid", code: "issue_observation_blocked", errors: [safeReason], ...(diagnostic === undefined ? {} : { diagnostic }), missionId, repositoryRoot: repository.canonicalRoot };
   }
-  if (!issueObservationMatchesNativeIssueIntakeBinding(observed.observation, sourceBinding)) {
+  const wrapped = await issueObservationWrapper(issueRef, observed.observation, { cwd: root });
+  if (wrapped.state !== "observed") {
+    const diagnostic = closedIssueObservationDiagnostic([
+      issueObservationDiagnosticEvent("direct_observation", "direct:1", "success"),
+      issueObservationDiagnosticEvent("wrapper_observation", "wrapper:2", "wrapper_failed", "gh_cli", "gh_issue_view"),
+      issueObservationDiagnosticEvent("error_mapping", "error_mapping:3", "wrapper_failure_after_direct_success", "gh_cli", "gh_issue_view"),
+    ]);
+    const safeReason = createIssueObservationDiagnostic("consistency", wrapped.reason).reason;
+    return { state: "invalid", code: "issue_observation_blocked", errors: [safeReason], ...(diagnostic === undefined ? {} : { diagnostic }), missionId, repositoryRoot: repository.canonicalRoot };
+  }
+  if (!issueObservationMatchesNativeIssueIntakeBinding(wrapped.observation, sourceBinding)) {
+    const diagnostic = closedIssueObservationDiagnostic([
+      issueObservationDiagnosticEvent("direct_observation", "direct:1", "success"),
+      issueObservationDiagnosticEvent("wrapper_observation", "wrapper:2", "success", "gh_cli", "gh_issue_view"),
+      issueObservationDiagnosticEvent("consistency_observation", "consistency:3", "consistency_failed"),
+      issueObservationDiagnosticEvent("error_mapping", "error_mapping:4", "consistency_failed"),
+    ]);
     return {
       state: "invalid",
       code: "issue_observation_drifted",
       errors: ["Bound GitHub issue identity, revision, updated time, or acceptance-criteria digest changed."],
+      ...(diagnostic === undefined ? {} : { diagnostic }),
       missionId,
       repositoryRoot: repository.canonicalRoot,
     };
@@ -2690,7 +2763,7 @@ async function classifyNativeIssueIntakePlanningJournal(
     issueRevisionId: sourceBinding.issueRevisionId,
     objective: journal.value.journal.projection.brief.objective,
     riskFlags: journal.value.journal.projection.brief.riskFlags,
-    acceptanceCriteria: observed.observation.acceptanceCriteria.items,
+    acceptanceCriteria: wrapped.observation.acceptanceCriteria.items,
     criteriaDigest: sourceBinding.criteriaDigest,
     instruction: "Freeze the smallest acceptance-driven implementation plan against this exact packet. The subsequent Fury and Wheels Up transition rail is unresolved; do not infer implementation scope, authority, runtime identity, or publication effects." as const,
   });
@@ -2732,6 +2805,11 @@ async function classifyNativeIssueIntakeJournal(
     return { state: "invalid", code: snapshot.code, errors: snapshot.errors, missionId, repositoryRoot };
   }
   if (snapshot.value.journal.kind !== "profile-aware" || !isFreshNativeIssueIntakeJournal(snapshot.value.journal)) {
+    if (snapshot.value.journal.kind === "profile-aware" && isAuthorizedNativeIssueIntakeJournal(snapshot.value.journal) &&
+        isStandingManualBreakGlassImplementationReadyV1(snapshot.value.journal.projection) &&
+        await standingBreakGlassSourcePresentV1(root)) {
+      return { state: "authorized_implementation_ready", snapshot: snapshot.value };
+    }
     return { state: "valid_non_applicable" };
   }
   return {
@@ -2857,6 +2935,20 @@ function outputPreparationBlocked(
   else process.stderr.write(`Preparation blocked — ${result.code ?? result.reasonCode ?? result.state}: ${(result.errors ?? []).join(" ")}\n`);
 }
 
+function standingPreparationHuman(result: Extract<Awaited<ReturnType<typeof prepareStandingBreakGlassImplementationV1>>, { state: "implementation_dispatch_ready" }>): string {
+  return [
+    `state: ${result.state}`,
+    `authority: ${result.authority}`,
+    `profile: ${result.profile}`,
+    `missionId: ${result.missionId}`,
+    `bindingId: ${result.bindingId}`,
+    `dispatchId: ${result.dispatch.dispatchId}`,
+    `receiptId: ${result.dispatch.receiptId}`,
+    `projectionPath: ${result.artifacts.projectionPath}`,
+    "No journal, receipt, signature, publication, merge, deployment, release, or final-acceptance effect was performed.",
+  ].join("\n");
+}
+
 async function prepareNext(args: string[], behavior: Readonly<{
   suppressPublicationSuccessOutput?: boolean;
   finalPublicationDecisionOutput?: boolean;
@@ -2874,6 +2966,22 @@ async function prepareNext(args: string[], behavior: Readonly<{
     nativeParser,
     dependencies.afterNativeIssueIntakeJournalHandleRead,
   );
+  if (native.state === "authorized_implementation_ready") {
+    const callerOptions = [...options.values.keys()].filter((name) => name !== "--root" && name !== "--mission-id");
+    if (callerOptions.length > 0 || options.flags.has("--passcode-stdin")) {
+      throw new MissionCliError("Standing break-glass prepare-next accepts only --mission-id, --root, and --json or --human.", 1);
+    }
+    const prepared = await prepareStandingBreakGlassImplementationV1({
+      repositoryRoot: root,
+      projection: native.snapshot.journal.projection,
+    });
+    if (prepared.state === "implementation_dispatch_ready") {
+      output(prepared, options.flags.has("--json"), standingPreparationHuman(prepared));
+      return 0;
+    }
+    outputPreparationBlocked(prepared, options.flags.has("--json"));
+    return 1;
+  }
   if (native.state === "fresh_eligible") {
     await dependencies.beforeNativeIssueIntakeReadback?.();
     let fresh: NativeIssueIntakeJournalSnapshotV1 | null = null;
@@ -2922,11 +3030,16 @@ async function prepareNext(args: string[], behavior: Readonly<{
       return 1;
     }
     const issueObserver = dependencies.issueObserver ?? observeGitHubIssueV1;
+    const issueObservationWrapper = dependencies.issueObservationWrapper ?? ((
+      _issueRef: string,
+      observation: GitHubIssueObservationV1,
+    ) => ({ state: "observed" as const, observation }));
     const planning = await classifyNativeIssueIntakePlanningJournal(
       root,
       missionId,
       nativeParser,
       issueObserver,
+      issueObservationWrapper,
       dependencies.afterNativeIssueIntakeJournalHandleRead,
     );
     if (planning.state === "invalid") {
@@ -2940,6 +3053,7 @@ async function prepareNext(args: string[], behavior: Readonly<{
         missionId,
         nativeParser,
         issueObserver,
+        issueObservationWrapper,
         dependencies.afterNativeIssueIntakeJournalHandleRead,
       );
       if (freshPlanning.state === "invalid") {
@@ -3946,6 +4060,7 @@ export async function runMissionCli(
   args: string[],
   dependencies: Readonly<{
     issueObserver?: GitHubIssueObserverV1;
+    issueObservationWrapper?: GitHubIssueObservationWrapperV1;
     copilotFuryPlanDispatch?: CopilotFuryPlanDispatchDependenciesV1;
     copilotFuryReviewedTransition?: CopilotFuryReviewedTransitionHostDependenciesV1;
     prepareReviewedMissionTransition?: typeof prepareReviewedMissionTransitionV1;
@@ -3977,6 +4092,7 @@ export async function runMissionCli(
       ...(dependencies.prepareSession === undefined ? {} : { prepareSession: dependencies.prepareSession }),
       ...(dependencies.continueLegacyReviewedTransition === undefined ? {} : { continueLegacy: dependencies.continueLegacyReviewedTransition }),
       ...(dependencies.issueObserver === undefined ? {} : { issueObserver: dependencies.issueObserver }),
+      ...(dependencies.issueObservationWrapper === undefined ? {} : { issueObservationWrapper: dependencies.issueObservationWrapper }),
       ...(dependencies.preflightProtectedGraphAbsence === undefined ? {} : { preflightProtectedGraphAbsence: dependencies.preflightProtectedGraphAbsence }),
       ...(dependencies.beforeProtectedGraphFinalRevalidation === undefined ? {} : { beforeProtectedGraphFinalRevalidation: dependencies.beforeProtectedGraphFinalRevalidation }),
       ...(dependencies.beforeNativeIssueIntakeReadback === undefined ? {} : { beforeNativeIssueIntakeReadback: dependencies.beforeNativeIssueIntakeReadback }),
