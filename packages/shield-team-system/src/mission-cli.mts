@@ -120,6 +120,7 @@ const ISSUE_OBSERVATION_DIAGNOSTIC_REASONS = [
   "repository_identity_mismatch",
   "timeout",
   "host_rejected",
+  "wrapper_failed",
   "unknown",
 ] as const;
 type IssueObservationDiagnosticReason = typeof ISSUE_OBSERVATION_DIAGNOSTIC_REASONS[number];
@@ -2695,8 +2696,8 @@ async function classifyNativeIssueIntakePlanningJournal(
   if (wrapped.state !== "observed") {
     const diagnostic = closedIssueObservationDiagnostic([
       issueObservationDiagnosticEvent("direct_observation", "direct:1", "success"),
-      issueObservationDiagnosticEvent("wrapper_observation", "wrapper:2", "wrapper_failed", "gh_cli", "gh_issue_view"),
-      issueObservationDiagnosticEvent("error_mapping", "error_mapping:3", "wrapper_failure_after_direct_success", "gh_cli", "gh_issue_view"),
+      issueObservationDiagnosticEvent("wrapper_observation", "wrapper:2", "wrapper_failed"),
+      issueObservationDiagnosticEvent("error_mapping", "error_mapping:3", "wrapper_failure_after_direct_success"),
     ]);
     const safeReason = createIssueObservationDiagnostic("consistency", wrapped.reason).reason;
     return { state: "invalid", code: "issue_observation_blocked", errors: [safeReason], ...(diagnostic === undefined ? {} : { diagnostic }), missionId, repositoryRoot: repository.canonicalRoot };
