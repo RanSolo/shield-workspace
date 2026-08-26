@@ -4,12 +4,12 @@
   "missionId": "advisory:issue-407-observation-stage-diagnostic",
   "subjectId": "github:RanSolo/shield-workspace/issue/407",
   "repositoryId": "RanSolo/shield-workspace",
-  "planningBaseRevision": "07fa4510f9cd86b266f351783a78378612fdc7b8",
-  "parentPlanCommit": "07fa4510f9cd86b266f351783a78378612fdc7b8",
+  "planningBaseRevision": "a2f63992b29226e406c8db9d1e339123b6d0fb82",
+  "parentPlanCommit": "a2f63992b29226e406c8db9d1e339123b6d0fb82",
   "parentPlanPath": "docs/missions/issue-407-observation-stage-diagnostic-plan.md",
-  "parentPlanRawSha256": "6928b5fc8ffbd4e36b03be5ccecc431e9e6756a1bb3523377db830aa176bc0c9",
+  "parentPlanRawSha256": "ea9ad6fb895a014848e2b872fc88491fbd2e39d37a2b95fda1a10f5d9465b133",
   "transitionKind": "fresh_authorize_wheels_up",
-  "boundedOutcome": "Review the smallest authority-none additive closed diagnostic that identifies initial versus consistency issue-observation failure stage while preserving admission semantics, safe-field redaction, zero journal mutation, and exact replay behavior; no canonical mission or authorization is created.",
+  "boundedOutcome": "Review the smallest authority-none additive closed diagnostic that identifies initial versus consistency issue-observation failure stage with one exact safe representation and allowlist, preserves admission semantics, zero journal mutation, replay behavior, and separates May implementation identity from Fury review identity; no canonical mission or authorization is created.",
   "approvedRelativePaths": [
     "docs/missions/issue-407-observation-stage-diagnostic-plan.md",
     "docs/missions/issue-407-observation-stage-diagnostic-transition-plan.json",
@@ -41,8 +41,8 @@
     "validation:issue-407:team-system-build",
     "validation:issue-407:team-system-test"
   ],
-  "modelId": "gpt-5.6-sol",
-  "reasoningRuntimeId": "runtime:codex-hosted-fury-sol",
+  "modelId": "gpt-5.6-luna",
+  "reasoningRuntimeId": "runtime:codex-hosted-may-luna",
   "toolExecutorId": "executor:codex-hosted-workspace-tools",
   "exclusions": [
     "review.comment.publish",
@@ -53,6 +53,6 @@
     "release",
     "final_acceptance"
   ],
-  "id": "transition-plan:L_NNIhdLRLcbG_bbuE24YZVoVMXWNEk-v48tIR2Mwjk",
-  "digest": "sha256:L_NNIhdLRLcbG_bbuE24YZVoVMXWNEk-v48tIR2Mwjk"
+  "id": "transition-plan:PGnk-YUIGxnCeYNpN7cc5oJ9jo7d1MG5-17o4_HvvOc",
+  "digest": "sha256:PGnk-YUIGxnCeYNpN7cc5oJ9jo7d1MG5-17o4_HvvOc"
 }
