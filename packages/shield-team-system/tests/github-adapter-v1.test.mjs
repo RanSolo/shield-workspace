@@ -13,7 +13,7 @@ import {
   observeFeatureIntegrationPullRequestProofV2,
   observeFeatureIntegrationTargetProofV2,
 } from "../public/github.mjs";
-import { projectGitHubIssueObserverEnvironmentV1 } from "../github/adapter-v1.mjs";
+import { observeGitHubIssueWrapperV1, projectGitHubIssueObserverEnvironmentV1 } from "../github/adapter-v1.mjs";
 import { publicationJournalFixture } from "./fixtures/review-publication-journal.mjs";
 import { resolveJournaledPublicationRequest } from "../github/publication-gate.mjs";
 import {
@@ -540,6 +540,25 @@ test("GitHub issue observer uses one exact authority-none GraphQL read and stabl
   ]);
   assert.match(result.observation.issueRevisionId, /^sha256:[A-Za-z0-9_-]{43}$/u);
   assert.match(result.observation.acceptanceCriteria.digest, /^sha256:[0-9a-f]{64}$/u);
+});
+
+test("GitHub issue observer wrapper preserves the exact direct observation without a second command", () => {
+  const run = issueRunner(JSON.stringify(issueResponse()));
+  const direct = observeGitHubIssueV1("github:RanSolo/shield-workspace/issues/341", {
+    ...safeObserverOptions,
+    run,
+  });
+  assert.equal(direct.state, "observed");
+  const wrapped = observeGitHubIssueWrapperV1("github:RanSolo/shield-workspace/issues/341", direct.observation, { cwd: "/workspace" });
+  assert.equal(wrapped.state, "observed");
+  assert.strictEqual(wrapped.observation, direct.observation);
+  assert.equal(run.calls.length, 1);
+  assert.deepEqual(observeGitHubIssueWrapperV1("github:RanSolo/shield-workspace/issues/341", { ...direct.observation, body: null }, { cwd: "/workspace" }), {
+    state: "blocked", reason: "wrapper_failed",
+  });
+  assert.deepEqual(observeGitHubIssueWrapperV1("github:RanSolo/shield-workspace/issues/342", direct.observation, { cwd: "/workspace" }), {
+    state: "blocked", reason: "wrapper_failed",
+  });
 });
 
 test("GitHub issue observer rejects malformed bytes and JSON before identity or criteria handling", () => {

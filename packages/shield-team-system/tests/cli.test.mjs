@@ -13,7 +13,7 @@ const workspaceRoot = resolve(packageRoot, "../..");
 const cli = join(packageRoot, "dist", "cli.mjs");
 const { migrateConfigFile } = await import("../dist/cli.mjs");
 const { createShieldConfig, formatShieldConfig } = await import("../dist/config.mjs");
-const { missionUsage, validateAuthorizeDaisyCoordinationInput } = await import("../dist/mission-cli.mjs");
+const { missionUsage, runMissionCli, validateAuthorizeDaisyCoordinationInput } = await import("../dist/mission-cli.mjs");
 const { computeEd25519SigningKeyRef } = await import("../dist/mission-v2.mjs");
 const { canonicalJson } = await import("../dist/mission-v2.mjs");
 const { createProfileAwareGovernanceDecisionEntryV1, createProfileAwareMissionBrief, MISSION_130_JOURNAL_DIGEST, replayProfileAwareMissionJournal } = await import("../dist/profile-aware-mission-v1.mjs");
@@ -28,6 +28,22 @@ const initArgs = [
 
 function run(args, cwd, env = {}, input) {
   return spawnSync(process.execPath, [cli, ...args], { cwd, encoding: "utf8", env: { ...process.env, ...env }, input });
+}
+
+async function runMissionCliCaptured(args, dependencies) {
+  const stdout = [];
+  const stderr = [];
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  process.stdout.write = (chunk) => { stdout.push(String(chunk)); return true; };
+  process.stderr.write = (chunk) => { stderr.push(String(chunk)); return true; };
+  try {
+    const status = await runMissionCli(args, dependencies);
+    return { status, stdout: stdout.join(""), stderr: stderr.join("") };
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+  }
 }
 
 test("authorize-daisy-coordination input is closed, immutable, and fixes caller-selectable fields", () => {
@@ -1950,4 +1966,164 @@ test("profile-aware issue begin fails closed on local configuration drift and ho
   assert.equal(hostResult.status, 1, hostResult.stderr);
   assert.match(hostResult.stderr, /issue_drifted/u);
   await assert.rejects(readdir(join(host.root, ".shield", "journals")), { code: "ENOENT" });
+});
+
+test("native prepare-next preserves the complete identity-wrapper diagnostic tuple and wrapper_failed reason", async () => {
+  const current = await issueCliFixture();
+  const begin = run([
+    "mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--root", current.root, "--json",
+  ], current.root, { PATH: current.fakePath });
+  assert.equal(begin.status, 0, begin.stderr);
+  const created = JSON.parse(begin.stdout);
+  const journalPath = profileJournalPath(current.root, created.projection.missionId);
+  const journalBytes = await readFile(journalPath, "utf8");
+  const entries = journalBytes.trimEnd().split("\n").map(JSON.parse);
+  const replay = replayProfileAwareMissionJournal(entries);
+  assert.equal(replay.state, "valid");
+  const requirement = replay.value.requirements.find(({ requiredRoleId, evidenceKind }) => requiredRoleId === "coulson" && evidenceKind === "mission_authorization");
+  const evidencePayload = {
+    schemaVersion: 1,
+    evidenceId: `evidence:${created.projection.missionId}:1`,
+    requirementId: requirement.requirementId,
+    missionId: created.projection.missionId,
+    revisionId: replay.value.brief.revisionId,
+    seatId: "coulson",
+    evidenceKind: "mission_authorization",
+    decision: "approved",
+    humanPrincipalId: current.coulson.binding.humanPrincipalId,
+    bindingId: current.coulson.binding.bindingId,
+    signingKeyRef: current.coulson.binding.signingKeyRef,
+    sourceRef: `test:${created.projection.missionId}`,
+    timestamp: { value: "2026-08-22T12:00:00Z", provenance: "hostTrusted" },
+    journalSequence: 1,
+  };
+  const authorization = createProfileAwareGovernanceDecisionEntryV1({
+    projection: replay.value,
+    trustedBindings: [current.coulson.binding],
+    evidence: {
+      payload: evidencePayload,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(evidencePayload)), current.coulson.privateKey).toString("base64"),
+    },
+  });
+  await writeFile(journalPath, `${journalBytes}${canonicalJson(authorization)}\n`);
+  const binding = entries[0].payload.issueIntakeSourceBinding;
+  const directObservation = {
+    hostRepositoryId: binding.hostRepositoryId,
+    repositoryNameWithOwner: binding.repositoryNameWithOwner,
+    hostIssueId: binding.hostIssueId,
+    issueNumber: binding.issueNumber,
+    issueUrl: binding.issueUrl,
+    issueRevisionId: binding.issueRevisionId,
+    updatedAt: binding.updatedAt,
+    acceptanceCriteria: { items: ["preserve the issue identity", "remain authority-neutral"], digest: binding.criteriaDigest },
+  };
+  const calls = [];
+  const result = await runMissionCliCaptured(
+    ["mission", "prepare-next", "--mission-id", created.projection.missionId, "--root", current.root, "--json"],
+    {
+      prepareSession: async () => { calls.push("prepareSession"); return { state: "blocked", missionId: created.projection.missionId, reasonCode: "protected_evidence_mismatch", errors: ["graph missing"] }; },
+      preflightProtectedGraphAbsence: async () => { calls.push("preflight"); return { state: "absent" }; },
+      issueObserver: async () => { calls.push("direct"); return { state: "observed", observation: directObservation }; },
+      issueObservationWrapper: async () => { calls.push("wrapper"); return { state: "blocked", reason: "wrapper_failed" }; },
+      continueLegacyReviewedTransition: async () => { calls.push("legacy"); throw new Error("legacy must not run"); },
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.deepEqual(calls, ["prepareSession", "preflight", "direct", "wrapper"]);
+  const blocked = JSON.parse(result.stdout);
+  assert.equal(blocked.code, "issue_observation_blocked");
+  assert.deepEqual(blocked.errors, ["wrapper_failed"]);
+  assert.deepEqual(blocked.diagnostic.events, [
+    { stage: "direct_observation", callOrder: "direct:1", adapter: "github", executable: "repository_adapter", cwd: "approved_root", timeout: "bounded", outcome: "success" },
+    { stage: "wrapper_observation", callOrder: "wrapper:2", adapter: "github", executable: "repository_adapter", cwd: "approved_root", timeout: "bounded", outcome: "wrapper_failed" },
+    { stage: "error_mapping", callOrder: "error_mapping:3", adapter: "github", executable: "repository_adapter", cwd: "approved_root", timeout: "bounded", outcome: "wrapper_failure_after_direct_success" },
+  ]);
+  assert.equal(await readFile(journalPath, "utf8"), `${journalBytes}${canonicalJson(authorization)}\n`);
+});
+
+test("native prepare-next preserves the complete consistency-mismatch diagnostic tuple", async () => {
+  const current = await issueCliFixture();
+  const begin = run([
+    "mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--root", current.root, "--json",
+  ], current.root, { PATH: current.fakePath });
+  assert.equal(begin.status, 0, begin.stderr);
+  const created = JSON.parse(begin.stdout);
+  const journalPath = profileJournalPath(current.root, created.projection.missionId);
+  const journalBytes = await readFile(journalPath, "utf8");
+  const entries = journalBytes.trimEnd().split("\n").map(JSON.parse);
+  const replay = replayProfileAwareMissionJournal(entries);
+  assert.equal(replay.state, "valid");
+  const requirement = replay.value.requirements.find(({ requiredRoleId, evidenceKind }) => requiredRoleId === "coulson" && evidenceKind === "mission_authorization");
+  const evidencePayload = {
+    schemaVersion: 1,
+    evidenceId: `evidence:${created.projection.missionId}:1`,
+    requirementId: requirement.requirementId,
+    missionId: created.projection.missionId,
+    revisionId: replay.value.brief.revisionId,
+    seatId: "coulson",
+    evidenceKind: "mission_authorization",
+    decision: "approved",
+    humanPrincipalId: current.coulson.binding.humanPrincipalId,
+    bindingId: current.coulson.binding.bindingId,
+    signingKeyRef: current.coulson.binding.signingKeyRef,
+    sourceRef: `test:${created.projection.missionId}`,
+    timestamp: { value: "2026-08-22T12:00:00Z", provenance: "hostTrusted" },
+    journalSequence: 1,
+  };
+  const authorization = createProfileAwareGovernanceDecisionEntryV1({
+    projection: replay.value,
+    trustedBindings: [current.coulson.binding],
+    evidence: {
+      payload: evidencePayload,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(evidencePayload)), current.coulson.privateKey).toString("base64"),
+    },
+  });
+  await writeFile(journalPath, `${journalBytes}${canonicalJson(authorization)}\n`);
+  const binding = entries[0].payload.issueIntakeSourceBinding;
+  const directObservation = {
+    hostRepositoryId: binding.hostRepositoryId,
+    repositoryNameWithOwner: binding.repositoryNameWithOwner,
+    hostIssueId: binding.hostIssueId,
+    issueNumber: binding.issueNumber,
+    issueUrl: binding.issueUrl,
+    issueRevisionId: binding.issueRevisionId,
+    updatedAt: binding.updatedAt,
+    acceptanceCriteria: { items: ["preserve the issue identity", "remain authority-neutral"], digest: binding.criteriaDigest },
+  };
+  const calls = [];
+  const result = await runMissionCliCaptured(
+    ["mission", "prepare-next", "--mission-id", created.projection.missionId, "--root", current.root, "--json"],
+    {
+      prepareSession: async () => { calls.push("prepareSession"); return { state: "blocked", missionId: created.projection.missionId, reasonCode: "protected_evidence_mismatch", errors: ["graph missing"] }; },
+      preflightProtectedGraphAbsence: async () => { calls.push("preflight"); return { state: "absent" }; },
+      issueObserver: async () => { calls.push("direct"); return { state: "observed", observation: directObservation }; },
+      issueObservationWrapper: async () => { calls.push("wrapper"); return { state: "observed", observation: { ...directObservation, issueRevisionId: "sha256:consistency-drift" } }; },
+      continueLegacyReviewedTransition: async () => { calls.push("legacy"); throw new Error("legacy must not run"); },
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.deepEqual(calls, ["prepareSession", "preflight", "direct", "wrapper"]);
+  const blocked = JSON.parse(result.stdout);
+  assert.equal(blocked.code, "issue_observation_drifted");
+  assert.deepEqual(blocked.errors, ["Bound GitHub issue identity, revision, updated time, or acceptance-criteria digest changed."]);
+  assert.deepEqual(blocked.diagnostic.events, [
+    { stage: "direct_observation", callOrder: "direct:1", adapter: "github", executable: "repository_adapter", cwd: "approved_root", timeout: "bounded", outcome: "success" },
+    { stage: "wrapper_observation", callOrder: "wrapper:2", adapter: "github", executable: "repository_adapter", cwd: "approved_root", timeout: "bounded", outcome: "success" },
+    { stage: "consistency_observation", callOrder: "consistency:3", adapter: "github", executable: "repository_adapter", cwd: "approved_root", timeout: "bounded", outcome: "consistency_failed" },
+    { stage: "error_mapping", callOrder: "error_mapping:4", adapter: "github", executable: "repository_adapter", cwd: "approved_root", timeout: "bounded", outcome: "consistency_failed" },
+  ]);
+  assert.equal(await readFile(journalPath, "utf8"), `${journalBytes}${canonicalJson(authorization)}\n`);
+});
+
+test("profile-aware issue begin preserves an observed direct network failure without creating a journal", async () => {
+  const current = await issueCliFixture();
+  const fakeGh = join(current.fakePath.split(":", 1)[0], "gh");
+  await writeFile(fakeGh, "#!/bin/sh\nprintf '%s\\n' 'network failure' >&2\nexit 1\n");
+  await chmod(fakeGh, 0o755);
+  const result = run([
+    "mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--root", current.root, "--json",
+  ], current.root, { PATH: current.fakePath });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /issue_observation_blocked: network_failed/u);
+  await assert.rejects(readdir(join(current.root, ".shield", "journals")), { code: "ENOENT" });
 });

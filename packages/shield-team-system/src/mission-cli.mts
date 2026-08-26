@@ -77,7 +77,7 @@ import {
   type WorktreeStateReceiptV1OrV2,
 } from "./worktree-state-v1.mjs";
 // @ts-expect-error The host adapter is JavaScript; its paired public declaration is not a build input.
-import { observeGitHubIssueV1 } from "../github/adapter-v1.mjs";
+import { observeGitHubIssueV1, observeGitHubIssueWrapperV1 } from "../github/adapter-v1.mjs";
 
 type GitHubIssueObservationV1 = {
   hostRepositoryId: string;
@@ -120,6 +120,7 @@ const ISSUE_OBSERVATION_DIAGNOSTIC_REASONS = [
   "repository_identity_mismatch",
   "timeout",
   "host_rejected",
+  "wrapper_failed",
   "unknown",
 ] as const;
 type IssueObservationDiagnosticReason = typeof ISSUE_OBSERVATION_DIAGNOSTIC_REASONS[number];
@@ -2431,7 +2432,7 @@ function issueObservationDiagnosticEvent(
 }
 
 function issueObservationDirectOutcome(reason: unknown): "network_failed" | "auth_failed" | null {
-  if (reason === "network_failed" || reason === "timeout" || reason === "rate_limited") return "network_failed";
+  if (reason === "network_failed") return "network_failed";
   if (reason === "auth_failed" || reason === "authentication_failed" || reason === "authorization_failed") return "auth_failed";
   return null;
 }
@@ -2695,8 +2696,8 @@ async function classifyNativeIssueIntakePlanningJournal(
   if (wrapped.state !== "observed") {
     const diagnostic = closedIssueObservationDiagnostic([
       issueObservationDiagnosticEvent("direct_observation", "direct:1", "success"),
-      issueObservationDiagnosticEvent("wrapper_observation", "wrapper:2", "wrapper_failed", "gh_cli", "gh_issue_view"),
-      issueObservationDiagnosticEvent("error_mapping", "error_mapping:3", "wrapper_failure_after_direct_success", "gh_cli", "gh_issue_view"),
+      issueObservationDiagnosticEvent("wrapper_observation", "wrapper:2", "wrapper_failed"),
+      issueObservationDiagnosticEvent("error_mapping", "error_mapping:3", "wrapper_failure_after_direct_success"),
     ]);
     const safeReason = createIssueObservationDiagnostic("consistency", wrapped.reason).reason;
     return { state: "invalid", code: "issue_observation_blocked", errors: [safeReason], ...(diagnostic === undefined ? {} : { diagnostic }), missionId, repositoryRoot: repository.canonicalRoot };
@@ -2704,7 +2705,7 @@ async function classifyNativeIssueIntakePlanningJournal(
   if (!issueObservationMatchesNativeIssueIntakeBinding(wrapped.observation, sourceBinding)) {
     const diagnostic = closedIssueObservationDiagnostic([
       issueObservationDiagnosticEvent("direct_observation", "direct:1", "success"),
-      issueObservationDiagnosticEvent("wrapper_observation", "wrapper:2", "success", "gh_cli", "gh_issue_view"),
+      issueObservationDiagnosticEvent("wrapper_observation", "wrapper:2", "success"),
       issueObservationDiagnosticEvent("consistency_observation", "consistency:3", "consistency_failed"),
       issueObservationDiagnosticEvent("error_mapping", "error_mapping:4", "consistency_failed"),
     ]);
@@ -3030,10 +3031,7 @@ async function prepareNext(args: string[], behavior: Readonly<{
       return 1;
     }
     const issueObserver = dependencies.issueObserver ?? observeGitHubIssueV1;
-    const issueObservationWrapper = dependencies.issueObservationWrapper ?? ((
-      _issueRef: string,
-      observation: GitHubIssueObservationV1,
-    ) => ({ state: "observed" as const, observation }));
+    const issueObservationWrapper = dependencies.issueObservationWrapper ?? observeGitHubIssueWrapperV1;
     const planning = await classifyNativeIssueIntakePlanningJournal(
       root,
       missionId,
