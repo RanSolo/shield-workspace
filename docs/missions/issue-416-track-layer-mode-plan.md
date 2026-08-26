@@ -5,7 +5,7 @@
 - Issue: [#416](https://github.com/RanSolo/shield-workspace/issues/416)
 - Repository: `RanSolo/shield-workspace`
 - Planning branch: `agent/issue-416-track-layer-mode`
-- Planning HEAD: `56be6a7cad835eab927d880de108541eeeae353c`
+- Planning base: `56be6a7cad835eab927d880de108541eeeae353c`
 - Authority: `none`
 - Hill-observed issue evidence: [Issue #416](https://github.com/RanSolo/shield-workspace/issues/416)
 - Governing related principle: [Issue #99](https://github.com/RanSolo/shield-workspace/issues/99)
