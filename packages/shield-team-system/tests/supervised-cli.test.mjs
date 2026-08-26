@@ -523,11 +523,56 @@ test("profile-aware issue observation diagnostics identify initial and consisten
   }
 });
 
+test("profile-aware initial observation block preserves an existing journal", async () => {
+  const current = await nativePlanningFixture();
+  const journalBytes = await readFile(current.missionJournalPath);
+  const closedReason = "issue_not_open";
+  let calls = 0;
+  let captured;
+  await assert.rejects(
+    runMissionCli(
+      ["mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/374", "--profile", "standard", "--root", current.root, "--json"],
+      {
+        issueObserver: async () => {
+          calls += 1;
+          return { state: "blocked", reason: closedReason };
+        },
+      },
+    ),
+    (error) => {
+      captured = error;
+      return error instanceof MissionCliError;
+    },
+  );
+  assert.equal(calls, 1);
+  assert.equal(captured.message, `issue_observation_blocked: ${closedReason}`);
+  assert.deepEqual(captured.issueObservationDiagnostic, { stage: "initial", reason: closedReason });
+  assert.equal(Object.isFrozen(captured.issueObservationDiagnostic), true);
+  assert.deepEqual(Object.keys(captured.issueObservationDiagnostic).sort(), ["reason", "stage"]);
+  assert.deepEqual(await readFile(current.missionJournalPath), journalBytes);
+});
+
 test("profile-aware issue observation diagnostics close malformed reasons and redact supplied payloads", async () => {
+  const redactionMarkers = [
+    "RAW_STDERR_MARKER",
+    "GRAPHQL_PAYLOAD_MARKER",
+    "ENVIRONMENT_VALUE_MARKER",
+    "ISSUE_BODY_MARKER",
+    "ISSUE_TITLE_MARKER",
+  ];
   const cases = [
     ["missing", undefined],
-    ["non-string", { token: "SECRET_TOKEN", path: "/private/tmp/secret-credential", query: "SECRET_QUERY" }],
-    ["unlisted", "adapter detail SECRET_TOKEN /private/tmp/secret-credential"],
+    ["non-string", {
+      token: "SECRET_TOKEN",
+      path: "/private/tmp/secret-credential",
+      query: "SECRET_QUERY",
+      rawStderr: redactionMarkers[0],
+      graphqlPayload: redactionMarkers[1],
+      environmentValue: redactionMarkers[2],
+      issueBody: redactionMarkers[3],
+      issueTitle: redactionMarkers[4],
+    }],
+    ["unlisted", `adapter detail SECRET_TOKEN /private/tmp/secret-credential ${redactionMarkers.join(" ")}`],
   ];
   for (const stage of ["initial", "consistency"]) {
     for (const [label, suppliedReason] of cases) {
@@ -555,7 +600,9 @@ test("profile-aware issue observation diagnostics close malformed reasons and re
       assert.equal(captured.message, "issue_observation_blocked: unknown");
       assert.deepEqual(captured.issueObservationDiagnostic, { stage, reason: "unknown" });
       assert.deepEqual(Object.keys(captured.issueObservationDiagnostic).sort(), ["reason", "stage"]);
-      assert.doesNotMatch(`${captured.message}${JSON.stringify(captured.issueObservationDiagnostic)}`, /SECRET_TOKEN|secret-credential|SECRET_QUERY|adapter detail/iu);
+      const rendered = `${captured.message}${JSON.stringify(captured.issueObservationDiagnostic)}`;
+      assert.doesNotMatch(rendered, /SECRET_TOKEN|secret-credential|SECRET_QUERY|adapter detail/iu);
+      for (const marker of redactionMarkers) assert.doesNotMatch(rendered, new RegExp(marker, "u"));
       assert.equal(calls, stage === "initial" ? 1 : 2);
       await assert.rejects(lstat(current.missionJournalPath), { code: "ENOENT" });
     }
