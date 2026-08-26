@@ -102,8 +102,10 @@ test("standing break-glass binding is closed, deterministic, and read-only", asy
   await writeFile(join(repositoryRoot, ".shield", "standing-break-glass-authorization.json"), authorizationBytes);
   await writeFile(join(repositoryRoot, ".shield", "trusted-human-bindings.json"), registryBytes);
   await writeFile(join(repositoryRoot, ".shield", "standing-break-glass-dispatch.json"), JSON.stringify(dispatch));
+  await writeFile(join(repositoryRoot, ".shield", "standing-break-glass-dispatch.sha256"), JSON.stringify(digest(JSON.stringify(dispatch))));
   const locatorOnly = { authorizationLocator: input.authorizationLocator };
-  assert.equal((await bindStandingBreakGlassImplementationV1(repositoryRoot, locatorOnly)).state, "valid");
+  const productionResult = await bindStandingBreakGlassImplementationV1(repositoryRoot, locatorOnly);
+  assert.equal(productionResult.state, "valid", JSON.stringify(productionResult));
   assert.equal((await bindStandingBreakGlassImplementationV1(repositoryRoot, { authorizationLocator: input.authorizationLocator, dispatch: tampered.dispatch })).state, "invalid");
 });
 
