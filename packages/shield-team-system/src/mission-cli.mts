@@ -458,6 +458,7 @@ const ISSUE_402_TRANSITION_PLAN_ID = "transition-plan:2JongiCaa9Oqj-cLqiMcO_SqRh
 const ISSUE_402_TRANSITION_PLAN_DIGEST = "sha256:2JongiCaa9Oqj-cLqiMcO_SqRhWlv_FHMQP33lyzhxs";
 const ISSUE_402_PLANNING_BASE = "8b2be46720a9246beace0b287653bf54123e5f6f";
 const ISSUE_402_PARENT_PLAN_COMMIT = "89266e270fb57ee78bc0562769aa02d5acb1277a";
+const ISSUE_402_APPROVED_PLANNING_TIP = "0fcd4dccdb5991fba4c30637356081f258541122";
 const ISSUE_402_PARENT_PLAN_PATH = "docs/missions/issue-402-source-binding-rebind-plan.md";
 const ISSUE_402_PARENT_PLAN_RAW_SHA256 = "07f29eaee91720c093b11959d8da59e0c05af83f65fc415169ba9acbf9391177";
 const ISSUE_402_TRANSITION_PLAN_PATH = "docs/missions/issue-402-transition-plan.json";
@@ -2508,14 +2509,18 @@ async function validateIssue402NativeSourceRebind(
   if (sourceBinding.headRevision !== plan.planningBaseRevision) {
     return fail("Issue #402 transition plan planning base does not match the bound HEAD.");
   }
+  if (repository.head !== ISSUE_402_APPROVED_PLANNING_TIP) {
+    return fail("Issue #402 transition plan is not bound to the approved planning tip.");
+  }
 
   try {
     const parentParents = nativeIssueIntakeCommitParents(await gitOutput(root, ["rev-list", "--parents", "-n", "1", plan.parentPlanCommit]));
     const headParents = nativeIssueIntakeCommitParents(await gitOutput(root, ["rev-list", "--parents", "-n", "1", repository.head]));
     const commits = nativeIssueIntakeLines(await gitOutput(root, ["rev-list", "--reverse", `${plan.planningBaseRevision}..${repository.head}`]));
-    if (!nativeIssueIntakeExactArray(commits, [plan.parentPlanCommit, repository.head]) ||
+    if (!nativeIssueIntakeExactArray(commits, [plan.parentPlanCommit, ISSUE_402_APPROVED_PLANNING_TIP]) ||
         !nativeIssueIntakeExactArray(parentParents, [plan.planningBaseRevision]) ||
-        !nativeIssueIntakeExactArray(headParents, [plan.parentPlanCommit])) {
+        !nativeIssueIntakeExactArray(headParents, [plan.parentPlanCommit]) ||
+        repository.head !== ISSUE_402_APPROVED_PLANNING_TIP) {
       return fail("Issue #402 transition commit range is missing, extra, reordered, merged, or squashed.");
     }
     const parentDiff = nativeIssueIntakeLines(await gitOutput(root, ["diff-tree", "--no-commit-id", "--name-status", "-r", plan.parentPlanCommit]));

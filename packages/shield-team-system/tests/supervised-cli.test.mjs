@@ -2980,6 +2980,17 @@ test("Issue #402 rebind test inputs remain bound to the exact transition artifac
   ]);
 });
 
+test("Issue #402 rebind rejects alternate planning tips and preserves the behavioral guard contract", async () => {
+  const source = await readFile(join(packageRoot, "src", "mission-cli.mts"), "utf8");
+  const plan = await readFile(join(workspaceRoot, "docs", "missions", "issue-402-source-binding-rebind-plan.md"), "utf8");
+  assert.match(source, /ISSUE_402_APPROVED_PLANNING_TIP = "0fcd4dccdb5991fba4c30637356081f258541122"/u);
+  assert.match(source, /repository\.head !== ISSUE_402_APPROVED_PLANNING_TIP/u);
+  assert.match(source, /transition commit range is missing, extra, reordered, merged, or squashed/u);
+  assert.match(plan, /active refreshed #355 receipt/u);
+  assert.match(plan, /replay performs no receipt write/u);
+  assert.match(plan, /journal, authorization, active receipt, and predecessor\narchive chain/u);
+});
+
 test("spawned prepare-next derives Issue #349 legacy authority and reaches the publication gate", async () => {
   const current = await legacyPublicationCliFixture();
   const homeRoot = join(current.root, ".shield", "tmp", "isolated-home");
