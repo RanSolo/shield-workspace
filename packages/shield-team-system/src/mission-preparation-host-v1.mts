@@ -2603,6 +2603,7 @@ export interface StandingBreakGlassAuthorizationV1 {
   readonly sourceKind: "standing_manual_break_glass";
   readonly validity: "active";
   readonly trustedRegistryDigest: string;
+  readonly dispatchAnchorDigest: string;
   readonly signatureBase64: string;
 }
 
@@ -2644,7 +2645,7 @@ export type StandingBreakGlassBindingResultV1 =
   | { readonly state: "valid"; readonly bindingId: string; readonly dispatch: StandingBreakGlassDispatchV1; readonly authorizationDigest: string }
   | { readonly state: "invalid"; readonly code: "malformed" | "binding_invalid" | "scope_invalid"; readonly errors: readonly string[] };
 
-const STANDING_AUTH_FIELDS = ["schemaVersion", "contractVersion", "authorizationId", "authorizationDigest", "humanPrincipalId", "humanBindingId", "signingKeyRef", "decision", "sourceKind", "validity", "trustedRegistryDigest", "signatureBase64"] as const;
+const STANDING_AUTH_FIELDS = ["schemaVersion", "contractVersion", "authorizationId", "authorizationDigest", "humanPrincipalId", "humanBindingId", "signingKeyRef", "decision", "sourceKind", "validity", "trustedRegistryDigest", "dispatchAnchorDigest", "signatureBase64"] as const;
 const STANDING_LOCATOR_FIELDS = ["authorizationId", "authorizationDigest"] as const;
 const STANDING_DISPATCH_FIELDS = ["missionId", "subjectId", "repositoryId", "branch", "planId", "planDigest", "baseRevision", "headRevision", "approvedPaths", "actionIds", "effectKeys", "capabilityClasses", "maySeatId", "mayModelId", "mayRuntimeId", "mayExecutorId", "dispatchId", "receiptId", "validationCommandIds", "authorizationEvidenceDigest", "exclusions"] as const;
 const STANDING_EXCLUSIONS = ["publication", "merge", "deployment", "release", "final_acceptance", "credential_security_expansion", "destructive_effect", "material_scope_expansion"] as const;
@@ -2678,7 +2679,7 @@ function bindStandingBreakGlassImplementationFromLoadedV1(input: unknown, depend
   }
   if (candidate.authorizationLocator.authorizationId !== auth.authorizationId || candidate.authorizationLocator.authorizationDigest !== auth.authorizationDigest) return { state: "invalid", code: "binding_invalid", errors: ["Caller locator does not match the repository-loaded authorization."] };
   if (trustedBinding.seatId !== "coulson" || trustedBinding.humanPrincipalId !== auth.humanPrincipalId || trustedBinding.bindingId !== auth.humanBindingId || trustedBinding.signingKeyRef !== auth.signingKeyRef || loaded.authorizationEvidenceDigest !== candidate.dispatch.authorizationEvidenceDigest) return { state: "invalid", code: "binding_invalid", errors: ["Authorization is not bound to the exact trusted Coulson registry entry."] };
-  const signedPayloadValue = { schemaVersion: auth.schemaVersion, contractVersion: auth.contractVersion, authorizationId: auth.authorizationId, humanPrincipalId: auth.humanPrincipalId, humanBindingId: auth.humanBindingId, signingKeyRef: auth.signingKeyRef, decision: auth.decision, sourceKind: auth.sourceKind, validity: auth.validity, trustedRegistryDigest: auth.trustedRegistryDigest };
+  const signedPayloadValue = { schemaVersion: auth.schemaVersion, contractVersion: auth.contractVersion, authorizationId: auth.authorizationId, humanPrincipalId: auth.humanPrincipalId, humanBindingId: auth.humanBindingId, signingKeyRef: auth.signingKeyRef, decision: auth.decision, sourceKind: auth.sourceKind, validity: auth.validity, trustedRegistryDigest: auth.trustedRegistryDigest, dispatchAnchorDigest: auth.dispatchAnchorDigest };
   if (standingDigest(signedPayloadValue) !== auth.authorizationDigest) return { state: "invalid", code: "binding_invalid", errors: ["Authorization digest does not cover the signed repository contract."] };
   const signedPayload = canonicalJson(signedPayloadValue);
   try {
@@ -2704,6 +2705,7 @@ export async function bindStandingBreakGlassImplementationV1(repositoryRoot: str
     const gitRoot = (await execFile("git", ["-C", canonicalRoot, "rev-parse", "--show-toplevel"])).stdout.trim();
     if (await realpath(gitRoot) !== canonicalRoot) return { state: "invalid", code: "binding_invalid", errors: ["Repository root is not the canonical Git root."] };
     const shieldRoot = join(canonicalRoot, ".shield");
+    if (await realpath(shieldRoot) !== shieldRoot) return { state: "invalid", code: "binding_invalid", errors: ["Break-glass storage parent is not stable."] };
     const stable = async (path: string): Promise<{ bytes: string; value: unknown } | null> => {
       const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       try { const before = await handle.stat(); if (!before.isFile()) return null; const bytes = await handle.readFile("utf8"); const after = await handle.stat(); if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) return null; return { bytes, value: JSON.parse(bytes) as unknown }; } finally { await handle.close(); }
@@ -2723,6 +2725,8 @@ export async function bindStandingBreakGlassImplementationV1(repositoryRoot: str
     const loaded = { authorization, trustedBinding, authorizationEvidenceDigest: standingDigest({ authorizationFile: authorizationFile.bytes, registryFile: registryFile.bytes }) };
     if (authorization.trustedRegistryDigest !== standingDigest(registryFile.bytes)) return { state: "invalid", code: "binding_invalid", errors: ["Authorization does not bind the exact trusted registry bytes."] };
     if (dispatchDigestFile.value !== standingDigest(dispatchFile.bytes)) return { state: "invalid", code: "binding_invalid", errors: ["Dispatch digest does not bind immutable dispatch bytes."] };
+    const dispatch = dispatchFile.value as unknown as StandingBreakGlassDispatchV1;
+    if (authorization.dispatchAnchorDigest !== standingDigest({ ...dispatch, authorizationEvidenceDigest: null })) return { state: "invalid", code: "binding_invalid", errors: ["Authorization does not bind the exact dispatch tuple."] };
     const internalInput = { authorizationLocator: input.authorizationLocator, dispatch: dispatchFile.value as unknown as StandingBreakGlassDispatchV1 };
     return bindStandingBreakGlassImplementationFromLoadedV1(internalInput, { loadAuthorization: (locator) => locator.authorizationId === loaded.authorization.authorizationId && locator.authorizationDigest === loaded.authorization.authorizationDigest ? loaded : null, expectedDispatch: dispatchFile.value as unknown as StandingBreakGlassDispatchV1 });
   } catch { return { state: "invalid", code: "binding_invalid", errors: ["Repository break-glass artifacts could not be loaded."] }; }
