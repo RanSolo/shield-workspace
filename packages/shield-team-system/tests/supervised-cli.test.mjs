@@ -620,6 +620,9 @@ test("prepare-next routes an authorized native issue intake through repository-o
     const stats = await lstat(path);
     return { path, ino: stats.ino, nlink: stats.nlink };
   }));
+  assert.equal(new Set([dirname(first.artifacts.dispatchPath), dirname(first.artifacts.dispatchDigestPath), dirname(first.artifacts.projectionPath)]).size, 1);
+  const dispatchBytes = await readFile(first.artifacts.dispatchPath, "utf8");
+  assert.equal(JSON.parse(await readFile(first.artifacts.dispatchDigestPath, "utf8")), `sha256:${createHash("sha256").update(dispatchBytes, "utf8").digest("base64url")}`);
   const projectionBytes = await readFile(first.artifacts.projectionPath, "utf8");
   const replay = await runMissionCliCaptured([
     "mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json",
@@ -662,6 +665,25 @@ test("prepare-next standing break-glass terminal rejects caller steering and doe
   await assert.rejects(lstat(join(current.root, ".shield", "audit")), { code: "ENOENT" });
 });
 
+test("prepare-next fails closed when standing authorization is missing and never invokes downstream handlers", async () => {
+  const current = await nativePlanningFixture();
+  await installStandingBreakGlassArtifacts(current);
+  await unlink(join(current.root, ".shield", "standing-break-glass-authorization.json"));
+  const calls = [];
+  const result = await runMissionCliCaptured(
+    ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
+    {
+      prepareSession: async () => { calls.push("prepareSession"); throw new Error("must not invoke prepareSession"); },
+      preflightProtectedGraphAbsence: async () => { calls.push("preflight"); throw new Error("must not invoke preflight"); },
+      continueLegacyReviewedTransition: async () => { calls.push("legacy"); throw new Error("must not invoke legacy"); },
+      issueObserver: async () => { calls.push("issueObserver"); throw new Error("must not invoke issueObserver"); },
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.deepEqual(calls, []);
+  assert.equal(JSON.parse(result.stdout).reasonCode, "standing_break_glass_artifacts_missing");
+});
+
 test("prepare-next emits only the closed wrapper-failure observation diagnostic", async () => {
   const current = await nativePlanningFixture();
   const result = await runMissionCliCaptured(
@@ -669,7 +691,8 @@ test("prepare-next emits only the closed wrapper-failure observation diagnostic"
     {
       prepareSession: async () => ({ state: "blocked", missionId: current.missionId, reasonCode: "protected_evidence_mismatch", errors: ["graph missing"] }),
       preflightProtectedGraphAbsence: async () => ({ state: "absent" }),
-      issueObserver: async () => ({ state: "blocked", reason: "issue_identity_mismatch" }),
+      issueObserver: current.issueObserver,
+      issueObservationWrapper: async () => ({ state: "blocked", reason: "issue_identity_mismatch" }),
       continueLegacyReviewedTransition: async () => { throw new Error("legacy must not run"); },
     },
   );

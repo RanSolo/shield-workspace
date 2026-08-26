@@ -2,7 +2,7 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, realpath } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { isProxy } from "node:util/types";
 
@@ -2763,18 +2763,19 @@ const STANDING_EFFECT_KEYS = Object.freeze(["implementation.commit", "implementa
 const STANDING_CAPABILITY_CLASSES = Object.freeze(["repository.write", "process.execute"]);
 const STANDING_VALIDATION_COMMAND_IDS = Object.freeze(["validation:issue-413:focused", "validation:issue-413:nx"]);
 const STANDING_MAY_PROFILE_PATH = ".codex/agents/may.toml";
-const STANDING_MAY_RUNTIME_ID = "runtime:codex-hosted-may-luna";
-const STANDING_MAY_EXECUTOR_ID = "executor:codex-hosted-workspace-tools";
+const STANDING_MAY_PROFILE_BY_MODEL = Object.freeze({
+  "gpt-5.6-luna": Object.freeze({
+    runtimeId: "runtime:codex-hosted-may-luna",
+    executorId: "executor:codex-hosted-workspace-tools",
+  }),
+});
 
-export async function standingBreakGlassAuthorizationPresentV1(repositoryRoot: string): Promise<boolean> {
+export async function standingBreakGlassSourcePresentV1(repositoryRoot: string): Promise<boolean> {
   const canonicalRoot = await canonicalRepositoryRoot(repositoryRoot);
   if (canonicalRoot === null) return false;
-  try {
-    await lstat(join(canonicalRoot, ".shield/standing-break-glass-authorization.json"));
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ENOENT" ? true : false;
-  }
+  return (await standingFilePresent(canonicalRoot, ".shield/standing-break-glass-authorization.json")) ||
+    (await standingFilePresent(canonicalRoot, "docs/missions/issue-413-prepare-next-break-glass-plan.md")) ||
+    (await standingFilePresent(canonicalRoot, ".codex/agents/may.toml"));
 }
 
 async function standingFilePresent(repositoryRoot: string, relativePath: string): Promise<boolean> {
@@ -2795,45 +2796,16 @@ function standingPreparationResult(
   return Object.freeze({ state, reasonCode, missionId, errors: Object.freeze(errors.length === 0 ? ["Standing break-glass preparation is unavailable."] : errors) } as StandingBreakGlassPreparationResultV1);
 }
 
-async function createStandingArtifactOnce(path: string, bytes: string): Promise<"created" | "existing" | "conflict"> {
-  try {
-    await mkdir(join(resolve(path, "..")), { recursive: true, mode: 0o700 });
-    const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    try {
-      await handle.writeFile(bytes, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    return "created";
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") return "conflict";
-    try {
-      const existing = await stableRegularTextFile(resolve(path, ".."), relative(resolve(path, ".."), path));
-      return existing === null ? "conflict" : existing.bytes === bytes ? "existing" : "conflict";
-    } catch {
-      return "conflict";
-    }
-  }
-}
-
-async function standingOutputMatches(path: string, bytes: string): Promise<boolean> {
-  try {
-    const existing = await stableRegularTextFile(resolve(path, ".."), relative(resolve(path, ".."), path));
-    return existing !== null && existing.bytes === bytes;
-  } catch {
-    return false;
-  }
-}
-
-function standingPlanDigest(bytes: string): string {
+function standingBytesDigest(bytes: string): string {
   return `sha256:${createHash("sha256").update(bytes, "utf8").digest("base64url")}`;
 }
 
-function standingMayModelId(bytes: string): string | null {
+function standingMayProfile(bytes: string): Readonly<{ modelId: string; runtimeId: string; executorId: string }> | null {
   const name = /^name\s*=\s*"may"\s*$/mu.test(bytes);
   const model = /^model\s*=\s*"([^"]+)"\s*$/mu.exec(bytes)?.[1] ?? null;
-  return name && model === "gpt-5.6-luna" ? model : null;
+  if (!name || model === null) return null;
+  const frozen = STANDING_MAY_PROFILE_BY_MODEL[model as keyof typeof STANDING_MAY_PROFILE_BY_MODEL];
+  return frozen === undefined ? null : Object.freeze({ modelId: model, ...frozen });
 }
 
 function standingRepositoryId(origin: string): string | null {
@@ -2842,15 +2814,72 @@ function standingRepositoryId(origin: string): string | null {
   return match?.[1] ?? null;
 }
 
-async function standingArtifactState(path: string, bytes: string): Promise<"missing" | "matching" | "conflict"> {
+type StandingOutputSetV1 = Readonly<{
+  dispatchPath: string;
+  dispatchDigestPath: string;
+  projectionPath: string;
+}>;
+
+async function writeStandingOutputSetOnce(
+  parent: string,
+  setName: string,
+  files: Readonly<{ dispatch: string; dispatchDigest: string; projection: string }>,
+): Promise<StandingOutputSetV1 | "conflict"> {
+  const finalDirectory = join(parent, setName);
+  const output = {
+    dispatchPath: join(finalDirectory, "dispatch.json"),
+    dispatchDigestPath: join(finalDirectory, "dispatch.json.sha256"),
+    projectionPath: join(finalDirectory, "preparation.json"),
+  } as const;
+  const expected = [
+    [output.dispatchPath, files.dispatch],
+    [output.dispatchDigestPath, files.dispatchDigest],
+    [output.projectionPath, files.projection],
+  ] as const;
+  const existingSet = async (): Promise<true | false | "conflict"> => {
+    let directoryStats;
+    try { directoryStats = await lstat(finalDirectory); }
+    catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? false : "conflict"; }
+    if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) return "conflict";
+    for (const [path, bytes] of expected) {
+      const snapshot = await stableRegularTextFile(finalDirectory, relative(finalDirectory, path));
+      if (snapshot === null) return "conflict";
+      if (snapshot.bytes !== bytes) return "conflict";
+    }
+    return true;
+  };
+  const current = await existingSet();
+  if (current === true) return output;
+  if (current === "conflict") return "conflict";
+
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  let stagingDirectory: string | null = null;
   try {
-    await lstat(path);
-    const parent = resolve(path, "..");
-    const existing = await stableRegularTextFile(parent, relative(parent, path));
-    if (existing === null) return "conflict";
-    return existing.bytes === bytes ? "matching" : "conflict";
+    stagingDirectory = await mkdtemp(join(parent, ".standing-break-glass-set-"));
+    for (const [path, bytes] of expected) {
+      const stagedPath = join(stagingDirectory, relative(finalDirectory, path));
+      const handle = await open(stagedPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try {
+        await handle.writeFile(bytes, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    }
+    const directoryHandle = await open(stagingDirectory, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0));
+    try { await directoryHandle.sync(); }
+    finally { await directoryHandle.close(); }
+    await rename(stagingDirectory, finalDirectory);
+    stagingDirectory = null;
+    return output;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "conflict";
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      const raced = await existingSet();
+      if (raced === true) return output;
+    }
+    return "conflict";
+  } finally {
+    if (stagingDirectory !== null) await rm(stagingDirectory, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -2895,8 +2924,8 @@ export async function prepareStandingBreakGlassImplementationV1(input: unknown):
   const authorization = authorizationValue.authorization as unknown as StandingBreakGlassAuthorizationV1;
   const planSnapshot = await stableRegularTextFile(repositoryRoot, STANDING_PLAN_PATH);
   const mayProfileSnapshot = await stableRegularTextFile(repositoryRoot, STANDING_MAY_PROFILE_PATH);
-  const mayModelId = mayProfileSnapshot === null ? null : standingMayModelId(mayProfileSnapshot.bytes);
-  if (planSnapshot === null || mayProfileSnapshot === null || mayModelId === null) {
+  const mayProfile = mayProfileSnapshot === null ? null : standingMayProfile(mayProfileSnapshot.bytes);
+  if (planSnapshot === null || mayProfileSnapshot === null || mayProfile === null) {
     const malformed = (planSnapshot === null && await standingFilePresent(repositoryRoot, STANDING_PLAN_PATH)) ||
       (mayProfileSnapshot === null && await standingFilePresent(repositoryRoot, STANDING_MAY_PROFILE_PATH));
     return malformed
@@ -2913,7 +2942,7 @@ export async function prepareStandingBreakGlassImplementationV1(input: unknown):
     repositoryId,
     branch,
     planId: STANDING_PLAN_ID,
-    planDigest: standingPlanDigest(planSnapshot.bytes),
+    planDigest: standingBytesDigest(planSnapshot.bytes),
     baseRevision: headRevision,
     headRevision,
     approvedPaths: STANDING_IMPLEMENTATION_PATHS,
@@ -2921,9 +2950,9 @@ export async function prepareStandingBreakGlassImplementationV1(input: unknown):
     effectKeys: STANDING_EFFECT_KEYS,
     capabilityClasses: STANDING_CAPABILITY_CLASSES,
     maySeatId: "may",
-    mayModelId,
-    mayRuntimeId: STANDING_MAY_RUNTIME_ID,
-    mayExecutorId: STANDING_MAY_EXECUTOR_ID,
+    mayModelId: mayProfile.modelId,
+    mayRuntimeId: mayProfile.runtimeId,
+    mayExecutorId: mayProfile.executorId,
     dispatchId: "dispatch:413",
     receiptId: "receipt:413",
     validationCommandIds: STANDING_VALIDATION_COMMAND_IDS,
@@ -2984,32 +3013,15 @@ export async function prepareStandingBreakGlassImplementationV1(input: unknown):
     bindingId: binding.bindingId,
   };
   const projectionDigest = standingDigest(body);
-  const outputRoot = join(repositoryRoot, ".shield", "audit", "standing-break-glass");
-  const dispatchPath = join(outputRoot, "dispatch", `${binding.bindingId.slice("sha256:".length)}.json`);
-  const dispatchDigestPath = `${dispatchPath}.sha256`;
-  const projectionPath = join(outputRoot, "preparations", `${projectionDigest.slice("sha256:".length)}.json`);
-  const writes = [
-    [dispatchPath, canonicalJson(dispatch)] as const,
-    [dispatchDigestPath, canonicalJson(standingDigest(dispatch))] as const,
-    [projectionPath, canonicalJson({ ...body, projectionDigest })] as const,
-  ];
-  for (const [path, bytes] of writes) {
-    const exists = await standingOutputMatches(path, bytes);
-    if (exists) continue;
-    try {
-      const current = await stableRegularTextFile(resolve(path, ".."), relative(resolve(path, ".."), path));
-      if (current !== null) return standingPreparationResult("blocked", "standing_break_glass_conflict", missionId, "A standing break-glass output artifact differs from its deterministic derivation.");
-    } catch { /* absent output is the create-once case */ }
-  }
-  for (const [path, bytes] of writes) {
-    if (await standingArtifactState(path, bytes) === "conflict") {
-      return standingPreparationResult("blocked", "standing_break_glass_conflict", missionId, "A standing break-glass output artifact differs from its deterministic derivation.");
-    }
-  }
-  for (const [path, bytes] of writes) {
-    if (await createStandingArtifactOnce(path, bytes) === "conflict") {
-      return standingPreparationResult("blocked", "standing_break_glass_conflict", missionId, "A standing break-glass output artifact differs from its deterministic derivation.");
-    }
+  const outputRoot = join(repositoryRoot, ".shield", "audit", "standing-break-glass", "sets");
+  const dispatchBytes = canonicalJson(dispatch);
+  const outputSet = await writeStandingOutputSetOnce(outputRoot, projectionDigest.slice("sha256:".length), {
+    dispatch: dispatchBytes,
+    dispatchDigest: canonicalJson(standingBytesDigest(dispatchBytes)),
+    projection: canonicalJson({ ...body, projectionDigest }),
+  });
+  if (outputSet === "conflict") {
+    return standingPreparationResult("blocked", "standing_break_glass_conflict", missionId, "A standing break-glass output set differs from its deterministic derivation.");
   }
   return Object.freeze({
     state: "implementation_dispatch_ready" as const,
@@ -3018,6 +3030,6 @@ export async function prepareStandingBreakGlassImplementationV1(input: unknown):
     missionId,
     dispatch,
     bindingId: binding.bindingId,
-    artifacts: Object.freeze({ dispatchPath, dispatchDigestPath, projectionPath, projectionDigest }),
+    artifacts: Object.freeze({ ...outputSet, projectionDigest }),
   });
 }

@@ -92,6 +92,13 @@ type GitHubIssueObservationV1 = {
 type GitHubIssueObserverV1 = (input: string, options?: { cwd?: string }) =>
   | { state: "observed"; observation: GitHubIssueObservationV1 }
   | { state: "blocked"; reason: string };
+type GitHubIssueObservationWrapperV1 = (
+  input: string,
+  observation: GitHubIssueObservationV1,
+  options?: { cwd?: string },
+) =>
+  | { state: "observed"; observation: GitHubIssueObservationV1 }
+  | { state: "blocked"; reason: string };
 
 const ISSUE_OBSERVATION_DIAGNOSTIC_REASONS = [
   "acceptance_criteria_invalid",
@@ -150,7 +157,7 @@ import {
 import {
   materializeReviewedMissionTransitionV1,
   prepareStandingBreakGlassImplementationV1,
-  standingBreakGlassAuthorizationPresentV1,
+  standingBreakGlassSourcePresentV1,
   prepareMissionTransitionSessionV1,
   resolvePreparedMissionTransitionV1,
   resolveSeatDispatchIdentityByReceiptIdV1,
@@ -2119,6 +2126,7 @@ type PrepareNextDependenciesV1 = Readonly<{
   prepareSession?: typeof prepareMissionTransitionSessionV1;
   continueLegacy?: typeof continueLegacyReviewedTransitionV1;
   issueObserver?: GitHubIssueObserverV1;
+  issueObservationWrapper?: GitHubIssueObservationWrapperV1;
   preflightProtectedGraphAbsence?: typeof preflightLegacyProtectedGraphAbsenceV1;
   beforeProtectedGraphFinalRevalidation?: () => void | Promise<void>;
   beforeNativeIssueIntakeReadback?: () => void | Promise<void>;
@@ -2412,20 +2420,27 @@ function nativeIssueIntakePlanningInvalidBlocked(
   });
 }
 
-function closedIssueObservationFailureDiagnostic(reason: unknown): Readonly<{
+function issueObservationDiagnosticEvent(
+  stage: "direct_observation" | "wrapper_observation" | "consistency_observation" | "error_mapping",
+  callOrder: "direct:1" | "wrapper:2" | "consistency:3" | "error_mapping:2" | "error_mapping:3" | "error_mapping:4",
+  outcome: "success" | "network_failed" | "auth_failed" | "wrapper_failed" | "consistency_failed" | "wrapper_failure_after_direct_success",
+  adapter: "github" | "gh_cli" = "github",
+  executable: "repository_adapter" | "gh_issue_view" = "repository_adapter",
+): Readonly<Record<string, string>> {
+  return { stage, callOrder, adapter, executable, cwd: "approved_root", timeout: "bounded", outcome };
+}
+
+function issueObservationDirectOutcome(reason: unknown): "network_failed" | "auth_failed" | null {
+  if (reason === "network_failed" || reason === "timeout" || reason === "rate_limited") return "network_failed";
+  if (reason === "auth_failed" || reason === "authentication_failed" || reason === "authorization_failed") return "auth_failed";
+  return null;
+}
+
+function closedIssueObservationDiagnostic(events: readonly Record<string, string>[]): Readonly<{
   schemaVersion: 1;
   contractVersion: "mission.issue-observation-diagnostic.v1";
   events: readonly unknown[];
 }> | undefined {
-  const common = { adapter: "github" as const, executable: "gh_issue_view" as const, cwd: "approved_root" as const, timeout: "bounded" as const };
-  const outcome = reason === "network_failed" || reason === "auth_failed" || reason === "wrapper_failed" || reason === "consistency_failed"
-    ? reason
-    : reason === "authentication_failed" || reason === "authorization_failed" ? "auth_failed" : "wrapper_failed";
-  const events = outcome === "network_failed" || outcome === "auth_failed"
-    ? [{ ...common, stage: "direct_observation", callOrder: "direct:1", outcome }, { ...common, stage: "error_mapping", callOrder: "error_mapping:2", outcome }]
-    : outcome === "consistency_failed"
-      ? [{ ...common, stage: "direct_observation", callOrder: "direct:1", outcome: "success" }, { ...common, stage: "wrapper_observation", callOrder: "wrapper:2", outcome: "success" }, { ...common, stage: "consistency_observation", callOrder: "consistency:3", outcome }, { ...common, stage: "error_mapping", callOrder: "error_mapping:4", outcome }]
-      : [{ ...common, stage: "direct_observation", callOrder: "direct:1", outcome: "success" }, { ...common, stage: "wrapper_observation", callOrder: "wrapper:2", outcome: "wrapper_failed" }, { ...common, stage: "error_mapping", callOrder: "error_mapping:3", outcome: "wrapper_failure_after_direct_success" }];
   const checked = validateIssueObservationDiagnosticSequenceV1({ schemaVersion: 1, contractVersion: "mission.issue-observation-diagnostic.v1", events });
   return checked.state === "valid"
     ? Object.freeze({ schemaVersion: 1 as const, contractVersion: "mission.issue-observation-diagnostic.v1" as const, events: checked.events })
@@ -2589,6 +2604,7 @@ async function classifyNativeIssueIntakePlanningJournal(
   missionId: string,
   parser: NativeIssueIntakeJournalParserV1,
   issueObserver: GitHubIssueObserverV1,
+  issueObservationWrapper: GitHubIssueObservationWrapperV1,
   afterHandleRead?: () => void | Promise<void>,
 ): Promise<NativeIssueIntakeClassificationV1> {
   let pathConfiguration: ShieldConfig;
@@ -2667,15 +2683,36 @@ async function classifyNativeIssueIntakePlanningJournal(
   const issueRef = `github:${sourceBinding.repositoryNameWithOwner}/issues/${sourceBinding.issueNumber}`;
   const observed = await issueObserver(issueRef, { cwd: root });
   if (observed.state !== "observed") {
-    const diagnostic = closedIssueObservationFailureDiagnostic(observed.reason);
+    const directOutcome = issueObservationDirectOutcome(observed.reason);
+    const diagnostic = directOutcome === null ? undefined : closedIssueObservationDiagnostic([
+      issueObservationDiagnosticEvent("direct_observation", "direct:1", directOutcome),
+      issueObservationDiagnosticEvent("error_mapping", "error_mapping:2", directOutcome),
+    ]);
     const safeReason = createIssueObservationDiagnostic("consistency", observed.reason).reason;
     return { state: "invalid", code: "issue_observation_blocked", errors: [safeReason], ...(diagnostic === undefined ? {} : { diagnostic }), missionId, repositoryRoot: repository.canonicalRoot };
   }
-  if (!issueObservationMatchesNativeIssueIntakeBinding(observed.observation, sourceBinding)) {
+  const wrapped = await issueObservationWrapper(issueRef, observed.observation, { cwd: root });
+  if (wrapped.state !== "observed") {
+    const diagnostic = closedIssueObservationDiagnostic([
+      issueObservationDiagnosticEvent("direct_observation", "direct:1", "success"),
+      issueObservationDiagnosticEvent("wrapper_observation", "wrapper:2", "wrapper_failed", "gh_cli", "gh_issue_view"),
+      issueObservationDiagnosticEvent("error_mapping", "error_mapping:3", "wrapper_failure_after_direct_success", "gh_cli", "gh_issue_view"),
+    ]);
+    const safeReason = createIssueObservationDiagnostic("consistency", wrapped.reason).reason;
+    return { state: "invalid", code: "issue_observation_blocked", errors: [safeReason], ...(diagnostic === undefined ? {} : { diagnostic }), missionId, repositoryRoot: repository.canonicalRoot };
+  }
+  if (!issueObservationMatchesNativeIssueIntakeBinding(wrapped.observation, sourceBinding)) {
+    const diagnostic = closedIssueObservationDiagnostic([
+      issueObservationDiagnosticEvent("direct_observation", "direct:1", "success"),
+      issueObservationDiagnosticEvent("wrapper_observation", "wrapper:2", "success", "gh_cli", "gh_issue_view"),
+      issueObservationDiagnosticEvent("consistency_observation", "consistency:3", "consistency_failed"),
+      issueObservationDiagnosticEvent("error_mapping", "error_mapping:4", "consistency_failed"),
+    ]);
     return {
       state: "invalid",
       code: "issue_observation_drifted",
       errors: ["Bound GitHub issue identity, revision, updated time, or acceptance-criteria digest changed."],
+      ...(diagnostic === undefined ? {} : { diagnostic }),
       missionId,
       repositoryRoot: repository.canonicalRoot,
     };
@@ -2726,7 +2763,7 @@ async function classifyNativeIssueIntakePlanningJournal(
     issueRevisionId: sourceBinding.issueRevisionId,
     objective: journal.value.journal.projection.brief.objective,
     riskFlags: journal.value.journal.projection.brief.riskFlags,
-    acceptanceCriteria: observed.observation.acceptanceCriteria.items,
+    acceptanceCriteria: wrapped.observation.acceptanceCriteria.items,
     criteriaDigest: sourceBinding.criteriaDigest,
     instruction: "Freeze the smallest acceptance-driven implementation plan against this exact packet. The subsequent Fury and Wheels Up transition rail is unresolved; do not infer implementation scope, authority, runtime identity, or publication effects." as const,
   });
@@ -2769,15 +2806,9 @@ async function classifyNativeIssueIntakeJournal(
   }
   if (snapshot.value.journal.kind !== "profile-aware" || !isFreshNativeIssueIntakeJournal(snapshot.value.journal)) {
     if (snapshot.value.journal.kind === "profile-aware" && isAuthorizedNativeIssueIntakeJournal(snapshot.value.journal) &&
-        isStandingManualBreakGlassImplementationReadyV1(snapshot.value.journal.projection)) {
-      try {
-        const standingAuthorization = await lstat(join(root, ".shield", "standing-break-glass-authorization.json"));
-        if (standingAuthorization.isFile() || standingAuthorization.isSymbolicLink()) {
-          return { state: "authorized_implementation_ready", snapshot: snapshot.value };
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { state: "authorized_implementation_ready", snapshot: snapshot.value };
-      }
+        isStandingManualBreakGlassImplementationReadyV1(snapshot.value.journal.projection) &&
+        await standingBreakGlassSourcePresentV1(root)) {
+      return { state: "authorized_implementation_ready", snapshot: snapshot.value };
     }
     return { state: "valid_non_applicable" };
   }
@@ -2935,7 +2966,7 @@ async function prepareNext(args: string[], behavior: Readonly<{
     nativeParser,
     dependencies.afterNativeIssueIntakeJournalHandleRead,
   );
-  if (native.state === "authorized_implementation_ready" && await standingBreakGlassAuthorizationPresentV1(root)) {
+  if (native.state === "authorized_implementation_ready") {
     const callerOptions = [...options.values.keys()].filter((name) => name !== "--root" && name !== "--mission-id");
     if (callerOptions.length > 0 || options.flags.has("--passcode-stdin")) {
       throw new MissionCliError("Standing break-glass prepare-next accepts only --mission-id, --root, and --json or --human.", 1);
@@ -2999,11 +3030,16 @@ async function prepareNext(args: string[], behavior: Readonly<{
       return 1;
     }
     const issueObserver = dependencies.issueObserver ?? observeGitHubIssueV1;
+    const issueObservationWrapper = dependencies.issueObservationWrapper ?? ((
+      _issueRef: string,
+      observation: GitHubIssueObservationV1,
+    ) => ({ state: "observed" as const, observation }));
     const planning = await classifyNativeIssueIntakePlanningJournal(
       root,
       missionId,
       nativeParser,
       issueObserver,
+      issueObservationWrapper,
       dependencies.afterNativeIssueIntakeJournalHandleRead,
     );
     if (planning.state === "invalid") {
@@ -3017,6 +3053,7 @@ async function prepareNext(args: string[], behavior: Readonly<{
         missionId,
         nativeParser,
         issueObserver,
+        issueObservationWrapper,
         dependencies.afterNativeIssueIntakeJournalHandleRead,
       );
       if (freshPlanning.state === "invalid") {
@@ -4023,6 +4060,7 @@ export async function runMissionCli(
   args: string[],
   dependencies: Readonly<{
     issueObserver?: GitHubIssueObserverV1;
+    issueObservationWrapper?: GitHubIssueObservationWrapperV1;
     copilotFuryPlanDispatch?: CopilotFuryPlanDispatchDependenciesV1;
     copilotFuryReviewedTransition?: CopilotFuryReviewedTransitionHostDependenciesV1;
     prepareReviewedMissionTransition?: typeof prepareReviewedMissionTransitionV1;
@@ -4054,6 +4092,7 @@ export async function runMissionCli(
       ...(dependencies.prepareSession === undefined ? {} : { prepareSession: dependencies.prepareSession }),
       ...(dependencies.continueLegacyReviewedTransition === undefined ? {} : { continueLegacy: dependencies.continueLegacyReviewedTransition }),
       ...(dependencies.issueObserver === undefined ? {} : { issueObserver: dependencies.issueObserver }),
+      ...(dependencies.issueObservationWrapper === undefined ? {} : { issueObservationWrapper: dependencies.issueObservationWrapper }),
       ...(dependencies.preflightProtectedGraphAbsence === undefined ? {} : { preflightProtectedGraphAbsence: dependencies.preflightProtectedGraphAbsence }),
       ...(dependencies.beforeProtectedGraphFinalRevalidation === undefined ? {} : { beforeProtectedGraphFinalRevalidation: dependencies.beforeProtectedGraphFinalRevalidation }),
       ...(dependencies.beforeNativeIssueIntakeReadback === undefined ? {} : { beforeNativeIssueIntakeReadback: dependencies.beforeNativeIssueIntakeReadback }),
