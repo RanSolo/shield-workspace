@@ -2978,6 +2978,9 @@ export async function prepareStandingBreakGlassImplementationV1(input: unknown):
   if (!standingClosed(registryValue, ["schemaVersion", "bindings"]) || !Array.isArray(registryValue.bindings)) {
     return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Trusted human binding registry is not closed.");
   }
+  if (authorization.trustedRegistryDigest !== standingDigest(registrySnapshot.bytes)) {
+    return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Authorization does not bind the exact trusted registry bytes.");
+  }
   const matches = registryValue.bindings.filter((value: unknown) => plain(value) && value.bindingId === authorization.humanBindingId && value.humanPrincipalId === authorization.humanPrincipalId && value.seatId === "coulson");
   if (matches.length !== 1) return standingPreparationResult("blocked", "standing_break_glass_invalid", missionId, "Repository requires exactly one trusted Coulson binding.");
   const trustedBinding = matches[0] as unknown as TrustedHumanBinding;

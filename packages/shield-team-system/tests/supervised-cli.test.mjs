@@ -719,6 +719,28 @@ test("prepare-next rejects stale plan input and tuple-anchor drift without invok
   }
 });
 
+test("prepare-next rejects trusted-registry byte drift before output and downstream handlers", async () => {
+  const current = await nativePlanningFixture();
+  await installStandingBreakGlassArtifacts(current);
+  const registryPath = join(current.root, ".shield", "trusted-human-bindings.json");
+  const registryBytes = await readFile(registryPath, "utf8");
+  await writeFile(registryPath, `${registryBytes}\n`);
+  const calls = [];
+  const result = await runMissionCliCaptured(
+    ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
+    {
+      prepareSession: async () => { calls.push("prepareSession"); throw new Error("must not invoke prepareSession"); },
+      preflightProtectedGraphAbsence: async () => { calls.push("preflight"); throw new Error("must not invoke preflight"); },
+      continueLegacyReviewedTransition: async () => { calls.push("legacy"); throw new Error("must not invoke legacy"); },
+      issueObserver: async () => { calls.push("issueObserver"); throw new Error("must not invoke issueObserver"); },
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.deepEqual(calls, []);
+  assert.equal(JSON.parse(result.stdout).reasonCode, "standing_break_glass_invalid");
+  await assert.rejects(lstat(join(current.root, ".shield", "audit")), { code: "ENOENT" });
+});
+
 test("prepare-next reports atomic standing output-set write failure without partial output", async () => {
   const current = await nativePlanningFixture();
   await installStandingBreakGlassArtifacts(current);
