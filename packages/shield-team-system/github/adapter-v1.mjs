@@ -41,6 +41,11 @@ const GITHUB_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const GITHUB_ISSUE_REFERENCE = /^github:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/issues\/([1-9][0-9]{0,8})$/u;
 const GITHUB_HOST_ID = /^[A-Za-z0-9_:-]{1,256}$/u;
 const GITHUB_ISSUE_STATES = new Set(["OPEN"]);
+const GITHUB_ISSUE_OBSERVATION_FIELDS = Object.freeze([
+  "schemaVersion", "contractVersion", "authority", "assuranceKind", "sourceRef", "observedAt",
+  "hostRepositoryId", "repositoryNameWithOwner", "hostIssueId", "issueNumber", "issueUrl",
+  "title", "body", "state", "labels", "updatedAt", "issueRevisionId", "acceptanceCriteria",
+]);
 
 function githubIssueBlocked(reason) {
   return { state: "blocked", reason };
@@ -445,6 +450,35 @@ export function observeGitHubIssueV1(input, options = {}) {
     issueRevisionId: issueRevision,
     acceptanceCriteria: Object.freeze({ items: acceptance.items, digest: acceptance.digest }),
   });
+  return { state: "observed", observation };
+}
+
+/**
+ * Applies the repository-owned canonical issue-observer boundary to one
+ * already observed result. This is intentionally an identity wrapper: it
+ * performs no second command, accepts no response bytes, and cannot replace
+ * the direct adapter result with an out-of-band observation.
+ */
+export function observeGitHubIssueWrapperV1(input, observation, options = {}) {
+  const request = normalizeIssueRequest(input);
+  if (!request || !plainRecord(options) || (options.cwd !== undefined && typeof options.cwd !== "string")) {
+    return githubIssueBlocked("wrapper_failed");
+  }
+  if (!exactRecord(observation, GITHUB_ISSUE_OBSERVATION_FIELDS) ||
+      observation.schemaVersion !== GITHUB_ISSUE_OBSERVATION_SCHEMA_VERSION ||
+      observation.contractVersion !== GITHUB_ISSUE_OBSERVATION_CONTRACT_VERSION ||
+      observation.authority !== "none" || observation.assuranceKind !== "host_asserted" ||
+      observation.sourceRef !== request.sourceRef || observation.repositoryNameWithOwner !== request.repositoryId ||
+      observation.issueNumber !== request.issueNumber || observation.issueUrl !== `https://github.com/${request.repositoryId}/issues/${request.issueNumber}` ||
+      typeof observation.hostRepositoryId !== "string" || typeof observation.hostIssueId !== "string" ||
+      typeof observation.observedAt !== "string" || typeof observation.title !== "string" || typeof observation.body !== "string" ||
+      observation.state !== "OPEN" || !Array.isArray(observation.labels) ||
+      observation.labels.some((label) => typeof label !== "string") || typeof observation.updatedAt !== "string" ||
+      typeof observation.issueRevisionId !== "string" || !exactRecord(observation.acceptanceCriteria, ["items", "digest"]) ||
+      !Array.isArray(observation.acceptanceCriteria.items) || observation.acceptanceCriteria.items.some((item) => typeof item !== "string") ||
+      typeof observation.acceptanceCriteria.digest !== "string") {
+    return githubIssueBlocked("wrapper_failed");
+  }
   return { state: "observed", observation };
 }
 

@@ -77,7 +77,7 @@ import {
   type WorktreeStateReceiptV1OrV2,
 } from "./worktree-state-v1.mjs";
 // @ts-expect-error The host adapter is JavaScript; its paired public declaration is not a build input.
-import { observeGitHubIssueV1 } from "../github/adapter-v1.mjs";
+import { observeGitHubIssueV1, observeGitHubIssueWrapperV1 } from "../github/adapter-v1.mjs";
 
 type GitHubIssueObservationV1 = {
   hostRepositoryId: string;
@@ -2431,7 +2431,7 @@ function issueObservationDiagnosticEvent(
 }
 
 function issueObservationDirectOutcome(reason: unknown): "network_failed" | "auth_failed" | null {
-  if (reason === "network_failed" || reason === "timeout" || reason === "rate_limited") return "network_failed";
+  if (reason === "network_failed") return "network_failed";
   if (reason === "auth_failed" || reason === "authentication_failed" || reason === "authorization_failed") return "auth_failed";
   return null;
 }
@@ -3030,10 +3030,7 @@ async function prepareNext(args: string[], behavior: Readonly<{
       return 1;
     }
     const issueObserver = dependencies.issueObserver ?? observeGitHubIssueV1;
-    const issueObservationWrapper = dependencies.issueObservationWrapper ?? ((
-      _issueRef: string,
-      observation: GitHubIssueObservationV1,
-    ) => ({ state: "observed" as const, observation }));
+    const issueObservationWrapper = dependencies.issueObservationWrapper ?? observeGitHubIssueWrapperV1;
     const planning = await classifyNativeIssueIntakePlanningJournal(
       root,
       missionId,

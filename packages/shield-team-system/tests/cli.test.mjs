@@ -1951,3 +1951,16 @@ test("profile-aware issue begin fails closed on local configuration drift and ho
   assert.match(hostResult.stderr, /issue_drifted/u);
   await assert.rejects(readdir(join(host.root, ".shield", "journals")), { code: "ENOENT" });
 });
+
+test("profile-aware issue begin preserves an observed direct network failure without creating a journal", async () => {
+  const current = await issueCliFixture();
+  const fakeGh = join(current.fakePath.split(":", 1)[0], "gh");
+  await writeFile(fakeGh, "#!/bin/sh\nprintf '%s\\n' 'network failure' >&2\nexit 1\n");
+  await chmod(fakeGh, 0o755);
+  const result = run([
+    "mission", "begin", "--profile-aware", "--issue", "github:RanSolo/fixture/issues/7", "--profile", "standard", "--root", current.root, "--json",
+  ], current.root, { PATH: current.fakePath });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /issue_observation_blocked: network_failed/u);
+  await assert.rejects(readdir(join(current.root, ".shield", "journals")), { code: "ENOENT" });
+});
