@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readFile, realpath } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
@@ -2582,4 +2582,98 @@ export async function resolvePreparedMissionTransitionV1ForTest(
   journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1>,
 ): Promise<ResolvePreparedMissionTransitionResultV1> {
   return resolvePreparedMissionTransitionV1WithDependencies(input, journalDependencies);
+}
+
+/** Authority-neutral binding used by the standing/manual break-glass adapter.
+ * It only projects a verified repository-loaded authorization and never writes
+ * mission, authority, receipt, lock, or preparation state. */
+export interface StandingBreakGlassAuthorizationV1 {
+  readonly schemaVersion: 1;
+  readonly contractVersion: "shield.standing-break-glass-authorization.v1";
+  readonly authorizationId: string;
+  readonly authorizationDigest: string;
+  readonly humanPrincipalId: string;
+  readonly humanBindingId: string;
+  readonly signingKeyRef: string;
+  readonly decision: "approved";
+  readonly sourceKind: "standing_manual_break_glass";
+  readonly validity: "active";
+  readonly trustedRegistryDigest: string;
+  readonly signatureBase64: string;
+}
+
+export interface StandingBreakGlassDispatchV1 {
+  readonly missionId: string;
+  readonly subjectId: string;
+  readonly repositoryId: string;
+  readonly branch: string;
+  readonly planId: string;
+  readonly planDigest: string;
+  readonly baseRevision: string;
+  readonly headRevision: string;
+  readonly approvedPaths: readonly string[];
+  readonly actionIds: readonly string[];
+  readonly effectKeys: readonly string[];
+  readonly capabilityClasses: readonly string[];
+  readonly maySeatId: "may";
+  readonly mayModelId: string;
+  readonly mayRuntimeId: string;
+  readonly mayExecutorId: string;
+  readonly dispatchId: string;
+  readonly receiptId: string;
+  readonly validationCommandIds: readonly string[];
+  readonly exclusions: readonly string[];
+}
+
+export interface StandingBreakGlassBindingInputV1 {
+  readonly authorizationLocator: { readonly authorizationId: string; readonly authorizationDigest: string };
+  readonly authorization: StandingBreakGlassAuthorizationV1;
+  readonly trustedBinding: TrustedHumanBinding;
+  readonly dispatch: StandingBreakGlassDispatchV1;
+}
+
+export type StandingBreakGlassBindingResultV1 =
+  | { readonly state: "valid"; readonly bindingId: string; readonly dispatch: StandingBreakGlassDispatchV1; readonly authorizationDigest: string }
+  | { readonly state: "invalid"; readonly code: "malformed" | "binding_invalid" | "scope_invalid"; readonly errors: readonly string[] };
+
+const STANDING_AUTH_FIELDS = ["schemaVersion", "contractVersion", "authorizationId", "authorizationDigest", "humanPrincipalId", "humanBindingId", "signingKeyRef", "decision", "sourceKind", "validity", "trustedRegistryDigest", "signatureBase64"] as const;
+const STANDING_LOCATOR_FIELDS = ["authorizationId", "authorizationDigest"] as const;
+const STANDING_DISPATCH_FIELDS = ["missionId", "subjectId", "repositoryId", "branch", "planId", "planDigest", "baseRevision", "headRevision", "approvedPaths", "actionIds", "effectKeys", "capabilityClasses", "maySeatId", "mayModelId", "mayRuntimeId", "mayExecutorId", "dispatchId", "receiptId", "validationCommandIds", "exclusions"] as const;
+const STANDING_EXCLUSIONS = ["publication", "merge", "deployment", "release", "final_acceptance", "credential_security_expansion", "destructive_effect", "material_scope_expansion"] as const;
+
+function standingDigest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("base64url")}`;
+}
+
+function standingClosed(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
+  return plain(value) && Reflect.ownKeys(value).length === fields.length && fields.every((field) => Object.prototype.hasOwnProperty.call(value, field));
+}
+
+function standingText(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 512;
+}
+
+export function bindStandingBreakGlassImplementationV1(input: unknown): StandingBreakGlassBindingResultV1 {
+  if (!standingClosed(input, ["authorizationLocator", "authorization", "trustedBinding", "dispatch"])) return { state: "invalid", code: "malformed", errors: ["Standing break-glass input must be closed."] };
+  const candidate = input as unknown as StandingBreakGlassBindingInputV1;
+  if (!standingClosed(candidate.authorizationLocator, STANDING_LOCATOR_FIELDS) || !standingClosed(candidate.authorization, STANDING_AUTH_FIELDS) || !standingClosed(candidate.dispatch, STANDING_DISPATCH_FIELDS)) {
+    return { state: "invalid", code: "malformed", errors: ["Standing break-glass input contains an open or malformed component."] };
+  }
+  const auth = candidate.authorization;
+  if (auth.schemaVersion !== 1 || auth.contractVersion !== "shield.standing-break-glass-authorization.v1" || auth.decision !== "approved" || auth.sourceKind !== "standing_manual_break_glass" || auth.validity !== "active" || !standingText(auth.authorizationId) || !standingText(auth.humanPrincipalId) || !standingText(auth.humanBindingId) || !standingText(auth.signingKeyRef) || !/^sha256:[A-Za-z0-9_-]{43}$/u.test(auth.authorizationDigest) || !/^sha256:[A-Za-z0-9_-]{43}$/u.test(auth.trustedRegistryDigest) || !/^[A-Za-z0-9+/]+={0,2}$/u.test(auth.signatureBase64)) {
+    return { state: "invalid", code: "malformed", errors: ["Standing authorization contract is malformed."] };
+  }
+  if (candidate.authorizationLocator.authorizationId !== auth.authorizationId || candidate.authorizationLocator.authorizationDigest !== auth.authorizationDigest) return { state: "invalid", code: "binding_invalid", errors: ["Caller locator does not match the repository-loaded authorization."] };
+  if (candidate.trustedBinding.seatId !== "coulson" || candidate.trustedBinding.humanPrincipalId !== auth.humanPrincipalId || candidate.trustedBinding.bindingId !== auth.humanBindingId || candidate.trustedBinding.signingKeyRef !== auth.signingKeyRef || standingDigest(candidate.trustedBinding) !== auth.trustedRegistryDigest) return { state: "invalid", code: "binding_invalid", errors: ["Authorization is not bound to the exact trusted Coulson registry entry."] };
+  const signedPayloadValue = { schemaVersion: auth.schemaVersion, contractVersion: auth.contractVersion, authorizationId: auth.authorizationId, humanPrincipalId: auth.humanPrincipalId, humanBindingId: auth.humanBindingId, signingKeyRef: auth.signingKeyRef, decision: auth.decision, sourceKind: auth.sourceKind, validity: auth.validity, trustedRegistryDigest: auth.trustedRegistryDigest };
+  if (standingDigest(signedPayloadValue) !== auth.authorizationDigest) return { state: "invalid", code: "binding_invalid", errors: ["Authorization digest does not cover the signed repository contract."] };
+  const signedPayload = canonicalJson(signedPayloadValue);
+  try {
+    const key = createPublicKey({ key: Buffer.from(candidate.trustedBinding.publicKeySpkiBase64, "base64"), format: "der", type: "spki" });
+    if (!verify(null, Buffer.from(signedPayload), key, Buffer.from(auth.signatureBase64, "base64"))) return { state: "invalid", code: "binding_invalid", errors: ["Standing authorization signature verification failed."] };
+  } catch { return { state: "invalid", code: "binding_invalid", errors: ["Standing authorization key or signature is invalid."] }; }
+  const dispatch = candidate.dispatch;
+  if (dispatch.maySeatId !== "may" || dispatch.approvedPaths.length === 0 || dispatch.approvedPaths.some((path) => path.startsWith("/") || path.includes("..")) || dispatch.exclusions.length !== STANDING_EXCLUSIONS.length || STANDING_EXCLUSIONS.some((value) => !dispatch.exclusions.includes(value)) || [dispatch.missionId, dispatch.subjectId, dispatch.repositoryId, dispatch.branch, dispatch.planId, dispatch.planDigest, dispatch.baseRevision, dispatch.headRevision, dispatch.mayModelId, dispatch.mayRuntimeId, dispatch.mayExecutorId, dispatch.dispatchId, dispatch.receiptId].some((value) => !standingText(value))) return { state: "invalid", code: "scope_invalid", errors: ["Dispatch is outside the closed bounded implementation scope."] };
+  const bindingId = standingDigest({ authorization: auth.authorizationDigest, dispatch });
+  return { state: "valid", bindingId, dispatch, authorizationDigest: auth.authorizationDigest };
 }
