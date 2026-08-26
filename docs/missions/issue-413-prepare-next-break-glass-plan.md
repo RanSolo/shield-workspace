@@ -20,15 +20,24 @@ sidecar, and content-addressed preparation projection. It must not accept
 caller-authored authority fields or fabricate journals, receipts, signatures,
 or canonical authority.
 
+Frozen sources are `.shield/standing-break-glass-authorization.json`,
+`.shield/trusted-human-bindings.json`, `.shield/standing-break-glass-dispatch.json`,
+its digest sidecar, the exact reviewed-plan artifact, and the stable Git
+HEAD/tree snapshot. The #411 v1 contracts apply. The signed anchor covers the
+canonical dispatch tuple with `authorizationEvidenceDigest` set to null;
+evidence is the canonical authorization-file plus registry-file byte digest.
+May identity comes only from the repository-owned dispatch artifact.
+
 For the exact activation condition (authorized issue-intake mission,
-implementation-ready projection, standing break-glass profile, and explicit
-repository-owned artifact set), `prepare-next` routes to one terminal
+implementation-ready projection, `standing_manual_break_glass.v1` profile, and
+all four required repository-owned artifact paths present and valid),
+`prepare-next` routes to one terminal
 implementation-dispatch result before legacy, #408, guided-review, or
 publication branches. Absent artifacts return the closed waiting result;
 malformed/stale/conflicting artifacts return closed blocked results. Only the
-locator and non-authoritative output mode are permitted CLI inputs; options
-cannot affect authority, tuple, identities, or artifacts. The terminal result
-cannot fall through to another route.
+mission ID, repository root, `--json`, and configured Fury model are permitted
+CLI inputs; no locator, authority, tuple, identity, path, or effect fields are
+caller-selectable. The terminal result cannot fall through.
 
 Bind the dispatch to the exact mission, plan, repository, branch, HEAD,
 approved paths, effects, May identity, validation commands, exclusions, and
@@ -41,9 +50,11 @@ record a closed, secret-free diagnostic with allowlisted stage enums
 (`direct_observation`, `wrapper_observation`, `consistency_observation`,
 `error_mapping`), call ordinal/order, adapter/tool identity, executable
 binding, cwd class, timeout class, and outcome enum. Redact tokens, paths
-outside the approved root, and raw errors; return or persist it only as a
-content-addressed create-once artifact. Authenticated direct-success followed
-by wrapper failure remains explicitly `wrapper_failure_after_direct_success`.
+outside the approved root, and raw errors; return a failure diagnostic only
+(never persist failure). Admitted sequences are direct observation; wrapper
+observation; or direct → wrapper → consistency when consistency is claimed.
+Authenticated direct-success followed by wrapper failure remains explicitly
+`wrapper_failure_after_direct_success`.
 Preserve fail-closed behavior and zero effect on failure or replay.
 
 ## Approved implementation paths
@@ -68,5 +79,7 @@ Preserve fail-closed behavior and zero effect on failure or replay.
 - caller options and coordinated artifact substitution cannot change authority,
   identities, or dispatch tuple;
 - replay preserves bytes and filesystem identities.
+- every admitted observer sequence/outcome and every disallowed prepare-next
+  option is covered deterministically.
 
 No #408 implementation or publication is included.
