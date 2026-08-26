@@ -21,7 +21,8 @@ semantics.
 
 1. Keep the existing two-observation sequence and all existing issue identity,
    revision, acceptance-criteria, repository, and prepared-worktree checks.
-2. Freeze exactly one additive diagnostic object:
+2. Freeze exactly one additive diagnostic carrier and shape: a readonly
+   `MissionCliError.issueObservationDiagnostic` property containing only
    `{ stage: "initial" | "consistency", reason: <closed-reason> }`.
    Do not add alternate projections or free-form fields. Preserve the existing
    `issue_observation_blocked: <reason>` compatibility surface.
@@ -30,7 +31,8 @@ semantics.
    `authentication_failed`, `authorization_failed`,
    `credential_environment_unsafe`, `credential_state_unavailable`,
    `invalid_issue_reference`, `invalid_utf8`, `issue_not_found`,
-   `issue_not_open`, `malformed_response`, `network_failed`, `not_found`,
+   `issue_identity_mismatch`, `issue_not_open`, `malformed_response`,
+   `network_failed`, `not_found`,
    `observation_time_invalid`, `rate_limited`,
    `repository_identity_mismatch`, `timeout`, `host_rejected`, `unknown`.
    A missing, non-string, or unlisted reason maps to the single generic closed
@@ -53,6 +55,9 @@ bound to Fury's `gpt-5.6-sol` review runtime.
   `stage=initial` and preserve the existing reason.
 - Consistency-stage network, authentication, and timeout failures carry
   `stage=consistency` and preserve the existing reason.
+- Missing, non-string, and unlisted reasons in both stages produce exactly
+  `reason=unknown`, retain the compatibility message without interpolation,
+  and expose no other diagnostic keys.
 - Successful two-observation intake and observation mismatch remain unchanged.
 - Safe-field assertions prove no secret, raw error, query, issue content, or
   absolute path enters the diagnostic.
