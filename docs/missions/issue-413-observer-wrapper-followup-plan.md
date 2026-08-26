@@ -21,6 +21,15 @@ Make canonical issue intake consume the truthful adapter observation when the au
 
 The implementation must observe and bind the actual child invocation result and stage, distinguish direct observation from wrapper/consistency failures, preserve `network_failed` only when emitted by the corresponding observed call, and keep handler non-invocation and fail-closed behavior. Identical replay remains deterministic and must not mutate a journal when intake is blocked.
 
+## Frozen production call graph and precedence
+
+1. `beginIssueIntake` selects only its repository-owned production observer, `observeGitHubIssueV1`; dependency injection remains test-only and no caller-supplied or out-of-band observation may enter the production command.
+2. Observation ordinal `initial:1` invokes `observeGitHubIssueV1(issueRef, { cwd: root })`. That adapter must project the closed observer environment, invoke `defaultGitHubIssueByteRunner("gh", ["api", "graphql", ...])` once, and classify that exact child result. A blocked result terminates intake before compilation, downstream handlers, or journal mutation.
+3. After the first observation succeeds, `beginIssueIntake` performs its existing configuration, binding-registry, prepared-receipt, and repository readback checks. For a fresh mission only, observation ordinal `consistency:2` invokes the same adapter again with the same issue reference and root. A blocked or non-identical second observation terminates before journal initialization.
+4. The standalone direct `gh issue view` command is reproduction evidence only. It is never accepted as a production observation, substituted response, fallback input, or authority source.
+5. Adapter outcomes retain this closed precedence: invalid request/options; unavailable observer runner; unsafe projected environment; exact child-process exit classification (`authentication_failed`, `authorization_failed`, `rate_limited`, `timeout`, `not_found`, `network_failed`, then `host_rejected`); UTF-8/size/JSON validation; repository and issue identity; open-state and label shape; acceptance-criteria parsing. `network_failed` may be emitted only from the exact child-process result classified at its actual ordinal. The outer mission command, wrapper exception, or later consistency failure must not synthesize or overwrite it.
+6. Diagnostic output binds the actual ordinal and stage: `initial:1` maps with `initial`, `consistency:2` maps with `consistency`, and later consistency mismatch remains `issue_drifted`. Existing redaction, timeout, environment isolation, strict response validation, and failure precedence remain unchanged.
+
 ## Approved paths
 
 - `packages/shield-team-system/github/adapter-v1.mjs`
@@ -39,4 +48,6 @@ The implementation must observe and bind the actual child invocation result and 
 
 ## Validation and exclusions
 
-Use Node 22 with normal Nx cache enabled and lane-local workspace data. Validate focused adapter/CLI targets and affected targets as configured; Multiband is excluded. Fury reviews this exact plan, May implements only these paths after PASS, Mack validates the exact implementation revision, and Fury performs final conformance. Standing authority permits the bounded implementation and draft PR only after both reviews PASS; merge, deployment, release, final acceptance, credential/security expansion, and scope expansion remain excluded.
+Use Node 22 with normal Nx cache enabled and lane-local workspace data. Validate focused adapter/CLI targets and affected targets as configured; Multiband is excluded.
+
+The closed execution sequence is: Fury PASS on this exact plan; verification of the existing signed standing authority and its exclusions; terminal May implementation limited to the approved paths; Mack validation of the exact implementation revision; final Fury conformance review; then draft PR publication only. No implementation begins before plan PASS and standing-authority verification, and no draft publication occurs before Mack and final Fury PASS. Merge, deployment, release, final acceptance, credential/security expansion, and scope expansion remain excluded.
