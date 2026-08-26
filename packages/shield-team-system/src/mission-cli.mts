@@ -2705,7 +2705,7 @@ async function classifyNativeIssueIntakePlanningJournal(
   if (!issueObservationMatchesNativeIssueIntakeBinding(wrapped.observation, sourceBinding)) {
     const diagnostic = closedIssueObservationDiagnostic([
       issueObservationDiagnosticEvent("direct_observation", "direct:1", "success"),
-      issueObservationDiagnosticEvent("wrapper_observation", "wrapper:2", "success", "gh_cli", "gh_issue_view"),
+      issueObservationDiagnosticEvent("wrapper_observation", "wrapper:2", "success"),
       issueObservationDiagnosticEvent("consistency_observation", "consistency:3", "consistency_failed"),
       issueObservationDiagnosticEvent("error_mapping", "error_mapping:4", "consistency_failed"),
     ]);
