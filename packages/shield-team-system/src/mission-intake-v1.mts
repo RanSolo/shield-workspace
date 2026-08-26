@@ -249,6 +249,79 @@ export interface RuntimeObservationV1 {
   readonly evidenceRefs: readonly string[];
 }
 
+/**
+ * The standing break-glass rail is admitted only for the exact, already
+ * authorized issue-intake shape.  This predicate is deliberately narrower
+ * than the general profile-aware mission validator: it is a routing guard,
+ * not an authority producer.
+ */
+export function isStandingManualBreakGlassImplementationReadyV1(input: unknown): boolean {
+  if (!isPlainObject(input)) return false;
+  const projection = input as Record<string, unknown>;
+  return projection.schemaVersion === 9 &&
+    projection.authorization === "authorized" &&
+    projection.implementationAuthorityState === "waiting" &&
+    projection.implementationAuthority === null &&
+    projection.execution === "not-started" &&
+    projection.finalAcceptance === "waiting" &&
+    Array.isArray(projection.runtimeBindings) && projection.runtimeBindings.length === 0 &&
+    Array.isArray(projection.activeRuntimeBindings) && projection.activeRuntimeBindings.length === 0 &&
+    Array.isArray(projection.publicationAuthorizations) && projection.publicationAuthorizations.length === 0 &&
+    Array.isArray(projection.effects) && projection.effects.length === 0;
+}
+
+export const ISSUE_OBSERVATION_DIAGNOSTIC_SCHEMA_VERSION = 1 as const;
+export const ISSUE_OBSERVATION_DIAGNOSTIC_CONTRACT_VERSION = "mission.issue-observation-diagnostic.v1" as const;
+
+export type IssueObservationDiagnosticEventV1 = Readonly<{
+  stage: "direct_observation" | "wrapper_observation" | "consistency_observation" | "error_mapping";
+  callOrder: "direct:1" | "wrapper:2" | "consistency:3" | "error_mapping:2" | "error_mapping:3" | "error_mapping:4";
+  adapter: "github" | "gh_cli";
+  executable: "repository_adapter" | "gh_issue_view";
+  cwd: "approved_root";
+  timeout: "default" | "bounded";
+  outcome: "success" | "network_failed" | "auth_failed" | "wrapper_failed" | "consistency_failed" | "wrapper_failure_after_direct_success";
+}>;
+
+export type IssueObservationDiagnosticSequenceResultV1 =
+  | { readonly state: "valid"; readonly schemaVersion: 1; readonly contractVersion: typeof ISSUE_OBSERVATION_DIAGNOSTIC_CONTRACT_VERSION; readonly events: readonly IssueObservationDiagnosticEventV1[] }
+  | { readonly state: "invalid"; readonly code: "invalid_issue_observation_diagnostic" };
+
+const ISSUE_OBSERVATION_DIAGNOSTIC_EVENT_FIELDS = ["stage", "callOrder", "adapter", "executable", "cwd", "timeout", "outcome"] as const;
+const ISSUE_OBSERVATION_DIAGNOSTIC_SEQUENCES: readonly (readonly Pick<IssueObservationDiagnosticEventV1, "stage" | "callOrder" | "outcome">[])[] = [
+  [{ stage: "direct_observation", callOrder: "direct:1", outcome: "success" }, { stage: "wrapper_observation", callOrder: "wrapper:2", outcome: "success" }],
+  [{ stage: "direct_observation", callOrder: "direct:1", outcome: "success" }, { stage: "wrapper_observation", callOrder: "wrapper:2", outcome: "wrapper_failed" }, { stage: "error_mapping", callOrder: "error_mapping:3", outcome: "wrapper_failure_after_direct_success" }],
+  [{ stage: "direct_observation", callOrder: "direct:1", outcome: "success" }, { stage: "wrapper_observation", callOrder: "wrapper:2", outcome: "success" }, { stage: "consistency_observation", callOrder: "consistency:3", outcome: "success" }],
+  [{ stage: "direct_observation", callOrder: "direct:1", outcome: "network_failed" }, { stage: "error_mapping", callOrder: "error_mapping:2", outcome: "network_failed" }],
+  [{ stage: "direct_observation", callOrder: "direct:1", outcome: "auth_failed" }, { stage: "error_mapping", callOrder: "error_mapping:2", outcome: "auth_failed" }],
+  [{ stage: "direct_observation", callOrder: "direct:1", outcome: "success" }, { stage: "wrapper_observation", callOrder: "wrapper:2", outcome: "success" }, { stage: "consistency_observation", callOrder: "consistency:3", outcome: "consistency_failed" }, { stage: "error_mapping", callOrder: "error_mapping:4", outcome: "consistency_failed" }],
+];
+
+function exactDiagnosticEvent(value: unknown): value is IssueObservationDiagnosticEventV1 {
+  if (!isPlainObject(value) || Reflect.ownKeys(value).length !== ISSUE_OBSERVATION_DIAGNOSTIC_EVENT_FIELDS.length ||
+      ISSUE_OBSERVATION_DIAGNOSTIC_EVENT_FIELDS.some((field) => !Object.hasOwn(value, field))) return false;
+  return value.stage === "direct_observation" || value.stage === "wrapper_observation" || value.stage === "consistency_observation" || value.stage === "error_mapping"
+    ? (value.callOrder === "direct:1" || value.callOrder === "wrapper:2" || value.callOrder === "consistency:3" || value.callOrder === "error_mapping:2" || value.callOrder === "error_mapping:3" || value.callOrder === "error_mapping:4") &&
+      (value.adapter === "github" || value.adapter === "gh_cli") && (value.executable === "repository_adapter" || value.executable === "gh_issue_view") && value.cwd === "approved_root" &&
+      (value.timeout === "default" || value.timeout === "bounded") && (value.outcome === "success" || value.outcome === "network_failed" || value.outcome === "auth_failed" || value.outcome === "wrapper_failed" || value.outcome === "consistency_failed" || value.outcome === "wrapper_failure_after_direct_success")
+    : false;
+}
+
+export function validateIssueObservationDiagnosticSequenceV1(input: unknown): IssueObservationDiagnosticSequenceResultV1 {
+  if (!isPlainObject(input) || Reflect.ownKeys(input).length !== 3 || input.schemaVersion !== ISSUE_OBSERVATION_DIAGNOSTIC_SCHEMA_VERSION ||
+      input.contractVersion !== ISSUE_OBSERVATION_DIAGNOSTIC_CONTRACT_VERSION || !Object.hasOwn(input, "events") || !Array.isArray(input.events) ||
+      input.events.length < 2 || input.events.length > 4 || input.events.some((event) => !exactDiagnosticEvent(event))) {
+    return { state: "invalid", code: "invalid_issue_observation_diagnostic" };
+  }
+  const events = input.events as IssueObservationDiagnosticEventV1[];
+  const matches = ISSUE_OBSERVATION_DIAGNOSTIC_SEQUENCES.some((sequence) => sequence.length === events.length && sequence.every((expected, index) => {
+    const actual = events[index];
+    return actual.stage === expected.stage && actual.callOrder === expected.callOrder && actual.outcome === expected.outcome;
+  }));
+  if (!matches) return { state: "invalid", code: "invalid_issue_observation_diagnostic" };
+  return { state: "valid", schemaVersion: ISSUE_OBSERVATION_DIAGNOSTIC_SCHEMA_VERSION, contractVersion: ISSUE_OBSERVATION_DIAGNOSTIC_CONTRACT_VERSION, events: Object.freeze(events.map((event) => Object.freeze({ ...event }))) };
+}
+
 export interface MissionIntakeRequestV1 {
   readonly schemaVersion: 1;
   readonly contractVersion: "mission.intake.v1";

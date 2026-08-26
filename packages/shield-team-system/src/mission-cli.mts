@@ -64,6 +64,8 @@ import {
 import {
   compileIssueIntakeV1,
   computeIssueIntakeMissionIdV1,
+  isStandingManualBreakGlassImplementationReadyV1,
+  validateIssueObservationDiagnosticSequenceV1,
   type IssueIntakeCompiledMissionV1,
 } from "./mission-intake-v1.mjs";
 import { getMissionProfileV1, type MissionProfileId } from "./mission-profile-v1.mjs";
@@ -147,6 +149,8 @@ import {
 } from "./authorize-wheels-up-executor-v1.mjs";
 import {
   materializeReviewedMissionTransitionV1,
+  prepareStandingBreakGlassImplementationV1,
+  standingBreakGlassAuthorizationPresentV1,
   prepareMissionTransitionSessionV1,
   resolvePreparedMissionTransitionV1,
   resolveSeatDispatchIdentityByReceiptIdV1,
@@ -2143,6 +2147,10 @@ type NativeIssueIntakeClassificationV1 =
   }>
   | Readonly<{ state: "valid_non_applicable" }>
   | Readonly<{
+    state: "authorized_implementation_ready";
+    snapshot: NativeIssueIntakeJournalSnapshotV1;
+  }>
+  | Readonly<{
     state: "planning_ready";
     packet: NativeIssueIntakePlanningPacketV1;
     snapshot: NativeIssueIntakePlanningSnapshotV1;
@@ -2153,6 +2161,11 @@ type NativeIssueIntakeClassificationV1 =
     errors: readonly string[];
     missionId: string;
     repositoryRoot: string;
+    diagnostic?: Readonly<{
+      schemaVersion: 1;
+      contractVersion: "mission.issue-observation-diagnostic.v1";
+      events: readonly unknown[];
+    }>;
   }>;
 
 type NativeIssueIntakePlanningPacketV1 = Readonly<{
@@ -2395,7 +2408,28 @@ function nativeIssueIntakePlanningInvalidBlocked(
     repositoryRoot: classification.repositoryRoot,
     code: classification.code,
     errors: [...classification.errors],
+    ...(classification.diagnostic === undefined ? {} : { diagnostic: classification.diagnostic }),
   });
+}
+
+function closedIssueObservationFailureDiagnostic(reason: unknown): Readonly<{
+  schemaVersion: 1;
+  contractVersion: "mission.issue-observation-diagnostic.v1";
+  events: readonly unknown[];
+}> | undefined {
+  const common = { adapter: "github" as const, executable: "gh_issue_view" as const, cwd: "approved_root" as const, timeout: "bounded" as const };
+  const outcome = reason === "network_failed" || reason === "auth_failed" || reason === "wrapper_failed" || reason === "consistency_failed"
+    ? reason
+    : reason === "authentication_failed" || reason === "authorization_failed" ? "auth_failed" : "wrapper_failed";
+  const events = outcome === "network_failed" || outcome === "auth_failed"
+    ? [{ ...common, stage: "direct_observation", callOrder: "direct:1", outcome }, { ...common, stage: "error_mapping", callOrder: "error_mapping:2", outcome }]
+    : outcome === "consistency_failed"
+      ? [{ ...common, stage: "direct_observation", callOrder: "direct:1", outcome: "success" }, { ...common, stage: "wrapper_observation", callOrder: "wrapper:2", outcome: "success" }, { ...common, stage: "consistency_observation", callOrder: "consistency:3", outcome }, { ...common, stage: "error_mapping", callOrder: "error_mapping:4", outcome }]
+      : [{ ...common, stage: "direct_observation", callOrder: "direct:1", outcome: "success" }, { ...common, stage: "wrapper_observation", callOrder: "wrapper:2", outcome: "wrapper_failed" }, { ...common, stage: "error_mapping", callOrder: "error_mapping:3", outcome: "wrapper_failure_after_direct_success" }];
+  const checked = validateIssueObservationDiagnosticSequenceV1({ schemaVersion: 1, contractVersion: "mission.issue-observation-diagnostic.v1", events });
+  return checked.state === "valid"
+    ? Object.freeze({ schemaVersion: 1 as const, contractVersion: "mission.issue-observation-diagnostic.v1" as const, events: checked.events })
+    : undefined;
 }
 
 function nativeIssueIntakePlanningStable(
@@ -2633,7 +2667,9 @@ async function classifyNativeIssueIntakePlanningJournal(
   const issueRef = `github:${sourceBinding.repositoryNameWithOwner}/issues/${sourceBinding.issueNumber}`;
   const observed = await issueObserver(issueRef, { cwd: root });
   if (observed.state !== "observed") {
-    return { state: "invalid", code: "issue_observation_blocked", errors: [observed.reason], missionId, repositoryRoot: repository.canonicalRoot };
+    const diagnostic = closedIssueObservationFailureDiagnostic(observed.reason);
+    const safeReason = createIssueObservationDiagnostic("consistency", observed.reason).reason;
+    return { state: "invalid", code: "issue_observation_blocked", errors: [safeReason], ...(diagnostic === undefined ? {} : { diagnostic }), missionId, repositoryRoot: repository.canonicalRoot };
   }
   if (!issueObservationMatchesNativeIssueIntakeBinding(observed.observation, sourceBinding)) {
     return {
@@ -2732,6 +2768,17 @@ async function classifyNativeIssueIntakeJournal(
     return { state: "invalid", code: snapshot.code, errors: snapshot.errors, missionId, repositoryRoot };
   }
   if (snapshot.value.journal.kind !== "profile-aware" || !isFreshNativeIssueIntakeJournal(snapshot.value.journal)) {
+    if (snapshot.value.journal.kind === "profile-aware" && isAuthorizedNativeIssueIntakeJournal(snapshot.value.journal) &&
+        isStandingManualBreakGlassImplementationReadyV1(snapshot.value.journal.projection)) {
+      try {
+        const standingAuthorization = await lstat(join(root, ".shield", "standing-break-glass-authorization.json"));
+        if (standingAuthorization.isFile() || standingAuthorization.isSymbolicLink()) {
+          return { state: "authorized_implementation_ready", snapshot: snapshot.value };
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { state: "authorized_implementation_ready", snapshot: snapshot.value };
+      }
+    }
     return { state: "valid_non_applicable" };
   }
   return {
@@ -2857,6 +2904,20 @@ function outputPreparationBlocked(
   else process.stderr.write(`Preparation blocked — ${result.code ?? result.reasonCode ?? result.state}: ${(result.errors ?? []).join(" ")}\n`);
 }
 
+function standingPreparationHuman(result: Extract<Awaited<ReturnType<typeof prepareStandingBreakGlassImplementationV1>>, { state: "implementation_dispatch_ready" }>): string {
+  return [
+    `state: ${result.state}`,
+    `authority: ${result.authority}`,
+    `profile: ${result.profile}`,
+    `missionId: ${result.missionId}`,
+    `bindingId: ${result.bindingId}`,
+    `dispatchId: ${result.dispatch.dispatchId}`,
+    `receiptId: ${result.dispatch.receiptId}`,
+    `projectionPath: ${result.artifacts.projectionPath}`,
+    "No journal, receipt, signature, publication, merge, deployment, release, or final-acceptance effect was performed.",
+  ].join("\n");
+}
+
 async function prepareNext(args: string[], behavior: Readonly<{
   suppressPublicationSuccessOutput?: boolean;
   finalPublicationDecisionOutput?: boolean;
@@ -2874,6 +2935,22 @@ async function prepareNext(args: string[], behavior: Readonly<{
     nativeParser,
     dependencies.afterNativeIssueIntakeJournalHandleRead,
   );
+  if (native.state === "authorized_implementation_ready" && await standingBreakGlassAuthorizationPresentV1(root)) {
+    const callerOptions = [...options.values.keys()].filter((name) => name !== "--root" && name !== "--mission-id");
+    if (callerOptions.length > 0 || options.flags.has("--passcode-stdin")) {
+      throw new MissionCliError("Standing break-glass prepare-next accepts only --mission-id, --root, and --json or --human.", 1);
+    }
+    const prepared = await prepareStandingBreakGlassImplementationV1({
+      repositoryRoot: root,
+      projection: native.snapshot.journal.projection,
+    });
+    if (prepared.state === "implementation_dispatch_ready") {
+      output(prepared, options.flags.has("--json"), standingPreparationHuman(prepared));
+      return 0;
+    }
+    outputPreparationBlocked(prepared, options.flags.has("--json"));
+    return 1;
+  }
   if (native.state === "fresh_eligible") {
     await dependencies.beforeNativeIssueIntakeReadback?.();
     let fresh: NativeIssueIntakeJournalSnapshotV1 | null = null;

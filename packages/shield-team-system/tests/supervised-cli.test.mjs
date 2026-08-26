@@ -22,7 +22,7 @@ import {
   replayProfileAwareMissionJournal,
 } from "../dist/profile-aware-mission-v1.mjs";
 import { appendProfileAwareMissionEntriesAtomicV1, appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
-import { compileIssueIntakeV1 } from "../dist/mission-intake-v1.mjs";
+import { compileIssueIntakeV1, validateIssueObservationDiagnosticSequenceV1 } from "../dist/mission-intake-v1.mjs";
 import { executeAuthorizeWheelsUpV1 } from "../dist/authorize-wheels-up-executor-v1.mjs";
 import {
   assertPublicationAuthorizationFreshness,
@@ -109,6 +109,22 @@ test("standing break-glass binding is closed, deterministic, and read-only", asy
   const productionResult = await bindStandingBreakGlassImplementationV1(repositoryRoot, locatorOnly);
   assert.equal(productionResult.state, "valid", JSON.stringify(productionResult));
   assert.equal((await bindStandingBreakGlassImplementationV1(repositoryRoot, { authorizationLocator: input.authorizationLocator, dispatch: tampered.dispatch })).state, "invalid");
+});
+
+test("issue observation diagnostics admit only the closed repository transition sequences", () => {
+  const event = (stage, callOrder, outcome) => ({ stage, callOrder, adapter: "github", executable: "gh_issue_view", cwd: "approved_root", timeout: "bounded", outcome });
+  const sequences = [
+    [event("direct_observation", "direct:1", "success"), event("wrapper_observation", "wrapper:2", "success")],
+    [event("direct_observation", "direct:1", "success"), event("wrapper_observation", "wrapper:2", "wrapper_failed"), event("error_mapping", "error_mapping:3", "wrapper_failure_after_direct_success")],
+    [event("direct_observation", "direct:1", "success"), event("wrapper_observation", "wrapper:2", "success"), event("consistency_observation", "consistency:3", "success")],
+    [event("direct_observation", "direct:1", "network_failed"), event("error_mapping", "error_mapping:2", "network_failed")],
+    [event("direct_observation", "direct:1", "auth_failed"), event("error_mapping", "error_mapping:2", "auth_failed")],
+    [event("direct_observation", "direct:1", "success"), event("wrapper_observation", "wrapper:2", "success"), event("consistency_observation", "consistency:3", "consistency_failed"), event("error_mapping", "error_mapping:4", "consistency_failed")],
+  ];
+  const diagnostic = (events) => ({ schemaVersion: 1, contractVersion: "mission.issue-observation-diagnostic.v1", events });
+  for (const events of sequences) assert.equal(validateIssueObservationDiagnosticSequenceV1(diagnostic(events)).state, "valid");
+  assert.equal(validateIssueObservationDiagnosticSequenceV1(diagnostic([sequences[0][1], sequences[0][0]])).state, "invalid");
+  assert.equal(validateIssueObservationDiagnosticSequenceV1(diagnostic([{ ...sequences[1][2], rawError: "SECRET", path: "/outside/root" }, sequences[1][0], sequences[1][1]])).state, "invalid");
 });
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -501,12 +517,174 @@ async function nativePlanningFixture() {
   const authorized = await authorizeNativeIssueIntakeFixture({ root, missionId, missionJournalPath, coulson, fitz });
   return {
     ...authorized,
+    compiled: compiled.value,
     source,
     issueObservation,
     issueObserver: async () => ({ state: "observed", observation: issueObservation }),
     preparedWorktreeReceiptDigest: prepared.receipt.receiptDigest,
   };
 }
+
+async function installStandingBreakGlassArtifacts(current) {
+  const digest = (value) => `sha256:${createHash("sha256").update(canonicalJson(value)).digest("base64url")}`;
+  const rawDigest = (value) => `sha256:${createHash("sha256").update(value, "utf8").digest("base64url")}`;
+  const registryBytes = await readFile(join(current.root, ".shield", "trusted-human-bindings.json"), "utf8");
+  const headRevision = runGit(current.root, ["rev-parse", "HEAD"]);
+  const branch = runGit(current.root, ["branch", "--show-current"]);
+  const planBytes = "# Issue #413 reviewed plan fixture\n";
+  await mkdir(join(current.root, "docs", "missions"), { recursive: true });
+  await writeFile(join(current.root, "docs", "missions", "issue-413-prepare-next-break-glass-plan.md"), planBytes);
+  await mkdir(join(current.root, ".codex", "agents"), { recursive: true });
+  await writeFile(join(current.root, ".codex", "agents", "may.toml"), 'name = "may"\nmodel = "gpt-5.6-luna"\n');
+  const dispatchBase = {
+    missionId: current.missionId,
+    subjectId: current.compiled.brief.subjectId,
+    repositoryId: "RanSolo/fixture",
+    branch,
+    planId: "plan:413",
+    planDigest: rawDigest(planBytes),
+    baseRevision: headRevision,
+    headRevision,
+    approvedPaths: [
+      "packages/shield-team-system/src/mission-cli.mts",
+      "packages/shield-team-system/src/mission-preparation-host-v1.mts",
+      "packages/shield-team-system/src/mission-intake-v1.mts",
+      "packages/shield-team-system/tests/supervised-cli.test.mjs",
+    ],
+    actionIds: ["implementation.apply", "implementation.validate"],
+    effectKeys: ["implementation.commit", "implementation.validation"],
+    capabilityClasses: ["repository.write", "process.execute"],
+    maySeatId: "may",
+    mayModelId: "gpt-5.6-luna",
+    mayRuntimeId: "runtime:codex-hosted-may-luna",
+    mayExecutorId: "executor:codex-hosted-workspace-tools",
+    dispatchId: "dispatch:413",
+    receiptId: "receipt:413",
+    validationCommandIds: ["validation:issue-413:focused", "validation:issue-413:nx"],
+    authorizationEvidenceDigest: "pending",
+    exclusions: ["publication", "merge", "deployment", "release", "final_acceptance", "credential_security_expansion", "destructive_effect", "material_scope_expansion"],
+  };
+  const dispatchAnchorDigest = digest({ ...dispatchBase, authorizationEvidenceDigest: null });
+  const authorizationCore = {
+    schemaVersion: 1,
+    contractVersion: "shield.standing-break-glass-authorization.v1",
+    authorizationId: "authorization:413",
+    humanPrincipalId: current.coulson.binding.humanPrincipalId,
+    humanBindingId: current.coulson.binding.bindingId,
+    signingKeyRef: current.coulson.binding.signingKeyRef,
+    decision: "approved",
+    sourceKind: "standing_manual_break_glass",
+    validity: "active",
+    trustedRegistryDigest: digest(registryBytes),
+    dispatchAnchorDigest,
+  };
+  const authorizationDigest = digest(authorizationCore);
+  const authorization = {
+    ...authorizationCore,
+    authorizationDigest,
+    signatureBase64: sign(null, Buffer.from(canonicalJson(authorizationCore)), current.coulson.privateKey).toString("base64"),
+  };
+  const authorizationBytes = JSON.stringify({ authorization });
+  const authorizationEvidenceDigest = digest({ authorizationFile: authorizationBytes, registryFile: registryBytes });
+  const dispatch = { ...dispatchBase, authorizationEvidenceDigest };
+  await writeFile(join(current.root, ".shield", "standing-break-glass-authorization.json"), authorizationBytes);
+  return { authorization, dispatch };
+}
+
+test("prepare-next routes an authorized native issue intake through repository-owned standing break-glass once and replays exactly", async () => {
+  const current = await nativePlanningFixture();
+  await installStandingBreakGlassArtifacts(current);
+  const journalBefore = await readFile(current.missionJournalPath, "utf8");
+  const journalStatsBefore = await lstat(current.missionJournalPath);
+  const result = await runMissionCliCaptured([
+    "mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json",
+  ], { issueObserver: current.issueObserver });
+  assert.equal(result.status, 0, result.stderr);
+  const first = JSON.parse(result.stdout);
+  assert.equal(first.state, "implementation_dispatch_ready");
+  assert.equal(first.authority, "none");
+  assert.equal(first.profile, "standing_manual_break_glass.v1");
+  assert.deepEqual(first.dispatch.approvedPaths, [
+    "packages/shield-team-system/src/mission-cli.mts",
+    "packages/shield-team-system/src/mission-preparation-host-v1.mts",
+    "packages/shield-team-system/src/mission-intake-v1.mts",
+    "packages/shield-team-system/tests/supervised-cli.test.mjs",
+  ]);
+  assert.deepEqual(first.dispatch.exclusions, ["publication", "merge", "deployment", "release", "final_acceptance", "credential_security_expansion", "destructive_effect", "material_scope_expansion"]);
+  await assert.rejects(lstat(join(current.root, ".shield", "standing-break-glass-dispatch.json")), { code: "ENOENT" });
+  assert.equal(await readFile(current.missionJournalPath, "utf8"), journalBefore);
+  const journalStatsAfter = await lstat(current.missionJournalPath);
+  assert.equal(journalStatsAfter.ino, journalStatsBefore.ino);
+  assert.equal(journalStatsAfter.nlink, journalStatsBefore.nlink);
+  const artifactIdentities = await Promise.all([first.artifacts.dispatchPath, first.artifacts.dispatchDigestPath, first.artifacts.projectionPath].map(async (path) => {
+    const stats = await lstat(path);
+    return { path, ino: stats.ino, nlink: stats.nlink };
+  }));
+  const projectionBytes = await readFile(first.artifacts.projectionPath, "utf8");
+  const replay = await runMissionCliCaptured([
+    "mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json",
+  ], { issueObserver: current.issueObserver });
+  assert.equal(replay.status, 0, replay.stderr);
+  assert.deepEqual(JSON.parse(replay.stdout), first);
+  assert.equal(await readFile(first.artifacts.projectionPath, "utf8"), projectionBytes);
+  assert.deepEqual(await Promise.all(artifactIdentities.map(async ({ path }) => {
+    const stats = await lstat(path);
+    return { path, ino: stats.ino, nlink: stats.nlink };
+  })), artifactIdentities);
+});
+
+test("prepare-next standing break-glass terminal rejects caller steering and does not fall through", async () => {
+  const current = await nativePlanningFixture();
+  await installStandingBreakGlassArtifacts(current);
+  const disallowedOptions = [
+    ["--fury-model", "caller:model"],
+    ["--guided-review-choice", "yes"],
+    ["--guided-review-context", "caller:context"],
+    ["--guided-review-playbook", "caller:playbook"],
+    ["--guided-review-session", "caller:session"],
+    ["--guided-review-response", "caller:response"],
+    ["--guided-review-question-digest", "caller:digest"],
+    ["--guided-review-answer", "caller:answer"],
+    ["--guided-review-finding", "caller:finding"],
+    ["--guided-review-disposition", "caller:disposition"],
+    ["--guided-review-observation", "caller:observation"],
+    ["--guided-review-condition", "caller:condition"],
+    ["--passcode-stdin"],
+  ];
+  for (const option of disallowedOptions) {
+    await assert.rejects(
+      runMissionCli([
+        "mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json", ...option,
+      ], { issueObserver: current.issueObserver }),
+      /Standing break-glass prepare-next accepts only/u,
+    );
+  }
+  await assert.rejects(lstat(join(current.root, ".shield", "audit")), { code: "ENOENT" });
+});
+
+test("prepare-next emits only the closed wrapper-failure observation diagnostic", async () => {
+  const current = await nativePlanningFixture();
+  const result = await runMissionCliCaptured(
+    ["mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root, "--json"],
+    {
+      prepareSession: async () => ({ state: "blocked", missionId: current.missionId, reasonCode: "protected_evidence_mismatch", errors: ["graph missing"] }),
+      preflightProtectedGraphAbsence: async () => ({ state: "absent" }),
+      issueObserver: async () => ({ state: "blocked", reason: "issue_identity_mismatch" }),
+      continueLegacyReviewedTransition: async () => { throw new Error("legacy must not run"); },
+    },
+  );
+  assert.equal(result.status, 1);
+  const blocked = JSON.parse(result.stdout);
+  assert.equal(blocked.code, "issue_observation_blocked");
+  assert.deepEqual(blocked.errors, ["issue_identity_mismatch"]);
+  assert.equal(validateIssueObservationDiagnosticSequenceV1(blocked.diagnostic).state, "valid");
+  assert.deepEqual(blocked.diagnostic.events.map(({ stage, callOrder, outcome }) => ({ stage, callOrder, outcome })), [
+    { stage: "direct_observation", callOrder: "direct:1", outcome: "success" },
+    { stage: "wrapper_observation", callOrder: "wrapper:2", outcome: "wrapper_failed" },
+    { stage: "error_mapping", callOrder: "error_mapping:3", outcome: "wrapper_failure_after_direct_success" },
+  ]);
+  assert.doesNotMatch(result.stdout, /SECRET|raw|stderr|private\/tmp/iu);
+});
 
 async function issueBeginFixture() {
   const current = await nativePlanningFixture();
