@@ -20,19 +20,21 @@ sidecar, and content-addressed preparation projection. It must not accept
 caller-authored authority fields or fabricate journals, receipts, signatures,
 or canonical authority.
 
-Frozen sources are `.shield/standing-break-glass-authorization.json`,
-`.shield/trusted-human-bindings.json`, `.shield/standing-break-glass-dispatch.json`,
-its digest sidecar, the exact reviewed-plan artifact, the stable Git HEAD/tree
-snapshot, and the repository-owned May seat/runtime/executor profile. These
-are immutable inputs; dispatch, digest sidecar, and projection are
-create-once outputs. The #411 v1 contracts apply. The signed anchor covers the
+Frozen inputs are the signed standing authorization,
+`.shield/trusted-human-bindings.json`, the exact reviewed-plan artifact, the
+stable Git HEAD/tree snapshot, and the repository-owned May seat/runtime/
+executor profile. Dispatch JSON, its digest sidecar, and the preparation
+projection are create-once outputs, never activation inputs. The #411 v1
+contracts apply. The signed anchor covers the
 canonical dispatch tuple with `authorizationEvidenceDigest` set to null;
 evidence is the canonical authorization-file plus registry-file byte digest.
-May identity comes only from the repository-owned dispatch artifact.
+May identity comes only from the frozen repository-owned May profile. On
+replay, pre-existing output artifacts are accepted only when byte-identical
+to the deterministic derivation; any mismatch is blocked.
 
 For the exact activation condition (authorized issue-intake mission,
 implementation-ready projection, `standing_manual_break_glass.v1` profile, and
-all four required repository-owned artifact paths present and valid),
+all five frozen input sources present and valid),
 `prepare-next` routes to one terminal
 implementation-dispatch result before legacy, #408, guided-review, or
 publication branches. Absent artifacts return the closed waiting result;
