@@ -2673,7 +2673,7 @@ function bindStandingBreakGlassImplementationFromLoadedV1(input: unknown, depend
     return { state: "invalid", code: "malformed", errors: ["Standing authorization contract is malformed."] };
   }
   if (candidate.authorizationLocator.authorizationId !== auth.authorizationId || candidate.authorizationLocator.authorizationDigest !== auth.authorizationDigest) return { state: "invalid", code: "binding_invalid", errors: ["Caller locator does not match the repository-loaded authorization."] };
-  if (trustedBinding.seatId !== "coulson" || trustedBinding.humanPrincipalId !== auth.humanPrincipalId || trustedBinding.bindingId !== auth.humanBindingId || trustedBinding.signingKeyRef !== auth.signingKeyRef || standingDigest(trustedBinding) !== auth.trustedRegistryDigest || loaded.authorizationEvidenceDigest !== candidate.dispatch.authorizationEvidenceDigest) return { state: "invalid", code: "binding_invalid", errors: ["Authorization is not bound to the exact trusted Coulson registry entry."] };
+  if (trustedBinding.seatId !== "coulson" || trustedBinding.humanPrincipalId !== auth.humanPrincipalId || trustedBinding.bindingId !== auth.humanBindingId || trustedBinding.signingKeyRef !== auth.signingKeyRef || loaded.authorizationEvidenceDigest !== candidate.dispatch.authorizationEvidenceDigest) return { state: "invalid", code: "binding_invalid", errors: ["Authorization is not bound to the exact trusted Coulson registry entry."] };
   const signedPayloadValue = { schemaVersion: auth.schemaVersion, contractVersion: auth.contractVersion, authorizationId: auth.authorizationId, humanPrincipalId: auth.humanPrincipalId, humanBindingId: auth.humanBindingId, signingKeyRef: auth.signingKeyRef, decision: auth.decision, sourceKind: auth.sourceKind, validity: auth.validity, trustedRegistryDigest: auth.trustedRegistryDigest };
   if (standingDigest(signedPayloadValue) !== auth.authorizationDigest) return { state: "invalid", code: "binding_invalid", errors: ["Authorization digest does not cover the signed repository contract."] };
   const signedPayload = canonicalJson(signedPayloadValue);
@@ -2696,11 +2696,30 @@ export async function bindStandingBreakGlassImplementationV1(repositoryRoot: str
   if (typeof repositoryRoot !== "string" || !repositoryRoot.startsWith(sep)) return { state: "invalid", code: "malformed", errors: ["Repository root is invalid."] };
   if (!standingClosed(input, ["authorizationLocator", "dispatch"])) return { state: "invalid", code: "malformed", errors: ["Standing break-glass input must be closed."] };
   try {
-    const shieldRoot = join(repositoryRoot, ".shield");
-    const authorizationEnvelope = JSON.parse(await readFile(join(shieldRoot, "standing-break-glass-authorization.json"), "utf8")) as unknown;
-    const expectedDispatch = JSON.parse(await readFile(join(shieldRoot, "standing-break-glass-dispatch.json"), "utf8")) as unknown;
-    if (!standingClosed(authorizationEnvelope, ["authorization", "trustedBinding", "authorizationEvidenceDigest"]) || !standingClosed(expectedDispatch, STANDING_DISPATCH_FIELDS)) return { state: "invalid", code: "binding_invalid", errors: ["Repository break-glass artifacts are not closed."] };
-    const loaded = { authorization: authorizationEnvelope.authorization as StandingBreakGlassAuthorizationV1, trustedBinding: authorizationEnvelope.trustedBinding as TrustedHumanBinding, authorizationEvidenceDigest: authorizationEnvelope.authorizationEvidenceDigest as string };
-    return bindStandingBreakGlassImplementationFromLoadedV1(input, { loadAuthorization: (locator) => locator.authorizationId === loaded.authorization.authorizationId && locator.authorizationDigest === loaded.authorization.authorizationDigest ? loaded : null, expectedDispatch: expectedDispatch as unknown as StandingBreakGlassDispatchV1 });
+    const canonicalRoot = await realpath(repositoryRoot);
+    const gitStat = await lstat(join(canonicalRoot, ".git"));
+    if (!gitStat.isDirectory() && !gitStat.isFile()) return { state: "invalid", code: "binding_invalid", errors: ["Repository root is not a registered Git worktree."] };
+    const shieldRoot = join(canonicalRoot, ".shield");
+    const stable = async (path: string): Promise<{ bytes: string; value: unknown } | null> => {
+      const before = await lstat(path); if (!before.isFile()) return null;
+      const bytes = await readFile(path, "utf8");
+      const after = await lstat(path);
+      if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) return null;
+      return { bytes, value: JSON.parse(bytes) as unknown };
+    };
+    const authorizationFile = await stable(join(shieldRoot, "standing-break-glass-authorization.json"));
+    const registryFile = await stable(join(shieldRoot, "trusted-human-bindings.json"));
+    const dispatchFile = await stable(join(shieldRoot, "standing-break-glass-dispatch.json"));
+    if (authorizationFile === null || registryFile === null || dispatchFile === null) return { state: "invalid", code: "binding_invalid", errors: ["Repository break-glass artifacts could not be stably read."] };
+    if (!standingClosed(authorizationFile.value, ["authorization"]) || !standingClosed(registryFile.value, ["schemaVersion", "bindings"]) || !Array.isArray(registryFile.value.bindings) || !standingClosed(dispatchFile.value, STANDING_DISPATCH_FIELDS)) return { state: "invalid", code: "binding_invalid", errors: ["Repository break-glass artifacts are not closed."] };
+    const authorizationEnvelope = authorizationFile.value;
+    const registry = registryFile.value;
+    const authorization = authorizationEnvelope.authorization as StandingBreakGlassAuthorizationV1;
+    const trustedBinding = (registry.bindings as unknown[]).find((binding: unknown) => plain(binding) && binding.bindingId === authorization.humanBindingId && binding.humanPrincipalId === authorization.humanPrincipalId && binding.seatId === "coulson") as TrustedHumanBinding | undefined;
+    if (trustedBinding === undefined) return { state: "invalid", code: "binding_invalid", errors: ["Repository trusted Coulson binding is missing."] };
+    const loaded = { authorization, trustedBinding, authorizationEvidenceDigest: standingDigest({ authorizationFile: authorizationFile.bytes, registryFile: registryFile.bytes }) };
+    if (authorization.trustedRegistryDigest !== standingDigest(registryFile.bytes)) return { state: "invalid", code: "binding_invalid", errors: ["Authorization does not bind the exact trusted registry bytes."] };
+    if (loaded.authorizationEvidenceDigest !== (dispatchFile.value as unknown as StandingBreakGlassDispatchV1).authorizationEvidenceDigest) return { state: "invalid", code: "binding_invalid", errors: ["Dispatch does not bind immutable authorization evidence."] };
+    return bindStandingBreakGlassImplementationFromLoadedV1(input, { loadAuthorization: (locator) => locator.authorizationId === loaded.authorization.authorizationId && locator.authorizationDigest === loaded.authorization.authorizationDigest ? loaded : null, expectedDispatch: dispatchFile.value as unknown as StandingBreakGlassDispatchV1 });
   } catch { return { state: "invalid", code: "binding_invalid", errors: ["Repository break-glass artifacts could not be loaded."] }; }
 }
