@@ -24,9 +24,11 @@ The predecessor dispatch identifies #386 at its historical revision and must rem
 
 ## Smallest repair
 
-Change only the repository-owned dispatcher admission needed to accept this already-closed repository-relative read request through the existing safe read policy. Preserve strict closed JSON, path/no-follow boundaries, search policy, claim identity, append integrity, single-consumer replay, and cross-repository isolation. The repair must permit the exact W8 read-shaped continuation without granting general tool policy or changing unrelated admission categories.
+Change only the repository-owned corrected-successor capability gate needed to accept the exact already-closed W8 `[read]` tuple: request digest, evidence digest, receipt, terminal digest, denial code/reason/ordinal, and durable repository/workspace/mission/subject/revision identities. Every mismatch must fail closed; all other `[read]` requests and existing `[read,search]` behavior remain unchanged. Preserve strict closed JSON, path/no-follow boundaries, search policy, claim identity, append integrity, single-consumer replay, and cross-repository isolation.
 
-Add focused production-shaped tests that prove the exact request reaches historical evidence replay, returns the unchanged denial, preserves the predecessor receipt and evidence bytes, and performs no new claim, append, execution, or receipt emission. Reject absolute, unsafe, malformed, extra-field, conflicting, and cross-repository requests.
+The terminal result is the existing W8 failed result with `replayed:true`, returned before claim, successor construction, execution, re-emission, ledger append, or receipt emission. This recovery creates no successor and does not replay or rewrite a receipt. Do not change read/search descriptors, argument validation, path policy, ranged-read EOF behavior, prompts, or general tool admission; the defect is only the corrected-successor capability gate.
+
+Add a hermetic focused test fixture in the existing test file that proves the exact request reaches historical evidence replay, returns the unchanged denial with `replayed:true`, preserves byte-for-byte identical ledger and evidence snapshots, and performs no claim, append, execution, re-emission, or receipt emission. Mutate every immutable binding (including stale/conflicting/cross-repository identities) and reject each mutation. Reject absolute, unsafe, malformed, and extra-field requests. The fixture must not depend on `/private/tmp` or #386/#406 branches.
 
 ## Exact implementation scope
 
@@ -39,7 +41,7 @@ The plan artifact itself is the only current change. This plan does not authoriz
 
 ## Explicit exclusions
 
-No changes to #416 implementation files, #386 or #406 evidence, receipts, journals, plans, or branches; no evidence rewrite, receipt replay, authority creation, new tool policy, broad search-policy change, new rail activation, GitHub mutation, publication, merge, deployment, release, or final acceptance. No human gate is requested by this authority-none plan.
+No changes to #416 implementation files, #386 or #406 evidence, receipts, journals, plans, or branches; no evidence rewrite, receipt replay, receipt re-emission, ledger append, authority creation, new tool policy, broad search-policy change, read/search descriptor changes, argument/path/EOF changes, prompts, new rail activation, GitHub mutation, publication, merge, deployment, release, or final acceptance. No human gate is requested by this authority-none plan.
 
 ## Validation and review
 
