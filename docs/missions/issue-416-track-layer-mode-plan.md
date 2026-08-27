@@ -16,13 +16,13 @@ Track-Layer Mode builds the delivery system; ordinary Delivery Mode uses it. It 
 
 ## One selected existing-rail failure
 
-This slice repairs only the publication-preparation gap proven by #406/#408: exact #406 implementation HEAD `400a60a0eb4bf6dbf549b08e3b99a89572a57cec` has truthful manual Break Glass provenance, Mack PASS, and hosted Fury APPROVE, but the canonical publication graph requires implementation authority, runtime binding, and publication authorization and therefore cannot derive the real Coulson draft-PR PIN without fabricating a receipt or journal history. The related prerequisite is [Issue #408](https://github.com/RanSolo/shield-workspace/issues/408).
+This slice repairs only the publication-preparation gap observed around #406/#408. Exact #406 HEAD `400a60a0eb4bf6dbf549b08e3b99a89572a57cec` and its observable denial are non-authorizing regression facts. They may be retained as a clearly labelled production-shaped fixture for replay, but they are not historical certification artifacts, authority, or evidence that can satisfy #416 admission. The related prerequisite is [Issue #408](https://github.com/RanSolo/shield-workspace/issues/408).
 
 ## Bounded repair contract
 
-Define one repository-owned, authority-none break-glass publication-preparation contract. It must bind the manual decision text/provenance, exact plan and transition digests, exact implementation HEAD, approved paths and exclusions, exact Mack/Fury evidence, and only `review.branch.push` plus `review.pull_request.create_draft`. It must derive the normal Coulson publication PIN input without fabricating signatures, receipts, or journal entries, and must leave ordinary graph-backed publication unchanged.
+Define one repository-owned Track-Layer construction contract, separate from the non-authorizing #406 regression fixture. Admission requires separate bounded construction authority binding the exact #416 plan revision, sole writer, owned implementation paths, approved scope, and every exclusion. The repair may then define a repository-owned break-glass publication-preparation contract, but it must bind only the admitted construction scope and derive the normal Coulson publication PIN input without fabricating signatures, receipts, or journal entries. Ordinary graph-backed publication remains unchanged.
 
-One writer owns the repair ledger and evidence append. Each record is immutable, canonically digested, exact-revision bound, and single-consumer. The unchanged failed #406 publication preparation operation is replayed as the terminal acceptance case: the repair must prove the same failure is admitted only through the bounded contract, with no evidence rewrite, receipt replay, authority widening, or unrelated effect.
+One admitted writer owns the repair ledger and evidence append. Each record is immutable, canonically digested, exact-revision bound, and single-consumer. The unchanged failed #406 publication-preparation operation is retained solely as the production-shaped terminal replay case: the repair must prove the same failure without treating its old denial or any #406 review claim as certification, and with no evidence rewrite, receipt replay, authority widening, or unrelated effect.
 
 ## Explicit exclusions
 
@@ -32,10 +32,10 @@ No parallel crews, promotion machinery, new seat cards, new-rail activation, imp
 
 - one exact writer and immutable repair-ledger/evidence contract;
 - exact plan, transition, implementation, Mack, and Fury bindings with fail-closed stale/conflict handling;
-- unchanged failed operation replayed without mutation or receipt replay;
+- unchanged #406 failed operation replayed as a non-authorizing production-shaped fixture, without mutation or receipt replay;
 - focused cache-enabled Nx validation;
-- independent Mack exact-revision validation;
-- Fury exact-revision conformance;
+- fresh Mack PASS bound to the eventual #416 implementation HEAD;
+- independent primary Fury conformance bound to the eventual #416 implementation HEAD;
 - human-reviewed PR gate before any publication effect.
 
-This is an authority-none planning artifact. It grants no implementation, publication, merge, deployment, release, or final-acceptance authority.
+Fresh Mack and independent primary Fury evidence are not available at planning time and cannot be inherited from #406/#408. They bind the eventual #416 implementation HEAD only after the separately authorized Track-Layer construction is complete. This is an authority-none planning artifact; it grants no implementation, publication, merge, deployment, release, or final-acceptance authority.
