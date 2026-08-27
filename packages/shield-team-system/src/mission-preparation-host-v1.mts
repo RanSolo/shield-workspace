@@ -3055,6 +3055,17 @@ export interface BreakGlassPublicationPreparationInputV1 {
   readonly repositoryId: string;
   readonly canonicalRepositoryRoot: string;
   readonly branch: string;
+  readonly constructionAuthority: Readonly<{
+    authority: "coulson_human";
+    authorityRef: string;
+    planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79";
+    planPath: "docs/missions/issue-416-track-layer-mode-plan.md";
+    planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc";
+    writerSeatId: "may";
+    ownedPaths: readonly ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"];
+    scope: "issue-416-track-layer-publication-preparation";
+    exclusions: readonly string[];
+  }>;
   readonly manualDecision: Readonly<{
     text: string;
     sourceKind: "manual_non_canonical";
@@ -3109,6 +3120,7 @@ export type BreakGlassPublicationPreparationResultV1 = Readonly<
       readonly missionId: string;
       readonly subjectId: string;
       readonly repositoryId: string;
+      readonly constructionAuthority: BreakGlassPublicationPreparationInputV1["constructionAuthority"];
       readonly manualDecision: BreakGlassPublicationPreparationInputV1["manualDecision"];
       readonly plan: BreakGlassPublicationPreparationInputV1["plan"];
       readonly implementationHead: string;
@@ -3151,10 +3163,11 @@ export type BreakGlassPublicationPreparationInvalidCodeV1 =
 
 const BREAK_GLASS_PREPARATION_FIELDS = [
   "schemaVersion", "contractVersion", "authority", "preparationId", "missionId", "subjectId", "repositoryId",
-  "canonicalRepositoryRoot", "branch", "manualDecision", "plan", "implementation", "publication", "exclusions",
+  "canonicalRepositoryRoot", "branch", "constructionAuthority", "manualDecision", "plan", "implementation", "publication", "exclusions",
   "mackEvidence", "furyEvidence", "failedOperation",
 ] as const;
 const BREAK_GLASS_MANUAL_FIELDS = ["text", "sourceKind", "provenanceRef"] as const;
+const BREAK_GLASS_CONSTRUCTION_FIELDS = ["authority", "authorityRef", "planCommit", "planPath", "planRawSha256", "writerSeatId", "ownedPaths", "scope", "exclusions"] as const;
 const BREAK_GLASS_PLAN_FIELDS = ["authority", "planCommit", "planPath", "planRawSha256", "transitionPlanId", "transitionPlanDigest"] as const;
 const BREAK_GLASS_IMPLEMENTATION_FIELDS = ["headRevision", "approvedPaths"] as const;
 const BREAK_GLASS_PUBLICATION_FIELDS = ["approvedPaths", "permittedEffects"] as const;
@@ -3163,6 +3176,13 @@ const BREAK_GLASS_OPERATION_FIELDS = ["operationId", "operationDigest", "outcome
 const BREAK_GLASS_EFFECTS = Object.freeze(["review.branch.push", "review.pull_request.create_draft"] as const);
 const BREAK_GLASS_EXCLUSIONS = Object.freeze([
   "merge", "deployment", "release", "final_acceptance", "issue_closure", "expanded_scope", "evidence_rewrite", "receipt_replay",
+] as const);
+const BREAK_GLASS_OWNED_PATHS = Object.freeze([
+  "packages/shield-team-system/src/mission-preparation-host-v1.mts",
+  "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs",
+] as const);
+const BREAK_GLASS_CONSTRUCTION_EXCLUSIONS = Object.freeze([
+  "authority_fabrication", "journal_fabrication", "evidence_fabrication", "receipt_replay", "publication", "merge", "deployment", "release", "final_acceptance", "parallel_crews", "scope_expansion",
 ] as const);
 
 function breakGlassClosed(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
@@ -3231,6 +3251,16 @@ export function bindBreakGlassPublicationPreparationV1(input: unknown): BreakGla
   if (candidate.schemaVersion !== 1 || candidate.contractVersion !== "shield.break-glass-publication-preparation.v1" || candidate.authority !== "none" ||
       !identifier(candidate.preparationId) || !identifier(candidate.missionId) || !identifier(candidate.subjectId) || !identifier(candidate.repositoryId) ||
       !breakGlassRoot(candidate.canonicalRepositoryRoot) || !identifier(candidate.branch)) return breakGlassError("malformed", "Break-glass publication preparation identity is malformed.");
+  if (!breakGlassClosed(candidate.constructionAuthority, BREAK_GLASS_CONSTRUCTION_FIELDS) ||
+      candidate.constructionAuthority.authority !== "coulson_human" || !identifier(candidate.constructionAuthority.authorityRef) ||
+      candidate.constructionAuthority.planCommit !== "52044ac5284a1b6980e422c7eeaf58ee76dc0e79" ||
+      candidate.constructionAuthority.planPath !== "docs/missions/issue-416-track-layer-mode-plan.md" ||
+      candidate.constructionAuthority.planRawSha256 !== "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc" ||
+      candidate.constructionAuthority.writerSeatId !== "may" || candidate.constructionAuthority.scope !== "issue-416-track-layer-publication-preparation" ||
+      canonicalJson(candidate.constructionAuthority.ownedPaths) !== canonicalJson(BREAK_GLASS_OWNED_PATHS) ||
+      canonicalJson(candidate.constructionAuthority.exclusions) !== canonicalJson(BREAK_GLASS_CONSTRUCTION_EXCLUSIONS)) {
+    return breakGlassError("malformed", "Issue #416 construction authority is not the exact Coulson-approved two-file scope.");
+  }
   if (!breakGlassClosed(candidate.manualDecision, BREAK_GLASS_MANUAL_FIELDS) || candidate.manualDecision.sourceKind !== "manual_non_canonical" ||
       !standingText(candidate.manualDecision.text) || !identifier(candidate.manualDecision.provenanceRef)) return breakGlassError("manual_provenance_invalid", "Manual decision provenance must be explicit and non-canonical.");
   if (!breakGlassClosed(candidate.plan, BREAK_GLASS_PLAN_FIELDS) || candidate.plan.authority !== "none" || !breakGlassRevision(candidate.plan.planCommit) ||
@@ -3274,6 +3304,7 @@ export function bindBreakGlassPublicationPreparationV1(input: unknown): BreakGla
   const semantic = computeReviewPublicationAuthoritySemanticIdentityV1(authority);
   if (semantic.state === "blocked") return breakGlassError("replay_conflict", "Derived publication PIN input is not a valid review-publication identity.");
   const bindingDigest = breakGlassDigest({
+    constructionAuthority: candidate.constructionAuthority,
     manualDecision: candidate.manualDecision,
     plan: candidate.plan,
     implementation: { headRevision: candidate.implementation.headRevision, approvedPaths: implementationPaths },
@@ -3305,6 +3336,7 @@ export function bindBreakGlassPublicationPreparationV1(input: unknown): BreakGla
       missionId: candidate.missionId,
       subjectId: candidate.subjectId,
       repositoryId: candidate.repositoryId,
+      constructionAuthority: structuredClone(candidate.constructionAuthority),
       manualDecision: structuredClone(candidate.manualDecision),
       plan: structuredClone(candidate.plan),
       implementationHead: candidate.implementation.headRevision,

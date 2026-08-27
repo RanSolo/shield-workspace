@@ -101,6 +101,17 @@ function breakGlassPreparationInput(overrides = {}) {
     repositoryId: "RanSolo/shield-workspace",
     canonicalRepositoryRoot: "/workspace/shield-workspace",
     branch: "agent/issue-416-track-layer-mode",
+    constructionAuthority: {
+      authority: "coulson_human",
+      authorityRef: "authorization:coulson:issue-416",
+      planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79",
+      planPath: "docs/missions/issue-416-track-layer-mode-plan.md",
+      planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc",
+      writerSeatId: "may",
+      ownedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"],
+      scope: "issue-416-track-layer-publication-preparation",
+      exclusions: ["authority_fabrication", "journal_fabrication", "evidence_fabrication", "receipt_replay", "publication", "merge", "deployment", "release", "final_acceptance", "parallel_crews", "scope_expansion"],
+    },
     manualDecision: {
       text: "Coulson authorized the bounded break-glass construction contract.",
       sourceKind: "manual_non_canonical",
@@ -108,9 +119,9 @@ function breakGlassPreparationInput(overrides = {}) {
     },
     plan: {
       authority: "none",
-      planCommit: "1".repeat(40),
+      planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79",
       planPath: "docs/missions/issue-416-track-layer-mode-plan.md",
-      planRawSha256: "2".repeat(64),
+      planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc",
       transitionPlanId: `transition-plan:${"a".repeat(43)}`,
       transitionPlanDigest: `sha256:${"b".repeat(43)}`,
     },
@@ -181,6 +192,7 @@ test("break-glass publication preparation fails closed for stale, widened, confl
     ["widened publication paths", { publication: { ...breakGlassPreparationInput().publication, approvedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "README.md"] } }, "path_scope_invalid"],
     ["conflicting failed replay", { failedOperation: { ...breakGlassPreparationInput().failedOperation, headRevision: "4".repeat(40) } }, "failed_operation_invalid"],
     ["extra field", { unexpected: true }, "malformed"],
+    ["non-authorizing #406 fixture", { missionId: "mission:issue-intake:HgnxEl-ce9oshquwYlZJJS5IQKfFSciS8CfYeQmFSiY", subjectId: "github:RanSolo/shield-workspace/issue/406", implementation: { ...breakGlassPreparationInput().implementation, headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec" } }, "evidence_binding_invalid"],
   ];
   for (const [name, overrides, reasonCode] of cases) {
     const result = bindBreakGlassPublicationPreparationV1(breakGlassPreparationInput(overrides));
