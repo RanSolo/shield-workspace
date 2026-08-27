@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -20,10 +20,10 @@ import {
   resolvePreparedMissionTransitionV1ForTest,
   resolveSeatDispatchIdentityByReceiptIdV1,
   stableRegularTextFileV1ForTest,
-  bindBreakGlassPublicationPreparationV1,
   bindTrackLayerConstructionV1,
   finalizeBreakGlassPublicationPreparationV1,
 } from "../dist/mission-preparation-host-v1.mjs";
+import * as missionPreparationHost from "../dist/mission-preparation-host-v1.mjs";
 import {
   computeCanonicalContractDigestV1,
   computeContentIdV1,
@@ -116,6 +116,33 @@ function trackLayerConstructionInput(overrides = {}) {
   };
 }
 
+function rawSha256(bytes) {
+  return `sha256:${createHash("sha256").update(bytes, "utf8").digest("base64url")}`;
+}
+
+async function finalizationFixture() {
+  const root = await mkdtemp(join(tmpdir(), "issue-416-finalization-"));
+  await execFileSync("git", ["init", "-q", root]);
+  await execFileSync("git", ["-C", root, "config", "user.email", "test@example.invalid"]);
+  await execFileSync("git", ["-C", root, "config", "user.name", "Issue 416 Test"]);
+  await execFileSync("git", ["-C", root, "remote", "add", "origin", "https://github.com/RanSolo/shield-workspace.git"]);
+  await writeFile(join(root, "README.md"), "fixture\n");
+  await execFileSync("git", ["-C", root, "add", "README.md"]);
+  await execFileSync("git", ["-C", root, "commit", "-q", "-m", "fixture"]);
+  const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const construction = bindTrackLayerConstructionV1(trackLayerConstructionInput({ implementationHead: head }));
+  assert.equal(construction.state, "ready");
+  const mackBytes = JSON.stringify({ schemaVersion: 1, artifactKind: "issue-416-mack", missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", implementationHead: head, constructionDigest: construction.constructionDigest, evidenceId: "evidence:issue-416:mack:test", verdict: "PASS", sequence: 1 });
+  const mackDigest = rawSha256(mackBytes);
+  const furyBytes = JSON.stringify({ schemaVersion: 1, artifactKind: "issue-416-fury", missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", implementationHead: head, constructionDigest: construction.constructionDigest, evidenceId: "evidence:issue-416:fury:test", verdict: "APPROVE", mackEvidenceDigest: mackDigest, sequence: 2 });
+  const mackPath = ".shield/audit/issue-416/mack.json";
+  const furyPath = ".shield/audit/issue-416/fury.json";
+  await mkdir(join(root, ".shield/audit/issue-416"), { recursive: true });
+  await writeFile(join(root, mackPath), mackBytes);
+  await writeFile(join(root, furyPath), furyBytes);
+  return { repositoryRoot: root, construction: construction.binding, mackArtifact: { path: mackPath, rawSha256: mackDigest }, furyArtifact: { path: furyPath, rawSha256: rawSha256(furyBytes) } };
+}
+
 test("track-layer construction binds #416 without review artifacts", () => {
   const result = bindTrackLayerConstructionV1(trackLayerConstructionInput());
   assert.equal(result.state, "ready", JSON.stringify(result));
@@ -127,16 +154,40 @@ test("track-layer construction binds #416 without review artifacts", () => {
 });
 
 test("track-layer finalization blocks missing and stale repository evidence", async () => {
-  const construction = bindTrackLayerConstructionV1(trackLayerConstructionInput());
-  assert.equal(construction.state, "ready");
+  const fixture = await finalizationFixture();
   const result = await finalizeBreakGlassPublicationPreparationV1({
-    construction,
-    repositoryRoot: process.cwd(),
+    construction: fixture.construction,
+    repositoryRoot: fixture.repositoryRoot,
     mackArtifact: { path: ".shield/audit/issue-416/mack.json", rawSha256: `sha256:${"a".repeat(43)}` },
     furyArtifact: { path: ".shield/audit/issue-416/fury.json", rawSha256: `sha256:${"b".repeat(43)}` },
   });
   assert.equal(result.state, "blocked");
   assert.equal(result.reasonCode, "evidence_binding_invalid");
+});
+
+test("track-layer finalization succeeds only after recomputing construction and authentic Mack then Fury bytes", async () => {
+  const fixture = await finalizationFixture();
+  const result = await finalizeBreakGlassPublicationPreparationV1(fixture);
+  assert.equal(result.state, "ready", JSON.stringify(result));
+  assert.equal(result.mackEvidence.verdict, "PASS");
+  assert.equal(result.furyEvidence.mackEvidenceDigest, result.mackEvidence.rawSha256);
+  assert.deepEqual(result.publicationPinInput.requestedEffects, ["review.branch.push", "review.pull_request.create_draft"]);
+  const forged = await finalizeBreakGlassPublicationPreparationV1({ ...fixture, construction: { ...fixture.construction, constructionDigest: `sha256:${"f".repeat(43)}` } });
+  assert.equal(forged.state, "blocked");
+});
+
+test("track-layer finalization rejects root substitution and digest or sequence tampering", async () => {
+  const fixture = await finalizationFixture();
+  const substituted = await finalizeBreakGlassPublicationPreparationV1({ ...fixture, repositoryRoot: process.cwd() });
+  assert.equal(substituted.state, "blocked");
+  assert.equal(substituted.reasonCode, "implementation_binding_invalid");
+  const tampered = await finalizeBreakGlassPublicationPreparationV1({ ...fixture, mackArtifact: { ...fixture.mackArtifact, rawSha256: `sha256:${"0".repeat(43)}` } });
+  assert.equal(tampered.state, "blocked");
+  assert.equal(tampered.reasonCode, "evidence_binding_invalid");
+});
+
+test("legacy direct publication binder is not an exported bypass", () => {
+  assert.equal("bindBreakGlassPublicationPreparationV1" in missionPreparationHost, false);
 });
 
 function breakGlassPreparationInput(overrides = {}) {
@@ -215,70 +266,6 @@ function breakGlassPreparationInput(overrides = {}) {
     ...overrides,
   };
 }
-
-test("break-glass publication preparation binds exact evidence and derives draft-only PIN input", () => {
-  const input = breakGlassPreparationInput();
-  const result = bindBreakGlassPublicationPreparationV1(input);
-  assert.equal(result.state, "ready", JSON.stringify(result));
-  assert.equal(result.authority, "none");
-  assert.equal(result.writerSeatId, "may");
-  assert.equal(result.repairLedger.singleConsumer, true);
-  assert.match(result.repairLedger.bindingDigest, /^sha256:/u);
-  assert.equal(result.bindings.manualDecision.text, input.manualDecision.text);
-  assert.equal(result.bindings.plan.transitionPlanDigest, input.plan.transitionPlanDigest);
-  assert.equal(result.bindings.implementationHead, input.implementation.headRevision);
-  assert.deepEqual(result.publicationPinInput.requestedEffects, input.publication.permittedEffects);
-  assert.deepEqual(result.publicationPinInput.authority.permittedEffects, input.publication.permittedEffects);
-  assert.deepEqual(result.publicationPinInput.authority.authorizedPaths, input.publication.approvedPaths);
-  assert.equal(Object.isFrozen(result), true);
-  assert.equal(Object.isFrozen(result.bindings), true);
-  assert.equal(Object.isFrozen(result.repairLedger), true);
-  assert.equal(Object.isFrozen(result.publicationPinInput.authority), true);
-  assert.deepEqual(bindBreakGlassPublicationPreparationV1(input), result);
-  const changedDecision = bindBreakGlassPublicationPreparationV1({
-    ...input,
-    manualDecision: { ...input.manualDecision, text: "A different manual decision." },
-  });
-  assert.equal(changedDecision.state, "ready");
-  assert.notEqual(changedDecision.repairLedger.bindingDigest, result.repairLedger.bindingDigest);
-  assert.equal(input.regressionFixture.outcome, "failed");
-});
-
-test("break-glass publication preparation fails closed for stale, widened, conflicting, and malformed evidence", () => {
-  const cases = [
-    ["stale Mack evidence", { mackEvidence: { ...breakGlassPreparationInput().mackEvidence, reviewedRevision: "4".repeat(40) } }, "evidence_binding_invalid"],
-    ["widened effects", { publication: { ...breakGlassPreparationInput().publication, permittedEffects: ["review.branch.push", "review.pull_request.create_draft", "review.comment.publish"] } }, "effect_scope_invalid"],
-    ["widened publication paths", { publication: { ...breakGlassPreparationInput().publication, approvedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "README.md"] } }, "path_scope_invalid"],
-    ["conflicting failed replay", { regressionFixture: { ...breakGlassPreparationInput().regressionFixture, headRevision: "4".repeat(40) } }, "failed_operation_invalid"],
-    ["extra field", { unexpected: true }, "malformed"],
-    ["caller-authored Mack evidence", { mackEvidence: { ...breakGlassPreparationInput().mackEvidence, sourceKind: "caller" } }, "evidence_binding_invalid"],
-    ["Fury without Mack binding", { furyEvidence: { ...breakGlassPreparationInput().furyEvidence, mackEvidenceDigest: `sha256:${"a".repeat(43)}` } }, "evidence_binding_invalid"],
-  ];
-  for (const [name, overrides, reasonCode] of cases) {
-    const result = bindBreakGlassPublicationPreparationV1(breakGlassPreparationInput(overrides));
-    assert.equal(result.state, "blocked", name);
-    assert.equal(result.reasonCode, reasonCode, name);
-  }
-});
-
-test("aligned #406-shaped revisions remain a regression-only rejection", () => {
-  const result = bindBreakGlassPublicationPreparationV1(breakGlassPreparationInput({
-    plan: {
-      ...breakGlassPreparationInput().plan,
-      planCommit: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
-    },
-    implementation: { ...breakGlassPreparationInput().implementation, headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec" },
-    mackEvidence: { ...breakGlassPreparationInput().mackEvidence, reviewedRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec" },
-    furyEvidence: { ...breakGlassPreparationInput().furyEvidence, reviewedRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec" },
-    regressionFixture: {
-      ...breakGlassPreparationInput().regressionFixture,
-      headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
-      implementationHead: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
-    },
-  }));
-  assert.equal(result.state, "blocked");
-  assert.equal(result.reasonCode, "plan_binding_invalid");
-});
 
 test("prepared publication semantic tuple delegates to the shared closed identity material", () => {
   const preparedAuthority = {

@@ -3146,7 +3146,7 @@ export type TrackLayerConstructionResultV1 = Readonly<
 >;
 
 export interface BreakGlassPublicationPreparationFinalizationInputV1 {
-  readonly construction: Extract<TrackLayerConstructionResultV1, { readonly state: "ready" }>;
+  readonly construction: TrackLayerConstructionInputV1;
   readonly repositoryRoot: string;
   readonly mackArtifact: Readonly<{ readonly path: string; readonly rawSha256: string }>;
   readonly furyArtifact: Readonly<{ readonly path: string; readonly rawSha256: string }>;
@@ -3196,18 +3196,31 @@ async function readTrackLayerArtifact(root: string, reference: Readonly<{ path: 
 export async function finalizeBreakGlassPublicationPreparationV1(input: unknown): Promise<BreakGlassPublicationPreparationFinalizationResultV1> {
   if (!breakGlassClosed(input, TRACK_LAYER_FINALIZATION_FIELDS)) return Object.freeze({ state: "blocked" as const, reasonCode: "malformed" as const, errors: Object.freeze(["Finalization input must be closed."]) });
   const candidate = input as unknown as BreakGlassPublicationPreparationFinalizationInputV1;
-  if (!breakGlassRoot(candidate.repositoryRoot) || !candidate.construction || candidate.construction.state !== "ready" || !breakGlassClosed(candidate.mackArtifact, TRACK_LAYER_ARTIFACT_REF_FIELDS) || !breakGlassClosed(candidate.furyArtifact, TRACK_LAYER_ARTIFACT_REF_FIELDS)) return Object.freeze({ state: "blocked" as const, reasonCode: "malformed" as const, errors: Object.freeze(["Finalization requires a ready construction binding and two artifact references."]) });
-  const mack = await readTrackLayerArtifact(candidate.repositoryRoot, candidate.mackArtifact, "mack");
+  if (!breakGlassRoot(candidate.repositoryRoot) || !breakGlassClosed(candidate.mackArtifact, TRACK_LAYER_ARTIFACT_REF_FIELDS) || !breakGlassClosed(candidate.furyArtifact, TRACK_LAYER_ARTIFACT_REF_FIELDS)) return Object.freeze({ state: "blocked" as const, reasonCode: "malformed" as const, errors: Object.freeze(["Finalization requires raw construction data and two artifact references."]) });
+  const construction = bindTrackLayerConstructionV1(candidate.construction);
+  if (construction.state !== "ready") return Object.freeze({ state: "blocked" as const, reasonCode: construction.reasonCode, errors: construction.errors });
+  let authoritativeRoot: string;
+  let authoritativeHead: string;
+  try {
+    authoritativeRoot = (await realpath(candidate.repositoryRoot));
+    const gitRoot = (await execFile("git", ["-C", authoritativeRoot, "rev-parse", "--show-toplevel"], { shell: false })).stdout.trim();
+    authoritativeHead = (await execFile("git", ["-C", authoritativeRoot, "rev-parse", "HEAD"], { shell: false })).stdout.trim();
+    const origin = (await execFile("git", ["-C", authoritativeRoot, "config", "--get", "remote.origin.url"], { shell: false })).stdout.trim();
+    if (resolve(gitRoot) !== authoritativeRoot || standingRepositoryId(origin) !== "RanSolo/shield-workspace" || authoritativeHead !== construction.implementationHead) throw new Error("repository binding mismatch");
+  } catch {
+    return Object.freeze({ state: "blocked" as const, reasonCode: "implementation_binding_invalid" as const, errors: Object.freeze(["Repository root or HEAD is not the authoritative construction repository."]) });
+  }
+  const mack = await readTrackLayerArtifact(authoritativeRoot, candidate.mackArtifact, "mack");
   if (mack.state === "blocked") return Object.freeze({ state: "blocked" as const, reasonCode: mack.reasonCode, errors: Object.freeze([mack.message]) });
-  const fury = await readTrackLayerArtifact(candidate.repositoryRoot, candidate.furyArtifact, "fury");
+  const fury = await readTrackLayerArtifact(authoritativeRoot, candidate.furyArtifact, "fury");
   if (fury.state === "blocked") return Object.freeze({ state: "blocked" as const, reasonCode: fury.reasonCode, errors: Object.freeze([fury.message]) });
   const mackValue = mack.value;
   const furyValue = fury.value;
-  if (mackValue.missionId !== "mission:issue-416" || mackValue.subjectId !== "github:RanSolo/shield-workspace/issue/416" || mackValue.implementationHead !== candidate.construction.implementationHead || mackValue.constructionDigest !== candidate.construction.constructionDigest || mackValue.verdict !== "PASS" || mackValue.sequence !== 1 || furyValue.missionId !== mackValue.missionId || furyValue.subjectId !== mackValue.subjectId || furyValue.implementationHead !== mackValue.implementationHead || furyValue.constructionDigest !== candidate.construction.constructionDigest || furyValue.verdict !== "APPROVE" || furyValue.sequence !== 2 || furyValue.mackEvidenceDigest !== mack.digest) return Object.freeze({ state: "blocked" as const, reasonCode: "evidence_binding_invalid" as const, errors: Object.freeze(["Fresh Mack then Fury artifacts do not bind the exact #416 construction and Mack evidence digest."]) });
-  const authority: ReviewPublicationAuthorityV1 = { publicationScopeSchemaVersion: 1, contractVersion: "review-publication.v1", authorityKind: "review.publish", authorityRef: `break-glass-publication:${candidate.construction.missionId}`, missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", missionRevisionId: candidate.construction.binding.plan.transitionPlanDigest, repositoryId: "RanSolo/shield-workspace", canonicalRepositoryRoot: candidate.repositoryRoot, branch: "agent/issue-416-track-layer-mode", baseRevisionId: candidate.construction.binding.plan.planCommit, headRevisionId: candidate.construction.implementationHead, authorizedPaths: [...candidate.construction.binding.ownedPaths], permittedEffects: [...BREAK_GLASS_EFFECTS] };
+  if (mackValue.missionId !== "mission:issue-416" || mackValue.subjectId !== "github:RanSolo/shield-workspace/issue/416" || mackValue.implementationHead !== construction.implementationHead || mackValue.constructionDigest !== construction.constructionDigest || mackValue.verdict !== "PASS" || mackValue.sequence !== 1 || furyValue.missionId !== mackValue.missionId || furyValue.subjectId !== mackValue.subjectId || furyValue.implementationHead !== mackValue.implementationHead || furyValue.constructionDigest !== construction.constructionDigest || furyValue.verdict !== "APPROVE" || furyValue.sequence !== 2 || furyValue.mackEvidenceDigest !== mack.digest) return Object.freeze({ state: "blocked" as const, reasonCode: "evidence_binding_invalid" as const, errors: Object.freeze(["Fresh Mack then Fury artifacts do not bind the exact #416 construction and Mack evidence digest."]) });
+  const authority: ReviewPublicationAuthorityV1 = { publicationScopeSchemaVersion: 1, contractVersion: "review-publication.v1", authorityKind: "review.publish", authorityRef: `break-glass-publication:${construction.missionId}`, missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", missionRevisionId: construction.binding.plan.transitionPlanDigest, repositoryId: "RanSolo/shield-workspace", canonicalRepositoryRoot: authoritativeRoot, branch: "agent/issue-416-track-layer-mode", baseRevisionId: construction.binding.plan.planCommit, headRevisionId: construction.implementationHead, authorizedPaths: [...construction.binding.ownedPaths], permittedEffects: [...BREAK_GLASS_EFFECTS] };
   const semantic = computeReviewPublicationAuthoritySemanticIdentityV1(authority);
   if (semantic.state === "blocked") return Object.freeze({ state: "blocked" as const, reasonCode: "replay_conflict" as const, errors: Object.freeze(["Derived publication identity is invalid."]) });
-  return breakGlassFreeze({ state: "ready" as const, authority: "none" as const, constructionDigest: candidate.construction.constructionDigest, mackEvidence: { ...mackValue, rawSha256: mack.digest }, furyEvidence: { ...furyValue, rawSha256: fury.digest }, publicationPinInput: { authority, authorityDigest: computeReviewPublicationAuthorityDigest(authority), semanticIdentity: semantic.semanticIdentity, requestedEffects: [...BREAK_GLASS_EFFECTS] as ["review.branch.push", "review.pull_request.create_draft"] } });
+  return breakGlassFreeze({ state: "ready" as const, authority: "none" as const, constructionDigest: construction.constructionDigest, mackEvidence: { ...mackValue, rawSha256: mack.digest }, furyEvidence: { ...furyValue, rawSha256: fury.digest }, publicationPinInput: { authority, authorityDigest: computeReviewPublicationAuthorityDigest(authority), semanticIdentity: semantic.semanticIdentity, requestedEffects: [...BREAK_GLASS_EFFECTS] as ["review.branch.push", "review.pull_request.create_draft"] } });
 }
 
 export type BreakGlassPublicationPreparationResultV1 = Readonly<
@@ -3352,7 +3365,7 @@ function breakGlassFreeze<T>(value: T): T {
   return value;
 }
 
-export function bindBreakGlassPublicationPreparationV1(input: unknown): BreakGlassPublicationPreparationResultV1 {
+function bindLegacyBreakGlassPublicationPreparationV1(input: unknown): BreakGlassPublicationPreparationResultV1 {
   if (!breakGlassClosed(input, BREAK_GLASS_PREPARATION_FIELDS)) return breakGlassError("malformed", "Break-glass publication preparation input must be closed.");
   const candidate = input as unknown as BreakGlassPublicationPreparationInputV1;
   if (candidate.schemaVersion !== 1 || candidate.contractVersion !== "shield.break-glass-publication-preparation.v1" || candidate.authority !== "none" ||
