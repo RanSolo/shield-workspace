@@ -21,6 +21,8 @@ import {
   resolveSeatDispatchIdentityByReceiptIdV1,
   stableRegularTextFileV1ForTest,
   bindBreakGlassPublicationPreparationV1,
+  bindTrackLayerConstructionV1,
+  finalizeBreakGlassPublicationPreparationV1,
 } from "../dist/mission-preparation-host-v1.mjs";
 import {
   computeCanonicalContractDigestV1,
@@ -89,6 +91,53 @@ const LEGACY_SUBJECT_REVISION = "1".repeat(40);
 const LEGACY_PARENT_MISSION_REVISION = "2".repeat(40);
 const LEGACY_ARTIFACT_REVISION = "3".repeat(40);
 const BASE_TIMESTAMP = "2026-08-01T00:00:00.000Z";
+
+function trackLayerConstructionInput(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    contractVersion: "shield.track-layer-construction.v1",
+    authority: "coulson_human",
+    authorityRef: "authorization:coulson:issue-416",
+    missionId: "mission:issue-416",
+    subjectId: "github:RanSolo/shield-workspace/issue/416",
+    repositoryId: "RanSolo/shield-workspace",
+    plan: {
+      planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79",
+      planPath: "docs/missions/issue-416-track-layer-mode-plan.md",
+      planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc",
+      transitionPlanId: `transition-plan:${"a".repeat(43)}`,
+      transitionPlanDigest: `sha256:${"b".repeat(43)}`,
+    },
+    implementationHead: "b89e41057adfb275fb7d9bcdb96d04c31990a9cf",
+    writerSeatId: "may",
+    ownedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"],
+    exclusions: ["authority_fabrication", "journal_fabrication", "evidence_fabrication", "receipt_replay", "publication", "merge", "deployment", "release", "final_acceptance", "parallel_crews", "scope_expansion"],
+    ...overrides,
+  };
+}
+
+test("track-layer construction binds #416 without review artifacts", () => {
+  const result = bindTrackLayerConstructionV1(trackLayerConstructionInput());
+  assert.equal(result.state, "ready", JSON.stringify(result));
+  assert.equal(result.authority, "none");
+  assert.equal(result.binding.missionId, "mission:issue-416");
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.binding), true);
+  assert.match(result.constructionDigest, /^sha256:/u);
+});
+
+test("track-layer finalization blocks missing and stale repository evidence", async () => {
+  const construction = bindTrackLayerConstructionV1(trackLayerConstructionInput());
+  assert.equal(construction.state, "ready");
+  const result = await finalizeBreakGlassPublicationPreparationV1({
+    construction,
+    repositoryRoot: process.cwd(),
+    mackArtifact: { path: ".shield/audit/issue-416/mack.json", rawSha256: `sha256:${"a".repeat(43)}` },
+    furyArtifact: { path: ".shield/audit/issue-416/fury.json", rawSha256: `sha256:${"b".repeat(43)}` },
+  });
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "evidence_binding_invalid");
+});
 
 function breakGlassPreparationInput(overrides = {}) {
   return {
