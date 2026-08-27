@@ -112,6 +112,17 @@ function trackLayerConstructionInput(overrides = {}) {
     writerSeatId: "may",
     ownedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"],
     exclusions: ["authority_fabrication", "journal_fabrication", "evidence_fabrication", "receipt_replay", "publication", "merge", "deployment", "release", "final_acceptance", "parallel_crews", "scope_expansion"],
+    regressionFixture: {
+      missionId: "mission:issue-intake:HgnxEl-ce9oshquwYlZJJS5IQKfFSciS8CfYeQmFSiY",
+      subjectId: "github:RanSolo/shield-workspace/issue/406",
+      implementationHead: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
+      operationId: "operation:issue-406:failed-publication-preparation",
+      operationDigest: "sha256:ccccccccccccccccccccccccccccccccccccccccccc",
+      outcome: "failed",
+      reasonCode: "canonical_publication_authority_missing",
+      replayOutcome: "rejected_non_authorizing",
+      headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
+    },
     ...overrides,
   };
 }
@@ -151,6 +162,11 @@ test("track-layer construction binds #416 without review artifacts", () => {
   assert.equal(Object.isFrozen(result), true);
   assert.equal(Object.isFrozen(result.binding), true);
   assert.match(result.constructionDigest, /^sha256:/u);
+  assert.equal(result.regressionFixtureDigest, "sha256:ccccccccccccccccccccccccccccccccccccccccccc");
+  assert.equal(result.binding.regressionFixture.replayOutcome, "rejected_non_authorizing");
+  const tampered = bindTrackLayerConstructionV1(trackLayerConstructionInput({ regressionFixture: { ...trackLayerConstructionInput().regressionFixture, operationDigest: `sha256:${"d".repeat(43)}` } }));
+  assert.equal(tampered.state, "blocked");
+  assert.equal(tampered.reasonCode, "failed_operation_invalid");
 });
 
 test("track-layer finalization blocks missing and stale repository evidence", async () => {
@@ -171,6 +187,7 @@ test("track-layer finalization succeeds only after recomputing construction and 
   assert.equal(result.state, "ready", JSON.stringify(result));
   assert.equal(result.mackEvidence.verdict, "PASS");
   assert.equal(result.furyEvidence.mackEvidenceDigest, result.mackEvidence.rawSha256);
+  assert.equal(result.regressionFixtureDigest, "sha256:ccccccccccccccccccccccccccccccccccccccccccc");
   assert.deepEqual(result.publicationPinInput.requestedEffects, ["review.branch.push", "review.pull_request.create_draft"]);
   const forged = await finalizeBreakGlassPublicationPreparationV1({ ...fixture, construction: { ...fixture.construction, constructionDigest: `sha256:${"f".repeat(43)}` } });
   assert.equal(forged.state, "blocked");

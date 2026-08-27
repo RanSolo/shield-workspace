@@ -3138,10 +3138,21 @@ export interface TrackLayerConstructionInputV1 {
   readonly writerSeatId: "may";
   readonly ownedPaths: readonly ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"];
   readonly exclusions: readonly string[];
+  readonly regressionFixture: Readonly<{
+    readonly missionId: "mission:issue-intake:HgnxEl-ce9oshquwYlZJJS5IQKfFSciS8CfYeQmFSiY";
+    readonly subjectId: "github:RanSolo/shield-workspace/issue/406";
+    readonly implementationHead: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec";
+    readonly operationId: "operation:issue-406:failed-publication-preparation";
+    readonly operationDigest: "sha256:ccccccccccccccccccccccccccccccccccccccccccc";
+    readonly outcome: "failed";
+    readonly reasonCode: "canonical_publication_authority_missing";
+    readonly replayOutcome: "rejected_non_authorizing";
+    readonly headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec";
+  }>;
 }
 
 export type TrackLayerConstructionResultV1 = Readonly<
-  | { readonly state: "ready"; readonly authority: "none"; readonly contractVersion: "shield.track-layer-construction.v1"; readonly missionId: "mission:issue-416"; readonly subjectId: "github:RanSolo/shield-workspace/issue/416"; readonly implementationHead: string; readonly constructionDigest: string; readonly binding: Readonly<TrackLayerConstructionInputV1> }
+  | { readonly state: "ready"; readonly authority: "none"; readonly contractVersion: "shield.track-layer-construction.v1"; readonly missionId: "mission:issue-416"; readonly subjectId: "github:RanSolo/shield-workspace/issue/416"; readonly implementationHead: string; readonly constructionDigest: string; readonly regressionFixtureDigest: "sha256:ccccccccccccccccccccccccccccccccccccccccccc"; readonly binding: Readonly<TrackLayerConstructionInputV1> }
   | { readonly state: "blocked"; readonly reasonCode: BreakGlassPublicationPreparationInvalidCodeV1; readonly errors: readonly string[] }
 >;
 
@@ -3153,16 +3164,18 @@ export interface BreakGlassPublicationPreparationFinalizationInputV1 {
 }
 
 export type BreakGlassPublicationPreparationFinalizationResultV1 = Readonly<
-  | { readonly state: "ready"; readonly authority: "none"; readonly constructionDigest: string; readonly mackEvidence: Readonly<Record<string, unknown>>; readonly furyEvidence: Readonly<Record<string, unknown>>; readonly publicationPinInput: Readonly<{ readonly authority: Readonly<ReviewPublicationAuthorityV1>; readonly authorityDigest: string; readonly semanticIdentity: string; readonly requestedEffects: readonly ["review.branch.push", "review.pull_request.create_draft"] }> }
+  | { readonly state: "ready"; readonly authority: "none"; readonly constructionDigest: string; readonly regressionFixtureDigest: "sha256:ccccccccccccccccccccccccccccccccccccccccccc"; readonly mackEvidence: Readonly<Record<string, unknown>>; readonly furyEvidence: Readonly<Record<string, unknown>>; readonly publicationPinInput: Readonly<{ readonly authority: Readonly<ReviewPublicationAuthorityV1>; readonly authorityDigest: string; readonly semanticIdentity: string; readonly requestedEffects: readonly ["review.branch.push", "review.pull_request.create_draft"] }> }
   | { readonly state: "blocked"; readonly reasonCode: BreakGlassPublicationPreparationInvalidCodeV1; readonly errors: readonly string[] }
 >;
 
-const TRACK_LAYER_CONSTRUCTION_FIELDS = ["schemaVersion", "contractVersion", "authority", "authorityRef", "missionId", "subjectId", "repositoryId", "plan", "implementationHead", "writerSeatId", "ownedPaths", "exclusions"] as const;
+const TRACK_LAYER_CONSTRUCTION_FIELDS = ["schemaVersion", "contractVersion", "authority", "authorityRef", "missionId", "subjectId", "repositoryId", "plan", "implementationHead", "writerSeatId", "ownedPaths", "exclusions", "regressionFixture"] as const;
 const TRACK_LAYER_PLAN_FIELDS = ["planCommit", "planPath", "planRawSha256", "transitionPlanId", "transitionPlanDigest"] as const;
 const TRACK_LAYER_FINALIZATION_FIELDS = ["construction", "repositoryRoot", "mackArtifact", "furyArtifact"] as const;
 const TRACK_LAYER_ARTIFACT_REF_FIELDS = ["path", "rawSha256"] as const;
 const TRACK_LAYER_EXCLUSIONS = Object.freeze(["authority_fabrication", "journal_fabrication", "evidence_fabrication", "receipt_replay", "publication", "merge", "deployment", "release", "final_acceptance", "parallel_crews", "scope_expansion"] as const);
 const TRACK_LAYER_OWNED_PATHS = Object.freeze(["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"] as const);
+const TRACK_LAYER_406_FIELDS = ["missionId", "subjectId", "implementationHead", "operationId", "operationDigest", "outcome", "reasonCode", "replayOutcome", "headRevision"] as const;
+const TRACK_LAYER_406_OPERATION_DIGEST = "sha256:ccccccccccccccccccccccccccccccccccccccccccc" as const;
 
 function trackLayerRawSha256(bytes: string): string { return `sha256:${createHash("sha256").update(bytes, "utf8").digest("base64url")}`; }
 
@@ -3175,9 +3188,10 @@ export function bindTrackLayerConstructionV1(input: unknown): TrackLayerConstruc
   if (!breakGlassClosed(candidate.plan, TRACK_LAYER_PLAN_FIELDS) || candidate.plan.planCommit !== "52044ac5284a1b6980e422c7eeaf58ee76dc0e79" || candidate.plan.planPath !== "docs/missions/issue-416-track-layer-mode-plan.md" || candidate.plan.planRawSha256 !== "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc" || !TRANSITION_PLAN_ID.test(candidate.plan.transitionPlanId) || !breakGlassDigestValue(candidate.plan.transitionPlanDigest)) return trackLayerError("plan_binding_invalid", "Construction plan binding is not frozen to #416.");
   const ownedPaths = breakGlassPathSet(candidate.ownedPaths);
   if (ownedPaths === null || canonicalJson(ownedPaths) !== canonicalJson(TRACK_LAYER_OWNED_PATHS) || canonicalJson(candidate.exclusions) !== canonicalJson(TRACK_LAYER_EXCLUSIONS)) return trackLayerError("path_scope_invalid", "Construction paths or exclusions exceed the approved scope.");
+  if (!breakGlassClosed(candidate.regressionFixture, TRACK_LAYER_406_FIELDS) || candidate.regressionFixture.missionId !== "mission:issue-intake:HgnxEl-ce9oshquwYlZJJS5IQKfFSciS8CfYeQmFSiY" || candidate.regressionFixture.subjectId !== "github:RanSolo/shield-workspace/issue/406" || candidate.regressionFixture.implementationHead !== "400a60a0eb4bf6dbf549b08e3b99a89572a57cec" || candidate.regressionFixture.operationId !== "operation:issue-406:failed-publication-preparation" || candidate.regressionFixture.operationDigest !== TRACK_LAYER_406_OPERATION_DIGEST || candidate.regressionFixture.outcome !== "failed" || candidate.regressionFixture.reasonCode !== "canonical_publication_authority_missing" || candidate.regressionFixture.replayOutcome !== "rejected_non_authorizing" || candidate.regressionFixture.headRevision !== candidate.regressionFixture.implementationHead) return trackLayerError("failed_operation_invalid", "The fixed #406 regression replay fixture is changed or authorizing.");
   const binding = structuredClone(candidate);
   const constructionDigest = trackLayerRawSha256(canonicalJson(binding));
-  return breakGlassFreeze({ state: "ready" as const, authority: "none" as const, contractVersion: "shield.track-layer-construction.v1" as const, missionId: candidate.missionId, subjectId: candidate.subjectId, implementationHead: candidate.implementationHead, constructionDigest, binding });
+  return breakGlassFreeze({ state: "ready" as const, authority: "none" as const, contractVersion: "shield.track-layer-construction.v1" as const, missionId: candidate.missionId, subjectId: candidate.subjectId, implementationHead: candidate.implementationHead, constructionDigest, regressionFixtureDigest: candidate.regressionFixture.operationDigest, binding });
 }
 
 async function readTrackLayerArtifact(root: string, reference: Readonly<{ path: string; rawSha256: string }>, kind: "mack" | "fury"): Promise<{ state: "valid"; value: Record<string, unknown>; digest: string } | { state: "blocked"; reasonCode: BreakGlassPublicationPreparationInvalidCodeV1; message: string }> {
@@ -3220,7 +3234,7 @@ export async function finalizeBreakGlassPublicationPreparationV1(input: unknown)
   const authority: ReviewPublicationAuthorityV1 = { publicationScopeSchemaVersion: 1, contractVersion: "review-publication.v1", authorityKind: "review.publish", authorityRef: `break-glass-publication:${construction.missionId}`, missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", missionRevisionId: construction.binding.plan.transitionPlanDigest, repositoryId: "RanSolo/shield-workspace", canonicalRepositoryRoot: authoritativeRoot, branch: "agent/issue-416-track-layer-mode", baseRevisionId: construction.binding.plan.planCommit, headRevisionId: construction.implementationHead, authorizedPaths: [...construction.binding.ownedPaths], permittedEffects: [...BREAK_GLASS_EFFECTS] };
   const semantic = computeReviewPublicationAuthoritySemanticIdentityV1(authority);
   if (semantic.state === "blocked") return Object.freeze({ state: "blocked" as const, reasonCode: "replay_conflict" as const, errors: Object.freeze(["Derived publication identity is invalid."]) });
-  return breakGlassFreeze({ state: "ready" as const, authority: "none" as const, constructionDigest: construction.constructionDigest, mackEvidence: { ...mackValue, rawSha256: mack.digest }, furyEvidence: { ...furyValue, rawSha256: fury.digest }, publicationPinInput: { authority, authorityDigest: computeReviewPublicationAuthorityDigest(authority), semanticIdentity: semantic.semanticIdentity, requestedEffects: [...BREAK_GLASS_EFFECTS] as ["review.branch.push", "review.pull_request.create_draft"] } });
+  return breakGlassFreeze({ state: "ready" as const, authority: "none" as const, constructionDigest: construction.constructionDigest, regressionFixtureDigest: construction.binding.regressionFixture.operationDigest, mackEvidence: { ...mackValue, rawSha256: mack.digest }, furyEvidence: { ...furyValue, rawSha256: fury.digest }, publicationPinInput: { authority, authorityDigest: computeReviewPublicationAuthorityDigest(authority), semanticIdentity: semantic.semanticIdentity, requestedEffects: [...BREAK_GLASS_EFFECTS] as ["review.branch.push", "review.pull_request.create_draft"] } });
 }
 
 export type BreakGlassPublicationPreparationResultV1 = Readonly<
