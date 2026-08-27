@@ -106,6 +106,7 @@ function trackLayerConstructionInput(overrides = {}) {
       transitionPlanId: `transition-plan:${"a".repeat(43)}`,
       transitionPlanDigest: `sha256:${"b".repeat(43)}`,
     },
+    scope: "issue-416-track-layer-publication-preparation",
     implementationHead: "b89e41057adfb275fb7d9bcdb96d04c31990a9cf",
     writerSeatId: "may",
     ownedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"],
@@ -129,45 +130,74 @@ function rawSha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes, "utf8").digest("base64url")}`;
 }
 
+function artifactContentDigest(value) {
+  const { terminalEntryDigest: _terminalEntryDigest, ...content } = value;
+  return rawSha256(canonicalJson(content));
+}
+
+function artifactContentId(kind, digest) {
+  return `issue-416-${kind}-artifact:${digest.slice("sha256:".length)}`;
+}
+
 async function finalizationFixture() {
   const root = await mkdtemp(join(tmpdir(), "issue-416-finalization-"));
-  const repositoryConfig = await readFile(fileURLToPath(new URL("../../../.shield/config.json", import.meta.url)), "utf8");
-  const trustedBindings = await readFile(fileURLToPath(new URL("../../../.shield/trusted-human-bindings.json", import.meta.url)), "utf8");
+  const repositoryConfigValue = JSON.parse(await readFile(fileURLToPath(new URL("../../../.shield/config.json", import.meta.url)), "utf8"));
+  const trustedBindingsValue = JSON.parse(await readFile(fileURLToPath(new URL("../../../.shield/trusted-human-bindings.json", import.meta.url)), "utf8"));
   const planBytes = await readFile(fileURLToPath(new URL("../../../docs/missions/issue-416-track-layer-mode-plan.md", import.meta.url)), "utf8");
   await execFileSync("git", ["init", "-q", root]);
   await execFileSync("git", ["-C", root, "config", "user.email", "test@example.invalid"]);
   await execFileSync("git", ["-C", root, "config", "user.name", "Issue 416 Test"]);
   await execFileSync("git", ["-C", root, "remote", "add", "origin", "https://github.com/RanSolo/shield-workspace.git"]);
-  await writeFile(join(root, "README.md"), "fixture\n");
-  await mkdir(join(root, ".shield"), { recursive: true });
-  await mkdir(join(root, "docs/missions"), { recursive: true });
+  await execFileSync("git", ["-C", root, "fetch", "-q", process.cwd(), "52044ac5284a1b6980e422c7eeaf58ee76dc0e79"]);
+  await execFileSync("git", ["-C", root, "checkout", "-q", "-B", "agent/issue-416-track-layer-mode", "52044ac5284a1b6980e422c7eeaf58ee76dc0e79"]);
+  await writeFile(join(root, "packages/shield-team-system/src/mission-preparation-host-v1.mts"), await readFile(fileURLToPath(new URL("../src/mission-preparation-host-v1.mts", import.meta.url)), "utf8"));
+  await writeFile(join(root, "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"), await readFile(fileURLToPath(new URL("./mission-preparation-host-v1.test.mjs", import.meta.url)), "utf8"));
+  await execFileSync("git", ["-C", root, "add", "packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"]);
+  await execFileSync("git", ["-C", root, "commit", "-q", "-m", "fixture implementation"]);
+  const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const keyPair = generateKeyPairSync("ed25519");
+  const publicKeySpkiBase64 = keyPair.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  const signingKeyRef = computeEd25519SigningKeyRef(publicKeySpkiBase64);
+  trustedBindingsValue.bindings[0] = { ...trustedBindingsValue.bindings[0], signingKeyRef, publicKeySpkiBase64 };
+  repositoryConfigValue.trustedHumanBindingRefs = repositoryConfigValue.trustedHumanBindingRefs.map((binding) => binding.seatId === "coulson" ? { ...binding, bindingRef: signingKeyRef } : binding);
+  const repositoryConfig = JSON.stringify(repositoryConfigValue);
+  const trustedBindings = JSON.stringify(trustedBindingsValue);
+  await mkdir(join(root, ".shield/audit/issue-416"), { recursive: true });
   await writeFile(join(root, ".shield", "config.json"), repositoryConfig);
   await writeFile(join(root, ".shield", "trusted-human-bindings.json"), trustedBindings);
-  await writeFile(join(root, "docs/missions/issue-416-track-layer-mode-plan.md"), planBytes);
-  await execFileSync("git", ["-C", root, "add", "README.md"]);
-  await execFileSync("git", ["-C", root, "add", ".shield/config.json", ".shield/trusted-human-bindings.json"]);
-  await execFileSync("git", ["-C", root, "commit", "-q", "-m", "fixture"]);
-  await execFileSync("git", ["-C", root, "branch", "-M", "agent/issue-416-track-layer-mode"]);
-  const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const construction = bindTrackLayerConstructionV1(trackLayerConstructionInput({ implementationHead: head }));
   assert.equal(construction.state, "ready");
+  const authorizationPayload = {
+    schemaVersion: 1, contractVersion: "shield.issue-416.coulson-authorization.v1", authorizationId: "authorization:coulson:issue-416",
+    missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", repositoryId: "RanSolo/shield-workspace",
+    planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79", planPath: "docs/missions/issue-416-track-layer-mode-plan.md", planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc",
+    writerSeatId: "may", ownedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"], scope: "issue-416-track-layer-publication-preparation",
+    exclusions: ["authority_fabrication", "journal_fabrication", "evidence_fabrication", "receipt_replay", "publication", "merge", "deployment", "release", "final_acceptance", "parallel_crews", "scope_expansion"],
+    humanPrincipalId: "human:ransolo", bindingId: "binding:coulson:ransolo", signingKeyRef, sourceRef: "manual:coulson:issue-416", registryRawSha256: createHash("sha256").update(trustedBindings, "utf8").digest("hex"), decision: "approved",
+  };
+  await writeFile(join(root, ".shield/audit/issue-416/coulson-authorization.json"), JSON.stringify({ payload: authorizationPayload, signatureBase64: sign(null, Buffer.from(canonicalJson(authorizationPayload)), keyPair.privateKey).toString("base64") }));
   const dispatchPlan = { missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", repositoryId: "RanSolo/shield-workspace", id: `transition-plan:${"a".repeat(43)}`, digest: `sha256:${"b".repeat(43)}` };
   const mackReview = { reviewerRuntimeId: "runtime:mack:test", reviewerModelId: "model:mack:test", reviewerExecutorId: "executor:mack:test" };
   const furyReview = { reviewerRuntimeId: "runtime:fury:test", reviewerModelId: "model:fury:test", reviewerExecutorId: "executor:fury:test" };
   const mackIdentity = dispatchIdentity(dispatchPlan, mackReview, { receiptId: "receipt:mack:issue-416", dispatchId: "dispatch:mack:issue-416", childTaskId: "task:mack:issue-416", childSessionId: "session:mack:issue-416", accountableSeatId: "mack", repositoryRevision: head });
   const mackEvidenceId = "evidence:issue-416:mack:test";
   const mackStarted = dispatchStarted(mackIdentity, { inputEvidenceRefs: [mackEvidenceId] });
-  const mackCompleted = dispatchLifecycle(mackStarted, mackIdentity, "dispatch.completed", { outputEvidenceRefs: [mackEvidenceId] });
-  const mackBytes = JSON.stringify({ schemaVersion: 1, artifactKind: "issue-416-mack", missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", implementationHead: head, constructionDigest: construction.constructionDigest, evidenceId: mackEvidenceId, verdict: "PASS", sequence: 1, seatId: "mack", receiptId: mackIdentity.receiptId, dispatchId: mackIdentity.dispatchId, artifactId: dispatchPlan.id, artifactRevision: dispatchPlan.digest, repositoryRevision: head, runtimeId: mackReview.reviewerRuntimeId, modelId: mackReview.reviewerModelId, executorId: mackReview.reviewerExecutorId, terminalEntryDigest: mackCompleted.entryDigest });
+  const mackDraft = { schemaVersion: 1, artifactKind: "issue-416-mack", missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", implementationHead: head, constructionDigest: construction.constructionDigest, evidenceId: mackEvidenceId, verdict: "PASS", sequence: 1, seatId: "mack", receiptId: mackIdentity.receiptId, dispatchId: mackIdentity.dispatchId, taskId: mackIdentity.childTaskId, sessionId: mackIdentity.childSessionId, artifactId: dispatchPlan.id, artifactRevision: dispatchPlan.digest, repositoryRevision: head, runtimeId: mackReview.reviewerRuntimeId, modelId: mackReview.reviewerModelId, executorId: mackReview.reviewerExecutorId, terminalEntryDigest: "pending" };
+  const mackContentDigest = artifactContentDigest(mackDraft);
+  const mackContentId = artifactContentId("mack", mackContentDigest);
+  const mackCompleted = dispatchLifecycle(mackStarted, mackIdentity, "dispatch.completed", { outputEvidenceRefs: [mackEvidenceId, mackContentId, mackContentDigest] });
+  const mackBytes = JSON.stringify({ ...mackDraft, terminalEntryDigest: mackCompleted.entryDigest });
   const mackDigest = rawSha256(mackBytes);
   const furyIdentity = dispatchIdentity(dispatchPlan, furyReview, { receiptId: "receipt:fury:issue-416", dispatchId: "dispatch:fury:issue-416", childTaskId: "task:fury:issue-416", childSessionId: "session:fury:issue-416", accountableSeatId: "fury", repositoryRevision: head });
   const furyEvidenceId = "evidence:issue-416:fury:test";
-  const furyStarted = dispatchStarted(furyIdentity, { timestamp: new Date(Date.parse(mackCompleted.timestamp) + 1000).toISOString(), logSequence: 2, previousLogDigest: mackCompleted.entryDigest, inputEvidenceRefs: [furyEvidenceId] });
-  const furyCompleted = dispatchLifecycle(furyStarted, furyIdentity, "dispatch.completed", { outputEvidenceRefs: [furyEvidenceId] });
-  const furyBytes = JSON.stringify({ schemaVersion: 1, artifactKind: "issue-416-fury", missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", implementationHead: head, constructionDigest: construction.constructionDigest, evidenceId: furyEvidenceId, verdict: "APPROVE", mackEvidenceDigest: mackDigest, sequence: 2, seatId: "fury", receiptId: furyIdentity.receiptId, dispatchId: furyIdentity.dispatchId, artifactId: dispatchPlan.id, artifactRevision: dispatchPlan.digest, repositoryRevision: head, runtimeId: furyReview.reviewerRuntimeId, modelId: furyReview.reviewerModelId, executorId: furyReview.reviewerExecutorId, terminalEntryDigest: furyCompleted.entryDigest });
+  const furyStarted = dispatchStarted(furyIdentity, { timestamp: new Date(Date.parse(mackCompleted.timestamp) + 1000).toISOString(), logSequence: 2, previousLogDigest: mackCompleted.entryDigest, inputEvidenceRefs: [furyEvidenceId, mackEvidenceId, mackContentId, mackContentDigest, mackDigest] });
+  const furyDraft = { schemaVersion: 1, artifactKind: "issue-416-fury", missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", implementationHead: head, constructionDigest: construction.constructionDigest, evidenceId: furyEvidenceId, verdict: "APPROVE", mackEvidenceDigest: mackDigest, sequence: 2, seatId: "fury", receiptId: furyIdentity.receiptId, dispatchId: furyIdentity.dispatchId, taskId: furyIdentity.childTaskId, sessionId: furyIdentity.childSessionId, artifactId: dispatchPlan.id, artifactRevision: dispatchPlan.digest, repositoryRevision: head, runtimeId: furyReview.reviewerRuntimeId, modelId: furyReview.reviewerModelId, executorId: furyReview.reviewerExecutorId, terminalEntryDigest: "pending" };
+  const furyContentDigest = artifactContentDigest(furyDraft);
+  const furyContentId = artifactContentId("fury", furyContentDigest);
+  const furyCompleted = dispatchLifecycle(furyStarted, furyIdentity, "dispatch.completed", { outputEvidenceRefs: [furyEvidenceId, furyContentId, furyContentDigest] });
+  const furyBytes = JSON.stringify({ ...furyDraft, terminalEntryDigest: furyCompleted.entryDigest });
   const mackPath = ".shield/audit/issue-416/mack.json";
   const furyPath = ".shield/audit/issue-416/fury.json";
-  await mkdir(join(root, ".shield/audit/issue-416"), { recursive: true });
   await writeFile(join(root, ".shield/dispatch-receipts.jsonl"), [mackStarted, mackCompleted, furyStarted, furyCompleted].map((event) => `${canonicalDispatchEventLine(event)}\n`).join(""));
   await writeFile(join(root, mackPath), mackBytes);
   await writeFile(join(root, furyPath), furyBytes);
@@ -221,6 +251,31 @@ test("track-layer finalization rejects root substitution and digest or sequence 
   const tampered = await finalizeBreakGlassPublicationPreparationV1({ ...fixture, mackArtifact: { ...fixture.mackArtifact, rawSha256: `sha256:${"0".repeat(43)}` } });
   assert.equal(tampered.state, "blocked");
   assert.equal(tampered.reasonCode, "evidence_binding_invalid");
+});
+
+test("track-layer finalization requires signed Coulson scope evidence", async () => {
+  const missing = await finalizationFixture();
+  await unlink(join(missing.repositoryRoot, ".shield/audit/issue-416/coulson-authorization.json"));
+  const missingResult = await finalizeBreakGlassPublicationPreparationV1(missing);
+  assert.equal(missingResult.state, "blocked");
+  assert.equal(missingResult.reasonCode, "implementation_binding_invalid");
+
+  const tampered = await finalizationFixture();
+  const authorizationPath = join(tampered.repositoryRoot, ".shield/audit/issue-416/coulson-authorization.json");
+  const authorization = JSON.parse(await readFile(authorizationPath, "utf8"));
+  authorization.payload.scope = "issue-416-expanded-scope";
+  await writeFile(authorizationPath, JSON.stringify(authorization));
+  const tamperedResult = await finalizeBreakGlassPublicationPreparationV1(tampered);
+  assert.equal(tamperedResult.state, "blocked");
+  assert.equal(tamperedResult.reasonCode, "implementation_binding_invalid");
+});
+
+test("track-layer finalization rejects dirty committed scope", async () => {
+  const fixture = await finalizationFixture();
+  await writeFile(join(fixture.repositoryRoot, "packages/shield-team-system/src/mission-preparation-host-v1.mts"), "dirty\n");
+  const result = await finalizeBreakGlassPublicationPreparationV1(fixture);
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "implementation_binding_invalid");
 });
 
 test("track-layer finalization rejects frozen-plan provenance and seat tampering", async () => {
