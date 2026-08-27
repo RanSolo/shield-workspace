@@ -186,7 +186,7 @@ async function finalizationFixture() {
   const mackContentDigest = artifactContentDigest(mackDraft);
   const mackContentId = artifactContentId("mack", mackContentDigest);
   const mackCompleted = dispatchLifecycle(mackStarted, mackIdentity, "dispatch.completed", { outputEvidenceRefs: [mackEvidenceId, mackContentId, mackContentDigest] });
-  const mackBytes = JSON.stringify({ ...mackDraft, terminalEntryDigest: mackCompleted.entryDigest });
+  const mackBytes = canonicalJson({ ...mackDraft, terminalEntryDigest: mackCompleted.entryDigest });
   const mackDigest = rawSha256(mackBytes);
   const furyIdentity = dispatchIdentity(dispatchPlan, furyReview, { receiptId: "receipt:fury:issue-416", dispatchId: "dispatch:fury:issue-416", childTaskId: "task:fury:issue-416", childSessionId: "session:fury:issue-416", accountableSeatId: "fury", repositoryRevision: head });
   const furyEvidenceId = "evidence:issue-416:fury:test";
@@ -195,7 +195,7 @@ async function finalizationFixture() {
   const furyContentDigest = artifactContentDigest(furyDraft);
   const furyContentId = artifactContentId("fury", furyContentDigest);
   const furyCompleted = dispatchLifecycle(furyStarted, furyIdentity, "dispatch.completed", { outputEvidenceRefs: [furyEvidenceId, furyContentId, furyContentDigest] });
-  const furyBytes = JSON.stringify({ ...furyDraft, terminalEntryDigest: furyCompleted.entryDigest });
+  const furyBytes = canonicalJson({ ...furyDraft, terminalEntryDigest: furyCompleted.entryDigest });
   const mackPath = ".shield/audit/issue-416/mack.json";
   const furyPath = ".shield/audit/issue-416/fury.json";
   await writeFile(join(root, ".shield/dispatch-receipts.jsonl"), [mackStarted, mackCompleted, furyStarted, furyCompleted].map((event) => `${canonicalDispatchEventLine(event)}\n`).join(""));
@@ -251,6 +251,40 @@ test("track-layer finalization rejects root substitution and digest or sequence 
   const tampered = await finalizeBreakGlassPublicationPreparationV1({ ...fixture, mackArtifact: { ...fixture.mackArtifact, rawSha256: `sha256:${"0".repeat(43)}` } });
   assert.equal(tampered.state, "blocked");
   assert.equal(tampered.reasonCode, "evidence_binding_invalid");
+});
+
+test("track-layer finalization rejects reformatted Fury JSON even with a recomputed raw digest", async () => {
+  const fixture = await finalizationFixture();
+  const furyPath = join(fixture.repositoryRoot, fixture.furyArtifact.path);
+  const fury = JSON.parse(await readFile(furyPath, "utf8"));
+  const reformatted = JSON.stringify(fury, null, 2);
+  await writeFile(furyPath, reformatted);
+  const result = await finalizeBreakGlassPublicationPreparationV1({
+    ...fixture,
+    furyArtifact: { ...fixture.furyArtifact, rawSha256: rawSha256(reformatted) },
+  });
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "evidence_binding_invalid");
+});
+
+test("track-layer finalization replays #406 without consuming or mutating evidence or receipts", async () => {
+  const fixture = await finalizationFixture();
+  const mackPath = join(fixture.repositoryRoot, fixture.mackArtifact.path);
+  const furyPath = join(fixture.repositoryRoot, fixture.furyArtifact.path);
+  const ledgerPath = join(fixture.repositoryRoot, ".shield/dispatch-receipts.jsonl");
+  const before = {
+    mack: await readFile(mackPath, "utf8"),
+    fury: await readFile(furyPath, "utf8"),
+    ledger: await readFile(ledgerPath, "utf8"),
+  };
+  const result = await finalizeBreakGlassPublicationPreparationV1(fixture);
+  const after = {
+    mack: await readFile(mackPath, "utf8"),
+    fury: await readFile(furyPath, "utf8"),
+    ledger: await readFile(ledgerPath, "utf8"),
+  };
+  assert.equal(result.state, "ready", JSON.stringify(result));
+  assert.deepEqual(after, before);
 });
 
 test("track-layer finalization requires signed Coulson scope evidence", async () => {
