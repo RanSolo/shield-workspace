@@ -135,23 +135,33 @@ function breakGlassPreparationInput(overrides = {}) {
     },
     exclusions: ["merge", "deployment", "release", "final_acceptance", "issue_closure", "expanded_scope", "evidence_rewrite", "receipt_replay"],
     mackEvidence: {
+      sourceKind: "repository",
+      artifactPath: ".shield/audit/issue-416/mack.json",
       evidenceId: "evidence:issue-416:mack",
       evidenceDigest: `sha256:${"d".repeat(43)}`,
       reviewedRevision: "3".repeat(40),
       verdict: "PASS",
+      sequence: 1,
     },
     furyEvidence: {
+      sourceKind: "repository",
+      artifactPath: ".shield/audit/issue-416/fury.json",
       evidenceId: "evidence:issue-416:fury",
       evidenceDigest: `sha256:${"e".repeat(43)}`,
       reviewedRevision: "3".repeat(40),
       verdict: "APPROVE",
+      mackEvidenceDigest: `sha256:${"d".repeat(43)}`,
+      sequence: 2,
     },
-    failedOperation: {
+    regressionFixture: {
+      missionId: "mission:issue-intake:HgnxEl-ce9oshquwYlZJJS5IQKfFSciS8CfYeQmFSiY",
+      subjectId: "github:RanSolo/shield-workspace/issue/406",
+      implementationHead: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
       operationId: "operation:issue-416:failed-publication-preparation",
       operationDigest: `sha256:${"f".repeat(43)}`,
       outcome: "failed",
       reasonCode: "canonical_publication_authority_missing",
-      headRevision: "3".repeat(40),
+      headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
     },
     ...overrides,
   };
@@ -182,7 +192,7 @@ test("break-glass publication preparation binds exact evidence and derives draft
   });
   assert.equal(changedDecision.state, "ready");
   assert.notEqual(changedDecision.repairLedger.bindingDigest, result.repairLedger.bindingDigest);
-  assert.equal(input.failedOperation.outcome, "failed");
+  assert.equal(input.regressionFixture.outcome, "failed");
 });
 
 test("break-glass publication preparation fails closed for stale, widened, conflicting, and malformed evidence", () => {
@@ -190,15 +200,35 @@ test("break-glass publication preparation fails closed for stale, widened, confl
     ["stale Mack evidence", { mackEvidence: { ...breakGlassPreparationInput().mackEvidence, reviewedRevision: "4".repeat(40) } }, "evidence_binding_invalid"],
     ["widened effects", { publication: { ...breakGlassPreparationInput().publication, permittedEffects: ["review.branch.push", "review.pull_request.create_draft", "review.comment.publish"] } }, "effect_scope_invalid"],
     ["widened publication paths", { publication: { ...breakGlassPreparationInput().publication, approvedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "README.md"] } }, "path_scope_invalid"],
-    ["conflicting failed replay", { failedOperation: { ...breakGlassPreparationInput().failedOperation, headRevision: "4".repeat(40) } }, "failed_operation_invalid"],
+    ["conflicting failed replay", { regressionFixture: { ...breakGlassPreparationInput().regressionFixture, headRevision: "4".repeat(40) } }, "failed_operation_invalid"],
     ["extra field", { unexpected: true }, "malformed"],
-    ["non-authorizing #406 fixture", { missionId: "mission:issue-intake:HgnxEl-ce9oshquwYlZJJS5IQKfFSciS8CfYeQmFSiY", subjectId: "github:RanSolo/shield-workspace/issue/406", implementation: { ...breakGlassPreparationInput().implementation, headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec" } }, "evidence_binding_invalid"],
+    ["caller-authored Mack evidence", { mackEvidence: { ...breakGlassPreparationInput().mackEvidence, sourceKind: "caller" } }, "evidence_binding_invalid"],
+    ["Fury without Mack binding", { furyEvidence: { ...breakGlassPreparationInput().furyEvidence, mackEvidenceDigest: `sha256:${"a".repeat(43)}` } }, "evidence_binding_invalid"],
   ];
   for (const [name, overrides, reasonCode] of cases) {
     const result = bindBreakGlassPublicationPreparationV1(breakGlassPreparationInput(overrides));
     assert.equal(result.state, "blocked", name);
     assert.equal(result.reasonCode, reasonCode, name);
   }
+});
+
+test("aligned #406-shaped revisions remain a regression-only rejection", () => {
+  const result = bindBreakGlassPublicationPreparationV1(breakGlassPreparationInput({
+    plan: {
+      ...breakGlassPreparationInput().plan,
+      planCommit: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
+    },
+    implementation: { ...breakGlassPreparationInput().implementation, headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec" },
+    mackEvidence: { ...breakGlassPreparationInput().mackEvidence, reviewedRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec" },
+    furyEvidence: { ...breakGlassPreparationInput().furyEvidence, reviewedRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec" },
+    regressionFixture: {
+      ...breakGlassPreparationInput().regressionFixture,
+      headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
+      implementationHead: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
+    },
+  }));
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "plan_binding_invalid");
 });
 
 test("prepared publication semantic tuple delegates to the shared closed identity material", () => {
