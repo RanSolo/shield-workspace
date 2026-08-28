@@ -5,11 +5,13 @@
 - Repository: `RanSolo/shield-workspace`
 - Mission: `mission:issue-intake:cZePw1cHKbJMdb0yI-K4XxpP0xNU0RwNnTRxBVqIrzQ`
 - Successor branch: `agent/issue-416-recovery-successor`
-- Successor HEAD: `6506edf72acd9c19c959744d5e7ea69e97c94771`
+- Reviewed plan parent commit: `92347d60f795a26581713abbbc15ae54c4196aa6`
+- Reviewed plan parent raw SHA-256: `c89cefb8fb01bbd09bf1cad31ea3cf8a7123f610b0561879ecffb96acddc10d3`
+- Successor implementation base: `6506edf72acd9c19c959744d5e7ea69e97c94771`
 - Issue URL: `https://github.com/RanSolo/shield-workspace/issues/416`
 - Issue revision: `sha256:KE89aNbkhxnh3flruAMge8jgbD2D-LSygQy8VS3UGPY`
 - Acceptance-criteria digest: `sha256:f793f0ac6217b1f039fee9e1202fdebf9ef60c5bafcd84a81d86e0a77152dfc4`
-- Planning source: `6506edf72acd9c19c959744d5e7ea69e97c94771:docs/missions/issue-416-dispatcher-allowance-recovery-plan.md`
+- Planning source: `92347d60f795a26581713abbbc15ae54c4196aa6:docs/missions/issue-416-dispatcher-allowance-recovery-plan.md`
 - Related repair: [Issue #416](https://github.com/RanSolo/shield-workspace/issues/416)
 - Authority: `none`
 - Owner: Hill planning; one future writer only
@@ -21,6 +23,31 @@ Issue-406 source identity; bounded parse/replay failure handling; and terminal
 revalidation of canonical root, revision, tree, origin, clean status, and
 authenticated snapshots. Any changed path outside the two-file implementation
 allowlist is a fail-closed plan mismatch.
+
+## Proven profile-aware recovery dead end
+
+The exact authority-none sequence is now a closed recovery case, not an
+ordinary retry: the original profile-aware intake journal was authorized at
+its bound HEAD and receipt; the canonical worktree refresh then produced an
+exact same-branch successor receipt; `prepare-next` returned
+`source_binding_drifted`; and a fresh begin for the same issue/profile returned
+`conflicting_replay` because the deterministic mission identity already
+exists. The stale authorized journal must remain byte-for-byte evidence.
+
+The implementation must provide one durable, exact-revision terminal recovery
+contract for this tuple. It must read and authenticate the existing
+profile-aware journal, Coulson evidence, repository/config/registry snapshots,
+old and current prepared-worktree receipt identities, and the exact ordered
+planning commit range. It must emit a closed `source_binding_recovery_required`
+result containing the existing mission ID, stale source-binding identity,
+current HEAD/receipt identity, recovery reason, and one next action; it must
+not create a second mission ID, rewrite or invalidate the journal, repeat
+intake, carry authorization forward, append authority, or invoke a provider.
+Identical replay returns the byte-identical terminal result; any mismatch,
+malformed input, branch drift, non-descendant, dirty tree, or snapshot drift
+returns blocked with zero writes. A future supported rebind, if separately
+authorized and implemented, must consume this terminal contract rather than
+retrying intake blindly.
 
 ## Observed blocker
 
@@ -48,6 +75,10 @@ Add a hermetic focused test fixture in the existing test file that proves the ex
 
 The future writer may change only:
 
+- `packages/shield-team-system/src/mission-cli.mts`
+- `packages/shield-team-system/src/profile-aware-mission-v1.mts`
+- `packages/shield-team-system/tests/supervised-cli.test.mjs`
+- `packages/shield-team-system/tests/profile-aware-mission-v1.test.mjs`
 - `packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts`
 - `packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs`
 
