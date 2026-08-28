@@ -53,13 +53,16 @@ import {
   createProfileAwareReviewPublicationAuthorizationEntryV1,
   createProfileAwareRuntimeBindingRecordedEntryV1,
   profileAwareMissionIntakeV1,
+  resolveProfileAwareSourceBindingRecoveryV1,
   replayProfileAwareMissionJournal,
   validateProfileAwareMissionBrief,
+  PROFILE_AWARE_SOURCE_BINDING_RECOVERY_CONTRACT_VERSION,
   type ProfileAwareMissionBriefContentV1,
   type ProfileAwareMissionEntryV1,
   type ProfileAwareProjectionV1,
   type IssueIntakeSourceBindingV1,
   type SignedProfileEvidenceV1,
+  type ProfileAwareSourceBindingRecoveryResultV1,
 } from "./profile-aware-mission-v1.mjs";
 import {
   compileIssueIntakeV1,
@@ -490,6 +493,23 @@ const ISSUE_402_MODEL_ID = "gpt-5.6-sol";
 const ISSUE_402_REASONING_RUNTIME_ID = "runtime:codex-hosted-fury-sol";
 const ISSUE_402_TOOL_EXECUTOR_ID = "executor:codex-hosted-workspace-tools";
 
+const ISSUE_416_RECOVERY_MISSION_ID = "mission:issue-intake:cZePw1cHKbJMdb0yI-K4XxpP0xNU0RwNnTRxBVqIrzQ";
+const ISSUE_416_RECOVERY_REPOSITORY_ID = "RanSolo/shield-workspace";
+const ISSUE_416_RECOVERY_BRANCH = "agent/issue-416-recovery-successor";
+const ISSUE_416_RECOVERY_SOURCE_HEAD = "6506edf72acd9c19c959744d5e7ea69e97c94771";
+const ISSUE_416_RECOVERY_CURRENT_HEAD = "c775ad43f077eae1b63ad7244871dc96bd562c29";
+const ISSUE_416_RECOVERY_STALE_RECEIPT = "cf8a5f9b58221c9974bf83400b5c05aa2f7a4cdc71dc630e54de7dd3f229d44b";
+const ISSUE_416_RECOVERY_PREVIOUS_RECEIPT = "8090f06e4a475c594ba2d18b0f6476874962a5c72b582393e1c8f67bf67a97cb";
+const ISSUE_416_RECOVERY_CURRENT_RECEIPT = "17ef5ea8ab76d20d052007ab2b92edffc4eff7857689b24a6fc918343b2a41a5";
+const ISSUE_416_RECOVERY_PLAN_PATH = "docs/missions/issue-416-dispatcher-allowance-recovery-plan.md";
+const ISSUE_416_RECOVERY_PLAN_SHA256 = "17a1256b8bda50544956ac0b9a1f1a9819bc03b06dca35243570e8dc55a0f757";
+const ISSUE_416_RECOVERY_PLANNING_COMMITS = Object.freeze([
+  "92347d60f795a26581713abbbc15ae54c4196aa6",
+  "d33e2ba440ee769ae81f271259cbd606a829add5",
+  "4b87f7816e6b601bd733145c1415a5a23ea73aff",
+  ISSUE_416_RECOVERY_CURRENT_HEAD,
+]);
+
 type NativeIssueIntakeFileSnapshotV1 = Readonly<{
   bytes: string;
   identity: string;
@@ -500,6 +520,25 @@ type NativeIssueIntakeReceiptSnapshotV1 = Readonly<{
   active: NativeIssueIntakeFileSnapshotV1;
   archiveDirectoryIdentity: string | null;
   archive: readonly Readonly<{ path: string; file: NativeIssueIntakeFileSnapshotV1 }>[];
+}>;
+
+type Issue416RecoveryCommitProvenanceV1 = Readonly<{
+  commit: string;
+  parents: readonly string[];
+  diff: readonly string[];
+}>;
+
+type Issue416RecoveryObservationV1 = Readonly<{
+  configuration: RepositoryConfigSnapshot;
+  journal: NativeIssueIntakeJournalSnapshotV1;
+  repository: RepositoryObservation;
+  originRepositoryId: string;
+  registry: RepositoryBindingRegistrySnapshot;
+  receipts: NativeIssueIntakeReceiptSnapshotV1;
+  plan: NativeIssueIntakeFileSnapshotV1;
+  committedPlanBytes: string;
+  planningCommits: readonly string[];
+  planningProvenance: readonly Issue416RecoveryCommitProvenanceV1[];
 }>;
 
 type NativeIssueIntakeTransitionBindingV1 = Readonly<{
@@ -546,11 +585,11 @@ function parseNativeIssueIntakeReceipt(bytes: string, label: string): WorktreeSt
   return value;
 }
 
-async function preparedWorktreeReceiptSnapshot(root: string): Promise<NativeIssueIntakeReceiptSnapshotV1> {
-  const digest = await preparedWorktreeReceiptDigest(root);
+async function preparedWorktreeReceiptSnapshot(root: string, validatePreparedWorktree = true): Promise<NativeIssueIntakeReceiptSnapshotV1> {
+  const digest = validatePreparedWorktree ? await preparedWorktreeReceiptDigest(root) : null;
   const active = await readNativeIssueIntakeFileSnapshot(join(root, WORKTREE_STATE_RELATIVE_PATH), "Active prepared-worktree receipt");
   const receipt = parseNativeIssueIntakeReceipt(active.bytes, "Active prepared-worktree receipt");
-  if (receipt.receiptDigest !== digest) throw new Error("Active prepared-worktree receipt digest changed during snapshot.");
+  if (digest !== null && receipt.receiptDigest !== digest) throw new Error("Active prepared-worktree receipt digest changed during snapshot.");
   let archiveDirectoryIdentity: string | null = null;
   const archive: Array<Readonly<{ path: string; file: NativeIssueIntakeFileSnapshotV1 }>> = [];
   const archivePath = join(root, WORKTREE_STATE_RECEIPT_ARCHIVE_RELATIVE_PATH);
@@ -2132,6 +2171,7 @@ type PrepareNextDependenciesV1 = Readonly<{
   beforeProtectedGraphFinalRevalidation?: () => void | Promise<void>;
   beforeNativeIssueIntakeReadback?: () => void | Promise<void>;
   afterNativeIssueIntakeJournalHandleRead?: () => void | Promise<void>;
+  afterInitialSourceBindingRecoverySnapshot?: () => void | Promise<void>;
   parseNativeIssueIntakeJournalBytes?: NativeIssueIntakeJournalParserV1;
 }>;
 
@@ -2477,6 +2517,248 @@ function nativeIssueIntakePlanningStable(
     canonicalJson(initial.sourceBinding) === canonicalJson(fresh.sourceBinding) &&
     canonicalJson(initial.transitionBinding) === canonicalJson(fresh.transitionBinding) &&
     canonicalJson(initialPacket) === canonicalJson(freshPacket);
+}
+
+function sourceBindingRecoveryBlocked(
+  missionId: string,
+  ...errors: string[]
+): Extract<ProfileAwareSourceBindingRecoveryResultV1, { state: "blocked" }> {
+  return {
+    schemaVersion: 1,
+    contractVersion: PROFILE_AWARE_SOURCE_BINDING_RECOVERY_CONTRACT_VERSION,
+    authority: "none",
+    state: "blocked",
+    reasonCode: "source_binding_recovery_blocked",
+    missionId,
+    errors: [...errors],
+    nextAction: "inspect_exact_revision_and_preserve_all_existing_mission_evidence",
+  };
+}
+
+function sourceBindingRecoveryCandidate(journal: MissionJournalDisplay, missionId: string): boolean {
+  if (journal.kind !== "profile-aware" || journal.projection.missionId !== missionId || missionId !== ISSUE_416_RECOVERY_MISSION_ID) return false;
+  const begun = journal.entries[0];
+  return begun?.type === "mission.begun" && Object.hasOwn(begun.payload, "issueIntakeSourceBinding");
+}
+
+function recoveryFileSnapshotEqual(initial: NativeIssueIntakeFileSnapshotV1, fresh: NativeIssueIntakeFileSnapshotV1): boolean {
+  return initial.bytes === fresh.bytes && initial.identity === fresh.identity;
+}
+
+function recoveryReceiptSnapshotEqual(
+  initial: NativeIssueIntakeReceiptSnapshotV1,
+  fresh: NativeIssueIntakeReceiptSnapshotV1,
+): boolean {
+  return canonicalJson(initial.receipt) === canonicalJson(fresh.receipt) &&
+    recoveryFileSnapshotEqual(initial.active, fresh.active) &&
+    initial.archiveDirectoryIdentity === fresh.archiveDirectoryIdentity &&
+    initial.archive.length === fresh.archive.length &&
+    initial.archive.every(({ path, file }, index) => {
+      const other = fresh.archive[index];
+      return other?.path === path && recoveryFileSnapshotEqual(file, other.file);
+    });
+}
+
+function recoveryObservationEqual(initial: Issue416RecoveryObservationV1, fresh: Issue416RecoveryObservationV1): boolean {
+  return canonicalJson(initial.configuration.config) === canonicalJson(fresh.configuration.config) &&
+    recoveryFileSnapshotEqual(initial.configuration, fresh.configuration) &&
+    canonicalJson(initial.journal.journal) === canonicalJson(fresh.journal.journal) &&
+    initial.journal.journalBytes === fresh.journal.journalBytes &&
+    initial.journal.journalSha256 === fresh.journal.journalSha256 &&
+    initial.journal.journalIdentity === fresh.journal.journalIdentity &&
+    canonicalJson(initial.repository) === canonicalJson(fresh.repository) &&
+    initial.originRepositoryId === fresh.originRepositoryId &&
+    canonicalJson(initial.registry.value) === canonicalJson(fresh.registry.value) &&
+    recoveryFileSnapshotEqual(initial.registry, fresh.registry) &&
+    recoveryReceiptSnapshotEqual(initial.receipts, fresh.receipts) &&
+    recoveryFileSnapshotEqual(initial.plan, fresh.plan) &&
+    initial.committedPlanBytes === fresh.committedPlanBytes &&
+    nativeIssueIntakeExactArray(initial.planningCommits, fresh.planningCommits) &&
+    initial.planningProvenance.length === fresh.planningProvenance.length &&
+    initial.planningProvenance.every((provenance, index) => {
+      const other = fresh.planningProvenance[index];
+      return other?.commit === provenance.commit &&
+        nativeIssueIntakeExactArray(provenance.parents, other.parents) &&
+        nativeIssueIntakeExactArray(provenance.diff, other.diff);
+    });
+}
+
+async function captureIssue416SourceBindingRecoveryObservation(
+  root: string,
+  missionId: string,
+  parser: NativeIssueIntakeJournalParserV1,
+  requireCandidate: boolean,
+): Promise<Issue416RecoveryObservationV1 | null> {
+  const configuration = await repositoryConfigSnapshot(root);
+  const journal = await readNativeIssueIntakeJournalSnapshot(root, configuration.config, missionId, parser);
+  if (journal.state === "invalid") {
+    if (!requireCandidate && journal.code === "mission_missing") return null;
+    throw new MissionCliError(`Profile-aware recovery journal is unavailable: ${journal.code}.`, 1);
+  }
+  if (!sourceBindingRecoveryCandidate(journal.value.journal, missionId)) {
+    if (!requireCandidate) return null;
+    throw new MissionCliError("Profile-aware recovery journal is no longer the exact candidate.", 1);
+  }
+  const [repository, originRepositoryId, registry, receipts] = await Promise.all([
+    observeRepository(root),
+    gitValue(root, ["remote", "get-url", "origin"]).then(repositoryIdFromOrigin),
+    repositoryBindingRegistrySnapshot(root),
+    preparedWorktreeReceiptSnapshot(root, false),
+  ]);
+  const plan = await readNativeIssueIntakeFileSnapshot(join(root, ISSUE_416_RECOVERY_PLAN_PATH), "Issue #416 recovery plan");
+  const committedPlanBytes = await gitOutput(root, ["show", `${repository.head}:${ISSUE_416_RECOVERY_PLAN_PATH}`]);
+  const planningCommits = nativeIssueIntakeLines(await gitOutput(root, ["rev-list", "--reverse", `${ISSUE_416_RECOVERY_SOURCE_HEAD}..${repository.head}`]));
+  const planningProvenance: Issue416RecoveryCommitProvenanceV1[] = [];
+  for (const commit of planningCommits) {
+    planningProvenance.push({
+      commit,
+      parents: nativeIssueIntakeCommitParents(await gitOutput(root, ["rev-list", "--parents", "-n", "1", commit])),
+      diff: nativeIssueIntakeLines(await gitOutput(root, ["diff-tree", "--no-commit-id", "--name-status", "-r", commit])),
+    });
+  }
+  return {
+    configuration,
+    journal: journal.value,
+    repository,
+    originRepositoryId,
+    registry,
+    receipts,
+    plan,
+    committedPlanBytes,
+    planningCommits,
+    planningProvenance,
+  };
+}
+
+function validateIssue416SourceBindingRecoveryObservation(
+  observation: Issue416RecoveryObservationV1,
+): Readonly<{ errors: readonly string[]; staleReceipt: WorktreeStateReceiptV1OrV2 | undefined; currentReceipt: WorktreeStateReceiptV1OrV2; planDigest: string; parentPlanCommit: string }> {
+  const errors: string[] = [];
+  const profileJournal = observation.journal.journal;
+  const begun = profileJournal.entries[0];
+  const sourceBinding = begun?.type === "mission.begun" && "issueIntakeSourceBinding" in begun.payload
+    ? begun.payload.issueIntakeSourceBinding
+    : null;
+  const binding = sourceBinding as Partial<IssueIntakeSourceBindingV1> | null;
+  const checkedRegistry = validateTrustedBindingRegistry(observation.registry.value);
+  if (checkedRegistry.state === "invalid") {
+    errors.push("Trusted binding registry is malformed, unauthenticated, or not canonical.");
+  }
+  const archived = new Map<string, WorktreeStateReceiptV1OrV2>();
+  try {
+    for (const { path, file } of observation.receipts.archive) {
+      archived.set(path, parseNativeIssueIntakeReceipt(file.bytes, `Archived prepared-worktree receipt ${path}`));
+    }
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : "Prepared-worktree receipt archive is invalid.");
+  }
+  const currentReceipt = observation.receipts.receipt;
+  const staleReceipt = archived.get(`${ISSUE_416_RECOVERY_STALE_RECEIPT}.json`);
+  const previousReceipt = archived.get(`${ISSUE_416_RECOVERY_PREVIOUS_RECEIPT}.json`);
+  const planDigest = journalByteSha256(observation.plan.bytes);
+  const parentPlanCommit = observation.planningCommits[0] ?? "";
+  if (observation.repository.head !== ISSUE_416_RECOVERY_CURRENT_HEAD) errors.push("Current HEAD is not the exact historical prepared recovery successor.");
+  if (observation.repository.branch !== ISSUE_416_RECOVERY_BRANCH) errors.push("Current branch is not the exact prepared recovery branch.");
+  if (observation.repository.porcelainStatus !== "") errors.push("Recovery requires a clean worktree.");
+  if (observation.originRepositoryId !== ISSUE_416_RECOVERY_REPOSITORY_ID || observation.configuration.config.repositoryId !== ISSUE_416_RECOVERY_REPOSITORY_ID) {
+    errors.push("Repository origin or configuration identity drifted.");
+  }
+  if (binding === null || binding.repositoryId !== ISSUE_416_RECOVERY_REPOSITORY_ID || binding.repositoryNameWithOwner !== ISSUE_416_RECOVERY_REPOSITORY_ID ||
+      binding.issueNumber !== 416 || binding.hostRepositoryId !== "R_kgDOTZwEkA" || binding.hostIssueId !== "I_kwDOTZwEkM8AAAABOZ1_Eg" ||
+      binding.issueRevisionId !== "sha256:KE89aNbkhxnh3flruAMge8jgbD2D-LSygQy8VS3UGPY" ||
+      binding.criteriaDigest !== "sha256:f793f0ac6217b1f039fee9e1202fdebf9ef60c5bafcd84a81d86e0a77152dfc4" ||
+      binding.branch !== ISSUE_416_RECOVERY_BRANCH || binding.headRevision !== ISSUE_416_RECOVERY_SOURCE_HEAD ||
+      binding.preparedWorktreeReceiptDigest !== ISSUE_416_RECOVERY_STALE_RECEIPT || binding.profileId !== "standard" || binding.profileVersion !== 1) {
+    errors.push("Authenticated issue-intake source binding is not the frozen Issue #416 identity.");
+  }
+  if (currentReceipt.receiptDigest !== ISSUE_416_RECOVERY_CURRENT_RECEIPT || currentReceipt.contractVersion !== "worktree.state.v2" ||
+      currentReceipt.destination.root !== observation.repository.canonicalRoot || currentReceipt.destination.branch !== ISSUE_416_RECOVERY_BRANCH ||
+      currentReceipt.destination.head !== ISSUE_416_RECOVERY_CURRENT_HEAD || currentReceipt.destination.originRepositoryId !== ISSUE_416_RECOVERY_REPOSITORY_ID) {
+    errors.push("Current prepared-worktree receipt is not the exact validated historical receipt.");
+  }
+  if (staleReceipt === undefined || previousReceipt === undefined || observation.receipts.archive.length !== 2 ||
+      staleReceipt.receiptDigest !== ISSUE_416_RECOVERY_STALE_RECEIPT || staleReceipt.contractVersion !== "worktree.state.v1" ||
+      staleReceipt.destination.head !== ISSUE_416_RECOVERY_SOURCE_HEAD || previousReceipt.receiptDigest !== ISSUE_416_RECOVERY_PREVIOUS_RECEIPT ||
+      previousReceipt.contractVersion !== "worktree.state.v2" || previousReceipt.supersedes.receiptDigest !== ISSUE_416_RECOVERY_STALE_RECEIPT ||
+      previousReceipt.supersedes.destinationHead !== ISSUE_416_RECOVERY_SOURCE_HEAD || currentReceipt.contractVersion !== "worktree.state.v2" ||
+      currentReceipt.supersedes.receiptDigest !== ISSUE_416_RECOVERY_PREVIOUS_RECEIPT) {
+    errors.push("Prepared-worktree receipt lineage or archive identity is not the frozen old/current tuple.");
+  }
+  if (planDigest !== `sha256:${ISSUE_416_RECOVERY_PLAN_SHA256}` || observation.plan.bytes !== observation.committedPlanBytes) {
+    errors.push("Approved recovery plan bytes or digest drifted from the committed plan.");
+  }
+  if (!nativeIssueIntakeExactArray(observation.planningCommits, ISSUE_416_RECOVERY_PLANNING_COMMITS) || parentPlanCommit !== ISSUE_416_RECOVERY_PLANNING_COMMITS[0]) {
+    errors.push("Planning commit range or parent is missing, extra, reordered, or unrelated.");
+  }
+  for (let index = 0; index < ISSUE_416_RECOVERY_PLANNING_COMMITS.length; index += 1) {
+    const provenance = observation.planningProvenance[index];
+    const commit = ISSUE_416_RECOVERY_PLANNING_COMMITS[index];
+    const expectedParent = index === 0 ? ISSUE_416_RECOVERY_SOURCE_HEAD : ISSUE_416_RECOVERY_PLANNING_COMMITS[index - 1];
+    if (provenance?.commit !== commit || !nativeIssueIntakeExactArray(provenance.parents, [expectedParent]) ||
+        !nativeIssueIntakeExactArray(provenance.diff, [`M\t${ISSUE_416_RECOVERY_PLAN_PATH}`])) {
+      errors.push("Planning commit provenance contains an unexpected parent or path.");
+      break;
+    }
+  }
+  if (errors.length > 0 || staleReceipt === undefined) return { errors, staleReceipt, currentReceipt, planDigest, parentPlanCommit };
+  return { errors, staleReceipt, currentReceipt, planDigest, parentPlanCommit };
+}
+
+async function inspectIssue416SourceBindingRecovery(
+  root: string,
+  missionId: string,
+  parser: NativeIssueIntakeJournalParserV1,
+  afterInitialSnapshot?: () => void | Promise<void>,
+): Promise<ProfileAwareSourceBindingRecoveryResultV1 | null> {
+  let initial: Issue416RecoveryObservationV1 | null;
+  try { initial = await captureIssue416SourceBindingRecoveryObservation(root, missionId, parser, false); }
+  catch (error) {
+    if (error instanceof MissionCliError) return sourceBindingRecoveryBlocked(missionId, error.message);
+    return sourceBindingRecoveryBlocked(missionId, "Recovery source snapshot failed.");
+  }
+  if (initial === null) return null;
+  const validated = validateIssue416SourceBindingRecoveryObservation(initial);
+  if (validated.errors.length > 0 || validated.staleReceipt === undefined) {
+    return sourceBindingRecoveryBlocked(missionId, ...validated.errors);
+  }
+  await afterInitialSnapshot?.();
+  let fresh: Issue416RecoveryObservationV1 | null;
+  try { fresh = await captureIssue416SourceBindingRecoveryObservation(root, missionId, parser, true); }
+  catch (error) {
+    return sourceBindingRecoveryBlocked(missionId, error instanceof Error ? error.message : "Recovery re-observation failed.");
+  }
+  if (fresh === null || !recoveryObservationEqual(initial, fresh)) {
+    return sourceBindingRecoveryBlocked(missionId, "Recovery source snapshot drifted before terminal resolution.");
+  }
+  const currentValidated = validateIssue416SourceBindingRecoveryObservation(fresh);
+  if (currentValidated.errors.length > 0 || currentValidated.staleReceipt === undefined) {
+    return sourceBindingRecoveryBlocked(missionId, ...currentValidated.errors);
+  }
+  const staleReceipt = currentValidated.staleReceipt;
+  const profileJournal = fresh.journal.journal;
+  const begun = profileJournal.entries[0];
+  const checkedRegistry = validateTrustedBindingRegistry(fresh.registry.value);
+  if (checkedRegistry.state === "invalid" || begun?.type !== "mission.begun" || !Object.hasOwn(begun.payload, "issueIntakeSourceBinding")) {
+    return sourceBindingRecoveryBlocked(missionId, "Re-observed authenticated recovery inputs are unavailable.");
+  }
+  return resolveProfileAwareSourceBindingRecoveryV1({
+    missionId,
+    journalBytes: fresh.journal.journalBytes,
+    journalSha256: fresh.journal.journalSha256,
+    journalIdentity: fresh.journal.journalIdentity,
+    entries: profileJournal.entries,
+    repository: { ...fresh.repository, originRepositoryId: fresh.originRepositoryId },
+    configuration: { repositoryId: fresh.configuration.config.repositoryId, bytes: fresh.configuration.bytes, identity: fresh.configuration.identity },
+    registry: { bytes: fresh.registry.bytes, identity: fresh.registry.identity, bindings: checkedRegistry.value.bindings },
+    staleReceipt: { digest: staleReceipt.receiptDigest, identity: fresh.receipts.archive.find(({ path }) => path === `${staleReceipt.receiptDigest}.json`)?.file.identity ?? "" },
+    currentReceipt: { digest: currentValidated.currentReceipt.receiptDigest, identity: fresh.receipts.active.identity },
+    planning: {
+      planDigest: currentValidated.planDigest,
+      planningBaseRevision: fresh.planningProvenance[0]?.parents[0] ?? "",
+      parentPlanCommit: currentValidated.parentPlanCommit,
+      planningCommitRange: [...fresh.planningCommits],
+    },
+  });
 }
 
 function nativeIssueIntakeLines(output: string): string[] {
@@ -2950,6 +3232,37 @@ function standingPreparationHuman(result: Extract<Awaited<ReturnType<typeof prep
   ].join("\n");
 }
 
+function sourceBindingRecoveryHuman(result: ProfileAwareSourceBindingRecoveryResultV1): string {
+  if (result.state === "blocked") {
+    return [
+      `Recovery blocked — ${result.reasonCode}`,
+      ...result.errors.map((error) => `  ${error}`),
+      `Next action: ${result.nextAction}`,
+    ].join("\n");
+  }
+  return [
+    `Recovery required — ${result.reasonCode}`,
+    `Mission: ${result.missionId}`,
+    `Current HEAD: ${result.currentRepository.headRevision}`,
+    `Current receipt: ${result.currentPreparedWorktreeReceipt.digest}`,
+    `Stale source HEAD: ${result.staleSourceBinding.headRevision}`,
+    `Stale receipt: ${result.staleSourceBinding.preparedWorktreeReceiptDigest}`,
+    `Planning commits: ${result.planning.planningCommitRange.join(", ")}`,
+    `Next action: ${result.nextAction}`,
+  ].join("\n");
+}
+
+async function recoverSourceBinding(args: string[]): Promise<number> {
+  const options = parseOptions(args, ["--root", "--mission-id"], ["--json", "--human"]);
+  if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
+  const root = await exactRoot(options.values.get("--root"), false);
+  const missionId = required(options, "--mission-id");
+  const result = await inspectIssue416SourceBindingRecovery(root, missionId, parseNativeIssueIntakeJournalBytes) ??
+    sourceBindingRecoveryBlocked(missionId, "Mission is not the exact Issue #416 profile-aware recovery candidate.");
+  output(result, options.flags.has("--json"), sourceBindingRecoveryHuman(result));
+  return 1;
+}
+
 async function prepareNext(args: string[], behavior: Readonly<{
   suppressPublicationSuccessOutput?: boolean;
   finalPublicationDecisionOutput?: boolean;
@@ -2961,6 +3274,19 @@ async function prepareNext(args: string[], behavior: Readonly<{
   const root = await exactRoot(options.values.get("--root"), true);
   const missionId = required(options, "--mission-id");
   const nativeParser = dependencies.parseNativeIssueIntakeJournalBytes ?? parseNativeIssueIntakeJournalBytes;
+  if (missionId === ISSUE_416_RECOVERY_MISSION_ID) {
+    const recovery = await inspectIssue416SourceBindingRecovery(
+      root,
+      missionId,
+      nativeParser,
+      dependencies.afterInitialSourceBindingRecoverySnapshot,
+    ) ?? sourceBindingRecoveryBlocked(
+      missionId,
+      "Mission is not the exact Issue #416 profile-aware recovery candidate.",
+    );
+    output(recovery, options.flags.has("--json"), sourceBindingRecoveryHuman(recovery));
+    return 1;
+  }
   const native = await classifyNativeIssueIntakeJournal(
     root,
     missionId,
@@ -4038,6 +4364,7 @@ export function missionUsage(): string {
     "  shield mission continue-legacy-reviewed-transition --mission-id <id> --fury-model <model-id> --root <path> [--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
     "  shield mission prepare-next --mission-id <id> [--root <path>] [--fury-model <model-id>] [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest> [--guided-review-finding <text>|--guided-review-condition <text>]] [--passcode-stdin] [--human|--json]",
+    "  shield mission recover-source-binding --mission-id <id> [--root <path>] [--human|--json]",
     "  shield mission publish-reviewed --mission-id <id> --base-branch <branch> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest>] [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
@@ -4069,6 +4396,7 @@ export async function runMissionCli(
     beforeProtectedGraphFinalRevalidation?: () => void | Promise<void>;
     beforeNativeIssueIntakeReadback?: () => void | Promise<void>;
     afterNativeIssueIntakeJournalHandleRead?: () => void | Promise<void>;
+    afterInitialSourceBindingRecoverySnapshot?: () => void | Promise<void>;
     parseNativeIssueIntakeJournalBytes?: NativeIssueIntakeJournalParserV1;
   }> = {},
 ): Promise<number> {
@@ -4095,8 +4423,10 @@ export async function runMissionCli(
       ...(dependencies.beforeProtectedGraphFinalRevalidation === undefined ? {} : { beforeProtectedGraphFinalRevalidation: dependencies.beforeProtectedGraphFinalRevalidation }),
       ...(dependencies.beforeNativeIssueIntakeReadback === undefined ? {} : { beforeNativeIssueIntakeReadback: dependencies.beforeNativeIssueIntakeReadback }),
       ...(dependencies.afterNativeIssueIntakeJournalHandleRead === undefined ? {} : { afterNativeIssueIntakeJournalHandleRead: dependencies.afterNativeIssueIntakeJournalHandleRead }),
+      ...(dependencies.afterInitialSourceBindingRecoverySnapshot === undefined ? {} : { afterInitialSourceBindingRecoverySnapshot: dependencies.afterInitialSourceBindingRecoverySnapshot }),
       ...(dependencies.parseNativeIssueIntakeJournalBytes === undefined ? {} : { parseNativeIssueIntakeJournalBytes: dependencies.parseNativeIssueIntakeJournalBytes }),
     });
+    if (action === "recover-source-binding") return recoverSourceBinding(rest);
     if (action === "publish-reviewed") return publishReviewed(rest);
     if (action === "authorize-daisy-coordination") return authorizeDaisyCoordination(rest);
     if (action === "publication-authorize") return publicationAuthorize(rest);

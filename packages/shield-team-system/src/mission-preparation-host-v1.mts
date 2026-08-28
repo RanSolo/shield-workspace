@@ -6,7 +6,7 @@ import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm } 
 import { join, relative, resolve, sep } from "node:path";
 import { isProxy } from "node:util/types";
 
-import { canonicalJson, deriveRepositoryMissionBindings, type TrustedHumanBinding } from "./mission-v2.mjs";
+import { canonicalJson, deriveRepositoryMissionBindings, selectCoulsonOperationBinding, validateTrustedBindingRegistry, type TrustedHumanBinding } from "./mission-v2.mjs";
 import {
   computeCanonicalContractDigestV1,
   computeContentIdV1,
@@ -33,6 +33,7 @@ import {
   type MissionReviewedTransitionGraphV1,
   type MissionReviewedTransitionGraphMaterializationResultV1,
 } from "./mission-preparation-store-v1.mjs";
+import { evaluateReviewPublicationV1 } from "./review-publication-v1.mjs";
 import { readSeatDispatchReceiptLedgerSnapshotV1 } from "./seat-dispatch-store.mjs";
 import {
   evaluateSeatDispatchAttributionV1,
@@ -65,6 +66,7 @@ import {
 import {
   computeReviewPublicationAuthorityDigest,
   computeReviewPublicationAuthoritySemanticIdentityV1,
+  isSensitiveReviewPublicationPath,
   type ReviewPublicationAuthorityV1,
   type ReviewPublicationEffect,
 } from "./review-publication-v1.mjs";
@@ -3042,4 +3044,737 @@ export async function prepareStandingBreakGlassImplementationV1(input: unknown):
     bindingId: binding.bindingId,
     artifacts: Object.freeze({ ...outputSet, projectionDigest }),
   });
+}
+
+export interface BreakGlassPublicationPreparationInputV1 {
+  readonly schemaVersion: 1;
+  readonly contractVersion: "shield.break-glass-publication-preparation.v1";
+  readonly authority: "none";
+  readonly preparationId: string;
+  readonly missionId: string;
+  readonly subjectId: string;
+  readonly repositoryId: string;
+  readonly canonicalRepositoryRoot: string;
+  readonly branch: string;
+  readonly constructionAuthority: Readonly<{
+    authority: "coulson_human";
+    authorityRef: string;
+    planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79";
+    planPath: "docs/missions/issue-416-track-layer-mode-plan.md";
+    planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc";
+    writerSeatId: "may";
+    ownedPaths: readonly ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"];
+    scope: "issue-416-track-layer-publication-preparation";
+    exclusions: readonly string[];
+  }>;
+  readonly manualDecision: Readonly<{
+    text: string;
+    sourceKind: "manual_non_canonical";
+    provenanceRef: string;
+  }>;
+  readonly plan: Readonly<{
+    authority: "none";
+    planCommit: string;
+    planPath: string;
+    planRawSha256: string;
+    transitionPlanId: string;
+    transitionPlanDigest: string;
+  }>;
+  readonly implementation: Readonly<{
+    headRevision: string;
+    approvedPaths: readonly string[];
+  }>;
+  readonly publication: Readonly<{
+    approvedPaths: readonly string[];
+    permittedEffects: readonly ["review.branch.push", "review.pull_request.create_draft"];
+  }>;
+  readonly exclusions: readonly string[];
+  readonly mackEvidence: Readonly<{
+    sourceKind: "repository";
+    artifactPath: string;
+    evidenceId: string;
+    evidenceDigest: string;
+    reviewedRevision: string;
+    verdict: "PASS";
+    sequence: 1;
+  }>;
+  readonly furyEvidence: Readonly<{
+    sourceKind: "repository";
+    artifactPath: string;
+    evidenceId: string;
+    evidenceDigest: string;
+    reviewedRevision: string;
+    verdict: "APPROVE";
+    mackEvidenceDigest: string;
+    sequence: 2;
+  }>;
+  readonly regressionFixture: Readonly<{
+    missionId: "mission:issue-intake:HgnxEl-ce9oshquwYlZJJS5IQKfFSciS8CfYeQmFSiY";
+    subjectId: "github:RanSolo/shield-workspace/issue/406";
+    implementationHead: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec";
+    operationId: string;
+    operationDigest: string;
+    outcome: "failed";
+    reasonCode: string;
+    headRevision: string;
+  }>;
+}
+
+export interface TrackLayerConstructionInputV1 {
+  readonly schemaVersion: 1;
+  readonly contractVersion: "shield.track-layer-construction.v1";
+  readonly missionId: "mission:issue-416";
+  readonly subjectId: "github:RanSolo/shield-workspace/issue/416";
+  readonly repositoryId: "RanSolo/shield-workspace";
+  readonly plan: Readonly<{
+    planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79";
+    planPath: "docs/missions/issue-416-track-layer-mode-plan.md";
+    planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc";
+    transitionPlanId: string;
+    transitionPlanDigest: string;
+  }>;
+  readonly scope: "issue-416-track-layer-publication-preparation";
+  readonly implementationHead: string;
+  readonly writerSeatId: "may";
+  readonly ownedPaths: readonly ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"];
+  readonly exclusions: readonly string[];
+  readonly regressionFixture: Readonly<{
+    readonly missionId: "mission:issue-intake:HgnxEl-ce9oshquwYlZJJS5IQKfFSciS8CfYeQmFSiY";
+    readonly subjectId: "github:RanSolo/shield-workspace/issue/406";
+    readonly implementationHead: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec";
+    readonly operationId: "operation:issue-406:failed-publication-preparation";
+    readonly operationDigest: string;
+    readonly outcome: "failed";
+    readonly reasonCode: "canonical_publication_authority_missing";
+    readonly replayOutcome: "rejected_non_authorizing";
+    readonly headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec";
+  }>;
+}
+
+export type TrackLayerConstructionResultV1 = Readonly<
+  | { readonly state: "ready"; readonly authority: "none"; readonly contractVersion: "shield.track-layer-construction.v1"; readonly missionId: "mission:issue-416"; readonly subjectId: "github:RanSolo/shield-workspace/issue/416"; readonly implementationHead: string; readonly constructionDigest: string; readonly regressionFixtureDigest: string; readonly binding: Readonly<TrackLayerConstructionInputV1> }
+  | { readonly state: "blocked"; readonly reasonCode: BreakGlassPublicationPreparationInvalidCodeV1; readonly errors: readonly string[] }
+>;
+
+export interface BreakGlassPublicationPreparationFinalizationInputV1 {
+  readonly construction: TrackLayerConstructionInputV1;
+  readonly repositoryRoot: string;
+  readonly mackArtifact: Readonly<{ readonly path: string; readonly rawSha256: string }>;
+  readonly furyArtifact: Readonly<{ readonly path: string; readonly rawSha256: string }>;
+}
+
+export type BreakGlassPublicationPreparationFinalizationResultV1 = Readonly<
+  | { readonly state: "ready"; readonly authority: "none"; readonly constructionDigest: string; readonly constructionAuthorityDigest: string; readonly regressionFixtureDigest: string; readonly mackEvidence: Readonly<Record<string, unknown>>; readonly furyEvidence: Readonly<Record<string, unknown>>; readonly publicationPinInput: Readonly<{ readonly authority: Readonly<ReviewPublicationAuthorityV1>; readonly authorityDigest: string; readonly semanticIdentity: string; readonly requestedEffects: readonly ["review.branch.push", "review.pull_request.create_draft"] }> }
+  | { readonly state: "blocked"; readonly reasonCode: BreakGlassPublicationPreparationInvalidCodeV1; readonly errors: readonly string[] }
+>;
+
+const TRACK_LAYER_CONSTRUCTION_FIELDS = ["schemaVersion", "contractVersion", "missionId", "subjectId", "repositoryId", "plan", "scope", "implementationHead", "writerSeatId", "ownedPaths", "exclusions", "regressionFixture"] as const;
+const TRACK_LAYER_PLAN_FIELDS = ["planCommit", "planPath", "planRawSha256", "transitionPlanId", "transitionPlanDigest"] as const;
+const TRACK_LAYER_FINALIZATION_FIELDS = ["construction", "repositoryRoot", "mackArtifact", "furyArtifact"] as const;
+const TRACK_LAYER_ARTIFACT_REF_FIELDS = ["path", "rawSha256"] as const;
+const TRACK_LAYER_EXCLUSIONS = Object.freeze(["authority_fabrication", "journal_fabrication", "evidence_fabrication", "receipt_replay", "publication", "merge", "deployment", "release", "final_acceptance", "parallel_crews", "scope_expansion"] as const);
+const TRACK_LAYER_OWNED_PATHS = Object.freeze(["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"] as const);
+const TRACK_LAYER_406_FIELDS = ["missionId", "subjectId", "implementationHead", "operationId", "operationDigest", "outcome", "reasonCode", "replayOutcome", "headRevision"] as const;
+const TRACK_LAYER_406_INPUT = Object.freeze({
+  missionId: "mission:issue-intake:HgnxEl-ce9oshquwYlZJJS5IQKfFSciS8CfYeQmFSiY",
+  subjectId: "github:RanSolo/shield-workspace/issue/406",
+  implementationHead: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
+  operationId: "operation:issue-406:failed-publication-preparation",
+  headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
+} as const);
+const TRACK_LAYER_406_INPUT_BYTES = canonicalJson(TRACK_LAYER_406_INPUT);
+const TRACK_LAYER_406_OPERATION = Object.freeze({
+  ...TRACK_LAYER_406_INPUT,
+  outcome: "failed",
+  reasonCode: "canonical_publication_authority_missing",
+} as const);
+const TRACK_LAYER_406_OPERATION_BYTES = canonicalJson(TRACK_LAYER_406_OPERATION);
+const TRACK_LAYER_406_OPERATION_DIGEST = trackLayerRawSha256(TRACK_LAYER_406_OPERATION_BYTES);
+const TRACK_LAYER_AUTHORIZATION_PATH = ".shield/audit/issue-416/coulson-authorization.json" as const;
+const TRACK_LAYER_AUTHORIZATION_ENVELOPE_FIELDS = ["payload", "signatureBase64"] as const;
+const TRACK_LAYER_AUTHORIZATION_FIELDS = [
+  "schemaVersion", "contractVersion", "authorizationId", "missionId", "subjectId", "repositoryId",
+  "planCommit", "planPath", "planRawSha256", "writerSeatId", "ownedPaths", "scope", "exclusions",
+  "humanPrincipalId", "bindingId", "signingKeyRef", "sourceRef", "registryRawSha256", "decision",
+] as const;
+const TRACK_LAYER_AUTHORIZATION_CONTRACT = "shield.issue-416.coulson-authorization.v1" as const;
+
+function trackLayerRawSha256(bytes: string): string { return `sha256:${createHash("sha256").update(bytes, "utf8").digest("base64url")}`; }
+function trackLayerHexSha256(bytes: string): string { return createHash("sha256").update(bytes, "utf8").digest("hex"); }
+
+function trackLayerArtifactContentDigest(value: Record<string, unknown>): string {
+  const { terminalEntryDigest: _terminalEntryDigest, ...content } = value;
+  return trackLayerRawSha256(canonicalJson(content));
+}
+
+function trackLayerArtifactContentId(kind: "mack" | "fury", contentDigest: string): string {
+  return `issue-416-${kind}-artifact:${contentDigest.slice("sha256:".length)}`;
+}
+
+function trackLayerError(reasonCode: BreakGlassPublicationPreparationInvalidCodeV1, message: string): TrackLayerConstructionResultV1 { return Object.freeze({ state: "blocked" as const, reasonCode, errors: Object.freeze([message]) }); }
+
+function replayTrackLayer406Failure(value: unknown): boolean {
+  if (!breakGlassClosed(value, TRACK_LAYER_406_FIELDS)) return false;
+  const candidate = value as Record<string, unknown>;
+  const inputBytes = canonicalJson({
+    missionId: candidate.missionId,
+    subjectId: candidate.subjectId,
+    implementationHead: candidate.implementationHead,
+    operationId: candidate.operationId,
+    headRevision: candidate.headRevision,
+  });
+  if (inputBytes !== TRACK_LAYER_406_INPUT_BYTES) return false;
+  let input: unknown;
+  try { input = JSON.parse(TRACK_LAYER_406_INPUT_BYTES) as unknown; } catch { return false; }
+  const decision = evaluateReviewPublicationV1(input, input);
+  return decision.state === "blocked" && decision.reasonCode === "authority_malformed" &&
+    candidate.operationDigest === TRACK_LAYER_406_OPERATION_DIGEST &&
+    candidate.replayOutcome === "rejected_non_authorizing";
+}
+
+export function bindTrackLayerConstructionV1(input: unknown): TrackLayerConstructionResultV1 {
+  if (!breakGlassClosed(input, TRACK_LAYER_CONSTRUCTION_FIELDS)) return trackLayerError("malformed", "Track-Layer construction input must be closed and contain no review or publication inputs.");
+  const candidate = input as unknown as TrackLayerConstructionInputV1;
+  if (candidate.schemaVersion !== 1 || candidate.contractVersion !== "shield.track-layer-construction.v1" || candidate.missionId !== "mission:issue-416" || candidate.subjectId !== "github:RanSolo/shield-workspace/issue/416" || candidate.repositoryId !== "RanSolo/shield-workspace" || candidate.scope !== "issue-416-track-layer-publication-preparation" || !breakGlassRevision(candidate.implementationHead) || candidate.implementationHead === "400a60a0eb4bf6dbf549b08e3b99a89572a57cec" || candidate.writerSeatId !== "may") return trackLayerError("malformed", "Construction identity is not the exact #416 May binding.");
+  if (!breakGlassClosed(candidate.plan, TRACK_LAYER_PLAN_FIELDS) || candidate.plan.planCommit !== "52044ac5284a1b6980e422c7eeaf58ee76dc0e79" || candidate.plan.planPath !== "docs/missions/issue-416-track-layer-mode-plan.md" || candidate.plan.planRawSha256 !== "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc" || !TRANSITION_PLAN_ID.test(candidate.plan.transitionPlanId) || !breakGlassDigestValue(candidate.plan.transitionPlanDigest)) return trackLayerError("plan_binding_invalid", "Construction plan binding is not frozen to #416.");
+  const ownedPaths = breakGlassPathSet(candidate.ownedPaths);
+  if (ownedPaths === null || canonicalJson(ownedPaths) !== canonicalJson(TRACK_LAYER_OWNED_PATHS) || canonicalJson(candidate.exclusions) !== canonicalJson(TRACK_LAYER_EXCLUSIONS)) return trackLayerError("path_scope_invalid", "Construction paths or exclusions exceed the approved scope.");
+  if (!breakGlassClosed(candidate.regressionFixture, TRACK_LAYER_406_FIELDS)) return trackLayerError("failed_operation_invalid", "The unchanged #406 failed operation must replay from its canonical bytes and remain non-authorizing.");
+  const regressionFixture = candidate.regressionFixture;
+  const operation = {
+    missionId: regressionFixture.missionId,
+    subjectId: regressionFixture.subjectId,
+    implementationHead: regressionFixture.implementationHead,
+    operationId: regressionFixture.operationId,
+    outcome: regressionFixture.outcome,
+    reasonCode: regressionFixture.reasonCode,
+    headRevision: regressionFixture.headRevision,
+  };
+  if (canonicalJson(operation) !== TRACK_LAYER_406_OPERATION_BYTES || regressionFixture.operationDigest !== TRACK_LAYER_406_OPERATION_DIGEST ||
+      regressionFixture.outcome !== "failed" || regressionFixture.reasonCode !== "canonical_publication_authority_missing" ||
+      regressionFixture.replayOutcome !== "rejected_non_authorizing" || regressionFixture.headRevision !== regressionFixture.implementationHead ||
+      !replayTrackLayer406Failure(regressionFixture)) return trackLayerError("failed_operation_invalid", "The unchanged #406 failed operation must replay from its canonical bytes and remain non-authorizing.");
+  const binding = structuredClone(candidate);
+  const constructionDigest = trackLayerRawSha256(canonicalJson(binding));
+  return breakGlassFreeze({ state: "ready" as const, authority: "none" as const, contractVersion: "shield.track-layer-construction.v1" as const, missionId: candidate.missionId, subjectId: candidate.subjectId, implementationHead: candidate.implementationHead, constructionDigest, regressionFixtureDigest: candidate.regressionFixture.operationDigest, binding });
+}
+
+type TrackLayerHostAuthenticationV1 = Readonly<{
+  state: "ready";
+  authority: "host_authenticated";
+  repositoryRoot: string;
+  construction: TrackLayerConstructionInputV1;
+  planSnapshot: StableTextSnapshotV1;
+  configSnapshot: StableConfigurationSnapshotV1;
+  registrySnapshot: StableTextSnapshotV1;
+  authorizationSnapshot: StableTextSnapshotV1;
+  constructionAuthorityDigest: string;
+  constructionAuthority: Readonly<{
+    authority: "host_authenticated";
+    authorityRef: string;
+    planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79";
+    planPath: "docs/missions/issue-416-track-layer-mode-plan.md";
+    planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc";
+    writerSeatId: "may";
+    ownedPaths: readonly ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"];
+    scope: "issue-416-track-layer-publication-preparation";
+    exclusions: readonly string[];
+    humanBinding: Readonly<Pick<TrustedHumanBinding, "bindingId" | "humanPrincipalId" | "seatId" | "signingKeyRef">>;
+    registryRawSha256: string;
+    authorizationEvidenceDigest: string;
+  }>;
+}>;
+
+type TrackLayerCoulsonAuthorizationPayloadV1 = Readonly<{
+  readonly schemaVersion: 1;
+  readonly contractVersion: typeof TRACK_LAYER_AUTHORIZATION_CONTRACT;
+  readonly authorizationId: string;
+  readonly missionId: "mission:issue-416";
+  readonly subjectId: "github:RanSolo/shield-workspace/issue/416";
+  readonly repositoryId: "RanSolo/shield-workspace";
+  readonly planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79";
+  readonly planPath: "docs/missions/issue-416-track-layer-mode-plan.md";
+  readonly planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc";
+  readonly writerSeatId: "may";
+  readonly ownedPaths: readonly ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"];
+  readonly scope: "issue-416-track-layer-publication-preparation";
+  readonly exclusions: readonly string[];
+  readonly humanPrincipalId: string;
+  readonly bindingId: string;
+  readonly signingKeyRef: string;
+  readonly sourceRef: string;
+  readonly registryRawSha256: string;
+  readonly decision: "approved";
+}>;
+
+function trackLayerAuthorizationPayloadMatches(
+  payload: TrackLayerCoulsonAuthorizationPayloadV1,
+  construction: TrackLayerConstructionInputV1,
+  registryRawSha256: string,
+): boolean {
+  const ownedPaths = breakGlassPathSet(payload.ownedPaths);
+  const exclusions = breakGlassArray(payload.exclusions);
+  return payload.schemaVersion === 1 && payload.contractVersion === TRACK_LAYER_AUTHORIZATION_CONTRACT && identifier(payload.authorizationId) &&
+    payload.missionId === construction.missionId && payload.subjectId === construction.subjectId && payload.repositoryId === construction.repositoryId &&
+    payload.planCommit === construction.plan.planCommit && payload.planPath === construction.plan.planPath && payload.planRawSha256 === construction.plan.planRawSha256 &&
+    payload.writerSeatId === construction.writerSeatId && ownedPaths !== null && canonicalJson(ownedPaths) === canonicalJson(construction.ownedPaths) &&
+    payload.scope === construction.scope && exclusions !== null && canonicalJson(exclusions) === canonicalJson(construction.exclusions) &&
+    identifier(payload.humanPrincipalId) && identifier(payload.bindingId) && identifier(payload.signingKeyRef) && identifier(payload.sourceRef) &&
+    /^[0-9a-f]{64}$/u.test(payload.registryRawSha256) && payload.registryRawSha256 === registryRawSha256 && payload.decision === "approved";
+}
+
+async function readAndVerifyTrackLayerAuthorizationV1(
+  repositoryRoot: string,
+  construction: TrackLayerConstructionInputV1,
+  registrySnapshot: StableTextSnapshotV1,
+  coulson: TrustedHumanBinding,
+): Promise<{ snapshot: StableTextSnapshotV1; payload: TrackLayerCoulsonAuthorizationPayloadV1 } | null> {
+  const snapshot = await stableRegularTextFile(repositoryRoot, TRACK_LAYER_AUTHORIZATION_PATH);
+  if (snapshot === null) return null;
+  let envelope: unknown;
+  try { envelope = JSON.parse(snapshot.bytes) as unknown; } catch { return null; }
+  if (!breakGlassClosed(envelope, TRACK_LAYER_AUTHORIZATION_ENVELOPE_FIELDS)) return null;
+  const envelopeValue = envelope as Record<string, unknown>;
+  if (!breakGlassClosed(envelopeValue.payload, TRACK_LAYER_AUTHORIZATION_FIELDS) || typeof envelopeValue.signatureBase64 !== "string" ||
+      !/^[A-Za-z0-9+/]+={0,2}$/u.test(envelopeValue.signatureBase64) || envelopeValue.signatureBase64.length === 0) return null;
+  const payload = envelopeValue.payload as unknown as TrackLayerCoulsonAuthorizationPayloadV1;
+  const registryRawSha256 = trackLayerHexSha256(registrySnapshot.bytes);
+  if (!trackLayerAuthorizationPayloadMatches(payload, construction, registryRawSha256) ||
+      coulson.seatId !== "coulson" || coulson.humanPrincipalId !== payload.humanPrincipalId || coulson.bindingId !== payload.bindingId || coulson.signingKeyRef !== payload.signingKeyRef) return null;
+  try {
+    const publicKey = createPublicKey({ key: Buffer.from(coulson.publicKeySpkiBase64, "base64"), format: "der", type: "spki" });
+    if (!verify(null, Buffer.from(canonicalJson(payload)), publicKey, Buffer.from(envelopeValue.signatureBase64, "base64"))) return null;
+  } catch { return null; }
+  return { snapshot, payload };
+}
+
+async function authenticateTrackLayerConstructionV1(
+  input: TrackLayerConstructionInputV1,
+  repositoryRoot: string,
+): Promise<TrackLayerHostAuthenticationV1 | null> {
+  const configSnapshot = await stableConfigurationSnapshot(repositoryRoot, "RanSolo/shield-workspace");
+  const planSnapshot = await stableRegularTextFile(repositoryRoot, "docs/missions/issue-416-track-layer-mode-plan.md");
+  const registrySnapshot = await stableRegularTextFile(repositoryRoot, ".shield/trusted-human-bindings.json");
+  if (configSnapshot === null || planSnapshot === null || registrySnapshot === null || trackLayerHexSha256(planSnapshot.bytes) !== "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc") return null;
+  let registryInput: unknown;
+  try { registryInput = JSON.parse(registrySnapshot.bytes); }
+  catch { return null; }
+  const registry = validateTrustedBindingRegistry(registryInput);
+  if (registry.state === "invalid") return null;
+  const coulson = selectCoulsonOperationBinding(configSnapshot.config, registry.value);
+  if (coulson.state === "invalid") return null;
+  const checked = bindTrackLayerConstructionV1(input);
+  if (checked.state !== "ready") return null;
+  const authorization = await readAndVerifyTrackLayerAuthorizationV1(repositoryRoot, checked.binding, registrySnapshot, coulson.value);
+  if (authorization === null) return null;
+  const constructionAuthority = {
+    authority: "host_authenticated" as const,
+    authorityRef: authorization.payload.authorizationId,
+    planCommit: authorization.payload.planCommit,
+    planPath: authorization.payload.planPath,
+    planRawSha256: authorization.payload.planRawSha256,
+    writerSeatId: authorization.payload.writerSeatId,
+    ownedPaths: authorization.payload.ownedPaths,
+    scope: authorization.payload.scope,
+    exclusions: authorization.payload.exclusions,
+    humanBinding: {
+      bindingId: coulson.value.bindingId,
+      humanPrincipalId: coulson.value.humanPrincipalId,
+      seatId: coulson.value.seatId,
+      signingKeyRef: coulson.value.signingKeyRef,
+    },
+    registryRawSha256: authorization.payload.registryRawSha256,
+    authorizationEvidenceDigest: trackLayerRawSha256(authorization.snapshot.bytes),
+  };
+  return breakGlassFreeze({ state: "ready" as const, authority: "host_authenticated" as const, repositoryRoot, construction: checked.binding, planSnapshot, configSnapshot, registrySnapshot, authorizationSnapshot: authorization.snapshot, constructionAuthority, constructionAuthorityDigest: trackLayerRawSha256(authorization.snapshot.bytes) });
+}
+
+type TrackLayerDispatchLedgerV1 = Readonly<{ snapshot: StableTextSnapshotV1; projections: readonly SeatDispatchReceiptProjectionV1[] }>;
+
+async function readTrackLayerDispatchLedger(root: string): Promise<TrackLayerDispatchLedgerV1 | null> {
+  const snapshot = await stableRegularTextFile(root, ".shield/dispatch-receipts.jsonl");
+  if (snapshot === null || !snapshot.bytes.endsWith("\n")) return null;
+  let entries: unknown[];
+  try { entries = snapshot.bytes.trimEnd().split("\n").map((line) => JSON.parse(line)); }
+  catch { return null; }
+  const replay = replaySeatDispatchReceiptsV1(entries);
+  return replay.state === "valid" ? { snapshot, projections: replay.projections } : null;
+}
+
+async function readTrackLayerArtifact(root: string, reference: Readonly<{ path: string; rawSha256: string }>, kind: "mack" | "fury", ledger: TrackLayerDispatchLedgerV1): Promise<{ state: "valid"; value: Record<string, unknown>; digest: string; contentId: string; snapshot: StableTextSnapshotV1; projection: SeatDispatchReceiptProjectionV1 } | { state: "blocked"; reasonCode: BreakGlassPublicationPreparationInvalidCodeV1; message: string }> {
+  if (!breakGlassClosed(reference, TRACK_LAYER_ARTIFACT_REF_FIELDS) || !breakGlassEvidencePath(reference.path) || !breakGlassDigestValue(reference.rawSha256)) return { state: "blocked", reasonCode: "evidence_binding_invalid", message: "Review artifact reference is not a repository-owned stable path and digest." };
+  const snapshot = await stableRegularTextFile(root, reference.path);
+  if (snapshot === null) return { state: "blocked", reasonCode: "evidence_binding_invalid", message: "Review artifact is missing, unstable, or not a regular file." };
+  const digest = trackLayerRawSha256(snapshot.bytes);
+  if (digest !== reference.rawSha256) return { state: "blocked", reasonCode: "evidence_binding_invalid", message: "Review artifact bytes do not match the supplied digest." };
+  let parsed: unknown;
+  try { parsed = JSON.parse(snapshot.bytes) as unknown; } catch { return { state: "blocked", reasonCode: "evidence_binding_invalid", message: "Review artifact JSON is malformed." }; }
+  const fields = kind === "mack" ? ["schemaVersion", "artifactKind", "missionId", "subjectId", "implementationHead", "constructionDigest", "evidenceId", "verdict", "sequence", "seatId", "receiptId", "dispatchId", "taskId", "sessionId", "artifactId", "artifactRevision", "repositoryRevision", "runtimeId", "modelId", "executorId", "terminalEntryDigest"] : ["schemaVersion", "artifactKind", "missionId", "subjectId", "implementationHead", "constructionDigest", "evidenceId", "verdict", "mackEvidenceDigest", "sequence", "seatId", "receiptId", "dispatchId", "taskId", "sessionId", "artifactId", "artifactRevision", "repositoryRevision", "runtimeId", "modelId", "executorId", "terminalEntryDigest"];
+  if (!breakGlassClosed(parsed, fields) || (parsed as Record<string, unknown>).schemaVersion !== 1 || (parsed as Record<string, unknown>).artifactKind !== `issue-416-${kind}`) return { state: "blocked", reasonCode: "evidence_binding_invalid", message: "Review artifact is not the closed repository-owned #416 artifact." };
+  const value = parsed as Record<string, unknown>;
+  if (snapshot.bytes !== canonicalJson(value)) return { state: "blocked", reasonCode: "evidence_binding_invalid", message: "Review artifact bytes are not the authenticated canonical artifact encoding." };
+  if (value.seatId !== kind || value.sequence !== (kind === "mack" ? 1 : 2)) return { state: "blocked", reasonCode: "evidence_binding_invalid", message: "Review artifact seat and sequence are not the authenticated terminal assignment." };
+  const matches = ledger.projections.filter((projection) => projection.receiptId === value.receiptId && projection.dispatchId === value.dispatchId && projection.accountableSeatId === kind && projection.repositoryRevision === value.repositoryRevision && projection.artifactId === value.artifactId && projection.artifactRevision === value.artifactRevision && projection.state === "completed" && projection.lastEntryDigest === value.terminalEntryDigest && projection.outputEvidenceRefs?.includes(value.evidenceId as string));
+  if (matches.length !== 1) return { state: "blocked", reasonCode: "evidence_binding_invalid", message: "Review artifact lacks one exact authenticated terminal seat-dispatch projection." };
+  const projection = matches[0];
+  const contentDigest = trackLayerArtifactContentDigest(value);
+  const contentId = trackLayerArtifactContentId(kind, contentDigest);
+  if (value.taskId !== projection.childTaskId || value.sessionId !== projection.childSessionId ||
+      !projection.outputEvidenceRefs?.includes(contentId) || !projection.outputEvidenceRefs.includes(contentDigest)) return { state: "blocked", reasonCode: "evidence_binding_invalid", message: "Terminal receipt does not bind the exact review artifact content ID and digest." };
+  const observed = finalObservedProjection(projection);
+  if (observed === null || observed.runtimeId !== value.runtimeId || observed.model !== value.modelId || observed.executorId !== value.executorId) return { state: "blocked", reasonCode: "evidence_binding_invalid", message: "Review artifact runtime or executor provenance is not host-authenticated." };
+  return { state: "valid", value, digest, contentId, snapshot, projection };
+}
+
+type TrackLayerGitStateV1 = Readonly<{
+  root: string;
+  branch: string;
+  head: string;
+  tree: string;
+}>;
+
+async function trackLayerGitText(root: string, revision: string, path: string): Promise<string | null> {
+  try { return (await execFile("git", ["-C", root, "show", `${revision}:${path}`], { shell: false })).stdout; }
+  catch { return null; }
+}
+
+async function validateTrackLayerGitStateV1(repositoryRoot: string, expectedHead: string): Promise<TrackLayerGitStateV1 | null> {
+  try {
+    const root = await realpath(repositoryRoot);
+    const gitRoot = (await execFile("git", ["-C", root, "rev-parse", "--show-toplevel"], { shell: false })).stdout.trim();
+    const branch = (await execFile("git", ["-C", root, "rev-parse", "--abbrev-ref", "HEAD"], { shell: false })).stdout.trim();
+    const head = (await execFile("git", ["-C", root, "rev-parse", "HEAD"], { shell: false })).stdout.trim();
+    const tree = (await execFile("git", ["-C", root, "rev-parse", "HEAD^{tree}"], { shell: false })).stdout.trim();
+    const origin = (await execFile("git", ["-C", root, "config", "--get", "remote.origin.url"], { shell: false })).stdout.trim();
+    const status = (await execFile("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"], { shell: false })).stdout;
+    if (resolve(gitRoot) !== root || standingRepositoryId(origin) !== "RanSolo/shield-workspace" || branch !== "agent/issue-416-track-layer-mode" || head !== expectedHead || status.length !== 0) return null;
+    const ancestry = await execFile("git", ["-C", root, "merge-base", "--is-ancestor", "52044ac5284a1b6980e422c7eeaf58ee76dc0e79", head], { shell: false }).catch(() => null);
+    if (ancestry === null) return null;
+    const planAtCommit = await trackLayerGitText(root, "52044ac5284a1b6980e422c7eeaf58ee76dc0e79", "docs/missions/issue-416-track-layer-mode-plan.md");
+    const planAtHead = await trackLayerGitText(root, head, "docs/missions/issue-416-track-layer-mode-plan.md");
+    if (planAtCommit === null || planAtHead === null || trackLayerHexSha256(planAtCommit) !== "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc" || planAtHead !== planAtCommit) return null;
+    const scope = (await execFile("git", ["-C", root, "diff", "--name-status", "--no-renames", "52044ac5284a1b6980e422c7eeaf58ee76dc0e79..HEAD", "--"], { shell: false })).stdout.trim();
+    const scopeLines = scope.length === 0 ? [] : scope.split("\n");
+    if (scopeLines.length !== TRACK_LAYER_OWNED_PATHS.length || scopeLines.some((line) => {
+      const [statusCode, path] = line.split("\t");
+      return statusCode !== "M" || path === undefined || !TRACK_LAYER_OWNED_PATHS.includes(path as typeof TRACK_LAYER_OWNED_PATHS[number]);
+    }) || new Set(scopeLines.map((line) => line.split("\t")[1])).size !== TRACK_LAYER_OWNED_PATHS.length) return null;
+    for (const path of TRACK_LAYER_OWNED_PATHS) {
+      const committed = await trackLayerGitText(root, head, path);
+      if (committed === null || (await readFile(join(root, path), "utf8")) !== committed) return null;
+      const treeEntry = (await execFile("git", ["-C", root, "ls-tree", head, "--", path], { shell: false })).stdout.trim();
+      if (!treeEntry.startsWith(`100644 blob `) || !treeEntry.endsWith(`\t${path}`)) return null;
+    }
+    return { root, branch, head, tree };
+  } catch { return null; }
+}
+
+export async function finalizeBreakGlassPublicationPreparationV1(input: unknown): Promise<BreakGlassPublicationPreparationFinalizationResultV1> {
+  if (!breakGlassClosed(input, TRACK_LAYER_FINALIZATION_FIELDS)) return Object.freeze({ state: "blocked" as const, reasonCode: "malformed" as const, errors: Object.freeze(["Finalization input must be closed."]) });
+  const candidate = input as unknown as BreakGlassPublicationPreparationFinalizationInputV1;
+  if (!breakGlassRoot(candidate.repositoryRoot) || !breakGlassClosed(candidate.mackArtifact, TRACK_LAYER_ARTIFACT_REF_FIELDS) || !breakGlassClosed(candidate.furyArtifact, TRACK_LAYER_ARTIFACT_REF_FIELDS)) return Object.freeze({ state: "blocked" as const, reasonCode: "malformed" as const, errors: Object.freeze(["Finalization requires raw construction data and two artifact references."]) });
+  const construction = bindTrackLayerConstructionV1(candidate.construction);
+  if (construction.state !== "ready") return Object.freeze({ state: "blocked" as const, reasonCode: construction.reasonCode, errors: construction.errors });
+  const initialGitState = await validateTrackLayerGitStateV1(candidate.repositoryRoot, construction.implementationHead);
+  if (initialGitState === null) {
+    return Object.freeze({ state: "blocked" as const, reasonCode: "implementation_binding_invalid" as const, errors: Object.freeze(["Repository root or HEAD is not the authoritative construction repository."]) });
+  }
+  const authoritativeRoot = initialGitState.root;
+  const authoritativeBranch = initialGitState.branch;
+  const authoritativeHead = initialGitState.head;
+  const authoritativeTree = initialGitState.tree;
+  const hostAuthentication = await authenticateTrackLayerConstructionV1(construction.binding, authoritativeRoot);
+  if (hostAuthentication === null) return Object.freeze({ state: "blocked" as const, reasonCode: "implementation_binding_invalid" as const, errors: Object.freeze(["Construction authority is not host-authenticated by the repository trust binding."]) });
+  const ledger = await readTrackLayerDispatchLedger(authoritativeRoot);
+  if (ledger === null) return Object.freeze({ state: "blocked" as const, reasonCode: "evidence_binding_invalid" as const, errors: Object.freeze(["Mack and Fury artifacts require a stable, replayable seat-dispatch ledger."]) });
+  const mack = await readTrackLayerArtifact(authoritativeRoot, candidate.mackArtifact, "mack", ledger);
+  if (mack.state === "blocked") return Object.freeze({ state: "blocked" as const, reasonCode: mack.reasonCode, errors: Object.freeze([mack.message]) });
+  const fury = await readTrackLayerArtifact(authoritativeRoot, candidate.furyArtifact, "fury", ledger);
+  if (fury.state === "blocked") return Object.freeze({ state: "blocked" as const, reasonCode: fury.reasonCode, errors: Object.freeze([fury.message]) });
+  const mackValue = mack.value;
+  const furyValue = fury.value;
+  const mackProjection = mack.projection;
+  const furyProjection = fury.projection;
+  const mackObserved = finalObservedProjection(mackProjection);
+  const furyObserved = finalObservedProjection(furyProjection);
+  const furyInputRefs = furyProjection.inputEvidenceRefs;
+  if (mackValue.missionId !== "mission:issue-416" || mackValue.subjectId !== "github:RanSolo/shield-workspace/issue/416" || mackValue.implementationHead !== construction.implementationHead || mackValue.constructionDigest !== construction.constructionDigest || mackValue.verdict !== "PASS" || mackValue.sequence !== 1 || furyValue.missionId !== mackValue.missionId || furyValue.subjectId !== mackValue.subjectId || furyValue.implementationHead !== mackValue.implementationHead || furyValue.constructionDigest !== construction.constructionDigest || furyValue.verdict !== "APPROVE" || furyValue.sequence !== 2 || furyValue.mackEvidenceDigest !== mack.digest || mackProjection.logSequence >= furyProjection.logSequence || !furyInputRefs.includes(mackValue.evidenceId as string) || !furyInputRefs.includes(mack.contentId) || !furyInputRefs.includes(mack.digest) || mackObserved === null || furyObserved === null || mackProjection.childTaskId === furyProjection.childTaskId || mackProjection.childSessionId === furyProjection.childSessionId || mackObserved.executorId === furyObserved.executorId || mackObserved.runtimeId === furyObserved.runtimeId || mackValue.receiptId === furyValue.receiptId || mackValue.dispatchId === furyValue.dispatchId) return Object.freeze({ state: "blocked" as const, reasonCode: "evidence_binding_invalid" as const, errors: Object.freeze(["Fresh Mack then Fury artifacts do not bind ordered, distinct authenticated seats to the exact #416 construction and Mack evidence digest."]) });
+  const authority: ReviewPublicationAuthorityV1 = { publicationScopeSchemaVersion: 1, contractVersion: "review-publication.v1", authorityKind: "review.publish", authorityRef: `break-glass-publication:${construction.missionId}`, missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", missionRevisionId: construction.binding.plan.transitionPlanDigest, repositoryId: "RanSolo/shield-workspace", canonicalRepositoryRoot: authoritativeRoot, branch: "agent/issue-416-track-layer-mode", baseRevisionId: construction.binding.plan.planCommit, headRevisionId: construction.implementationHead, authorizedPaths: [...construction.binding.ownedPaths], permittedEffects: [...BREAK_GLASS_EFFECTS] };
+  const semantic = computeReviewPublicationAuthoritySemanticIdentityV1(authority);
+  if (semantic.state === "blocked") return Object.freeze({ state: "blocked" as const, reasonCode: "replay_conflict" as const, errors: Object.freeze(["Derived publication identity is invalid."]) });
+  const terminalLedger = await readTrackLayerDispatchLedger(authoritativeRoot);
+  const terminalAuthentication = await authenticateTrackLayerConstructionV1(construction.binding, authoritativeRoot);
+  let terminalBranch = "";
+  let terminalHead = "";
+  let terminalTree = "";
+  try {
+    terminalBranch = (await execFile("git", ["-C", authoritativeRoot, "rev-parse", "--abbrev-ref", "HEAD"], { shell: false })).stdout.trim();
+    terminalHead = (await execFile("git", ["-C", authoritativeRoot, "rev-parse", "HEAD"], { shell: false })).stdout.trim();
+    terminalTree = (await execFile("git", ["-C", authoritativeRoot, "rev-parse", "HEAD^{tree}"], { shell: false })).stdout.trim();
+  } catch { /* closed below */ }
+  const terminalMack = terminalLedger === null ? null : await readTrackLayerArtifact(authoritativeRoot, candidate.mackArtifact, "mack", terminalLedger);
+  const terminalFury = terminalLedger === null ? null : await readTrackLayerArtifact(authoritativeRoot, candidate.furyArtifact, "fury", terminalLedger);
+  const terminalGitState = await validateTrackLayerGitStateV1(authoritativeRoot, authoritativeHead);
+  if (terminalLedger === null || terminalAuthentication === null || terminalGitState === null || terminalMack?.state !== "valid" || terminalFury?.state !== "valid" ||
+      terminalBranch !== authoritativeBranch || terminalHead !== authoritativeHead || terminalTree !== authoritativeTree ||
+      terminalGitState.branch !== authoritativeBranch || terminalGitState.head !== authoritativeHead || terminalGitState.tree !== authoritativeTree ||
+      terminalAuthentication.constructionAuthorityDigest !== hostAuthentication.constructionAuthorityDigest || terminalAuthentication.planSnapshot.identity !== hostAuthentication.planSnapshot.identity || terminalAuthentication.configSnapshot.identity !== hostAuthentication.configSnapshot.identity || terminalAuthentication.registrySnapshot.identity !== hostAuthentication.registrySnapshot.identity || terminalAuthentication.authorizationSnapshot.identity !== hostAuthentication.authorizationSnapshot.identity || terminalLedger.snapshot.identity !== ledger.snapshot.identity || terminalMack.snapshot.identity !== mack.snapshot.identity || terminalFury.snapshot.identity !== fury.snapshot.identity ||
+      terminalMack.digest !== mack.digest || terminalFury.digest !== fury.digest) {
+    return Object.freeze({ state: "blocked" as const, reasonCode: "implementation_binding_invalid" as const, errors: Object.freeze(["Terminal repository or authenticated artifact identities changed during finalization."]) });
+  }
+  return breakGlassFreeze({ state: "ready" as const, authority: "none" as const, constructionDigest: construction.constructionDigest, constructionAuthorityDigest: hostAuthentication.constructionAuthorityDigest, regressionFixtureDigest: construction.binding.regressionFixture.operationDigest, mackEvidence: { ...mackValue, rawSha256: mack.digest }, furyEvidence: { ...furyValue, rawSha256: fury.digest }, publicationPinInput: { authority, authorityDigest: computeReviewPublicationAuthorityDigest(authority), semanticIdentity: semantic.semanticIdentity, requestedEffects: [...BREAK_GLASS_EFFECTS] as ["review.branch.push", "review.pull_request.create_draft"] } });
+}
+
+export type BreakGlassPublicationPreparationResultV1 = Readonly<
+  | {
+    readonly state: "ready";
+    readonly authority: "none";
+    readonly contractVersion: "shield.break-glass-publication-preparation.v1";
+    readonly preparationId: string;
+    readonly writerSeatId: "may";
+    readonly bindings: Readonly<{
+      readonly missionId: string;
+      readonly subjectId: string;
+      readonly repositoryId: string;
+      readonly constructionAuthority: BreakGlassPublicationPreparationInputV1["constructionAuthority"];
+      readonly manualDecision: BreakGlassPublicationPreparationInputV1["manualDecision"];
+      readonly plan: BreakGlassPublicationPreparationInputV1["plan"];
+      readonly implementationHead: string;
+      readonly approvedImplementationPaths: readonly string[];
+      readonly approvedPublicationPaths: readonly string[];
+      readonly exclusions: readonly string[];
+      readonly mackEvidence: BreakGlassPublicationPreparationInputV1["mackEvidence"];
+      readonly furyEvidence: BreakGlassPublicationPreparationInputV1["furyEvidence"];
+    }>;
+    readonly repairLedger: Readonly<{
+      readonly entryId: string;
+      readonly entryDigest: string;
+      readonly writerSeatId: "may";
+      readonly singleConsumer: true;
+      readonly failedOperationId: string;
+      readonly failedOperationDigest: string;
+      readonly bindingDigest: string;
+      readonly evidenceRefs: readonly string[];
+    }>;
+    readonly publicationPinInput: Readonly<{
+      readonly authority: Readonly<ReviewPublicationAuthorityV1>;
+      readonly authorityDigest: string;
+      readonly semanticIdentity: string;
+      readonly requestedEffects: readonly ["review.branch.push", "review.pull_request.create_draft"];
+    }>;
+  }
+  | { readonly state: "blocked"; readonly reasonCode: BreakGlassPublicationPreparationInvalidCodeV1; readonly errors: readonly string[] }
+>;
+
+export type BreakGlassPublicationPreparationInvalidCodeV1 =
+  | "malformed"
+  | "manual_provenance_invalid"
+  | "plan_binding_invalid"
+  | "implementation_binding_invalid"
+  | "path_scope_invalid"
+  | "evidence_binding_invalid"
+  | "failed_operation_invalid"
+  | "effect_scope_invalid"
+  | "replay_conflict";
+
+const BREAK_GLASS_PREPARATION_FIELDS = [
+  "schemaVersion", "contractVersion", "authority", "preparationId", "missionId", "subjectId", "repositoryId",
+  "canonicalRepositoryRoot", "branch", "constructionAuthority", "manualDecision", "plan", "implementation", "publication", "exclusions",
+  "mackEvidence", "furyEvidence", "regressionFixture",
+] as const;
+const BREAK_GLASS_MANUAL_FIELDS = ["text", "sourceKind", "provenanceRef"] as const;
+const BREAK_GLASS_CONSTRUCTION_FIELDS = ["authority", "authorityRef", "planCommit", "planPath", "planRawSha256", "writerSeatId", "ownedPaths", "scope", "exclusions"] as const;
+const BREAK_GLASS_PLAN_FIELDS = ["authority", "planCommit", "planPath", "planRawSha256", "transitionPlanId", "transitionPlanDigest"] as const;
+const BREAK_GLASS_IMPLEMENTATION_FIELDS = ["headRevision", "approvedPaths"] as const;
+const BREAK_GLASS_PUBLICATION_FIELDS = ["approvedPaths", "permittedEffects"] as const;
+const BREAK_GLASS_EVIDENCE_FIELDS = ["sourceKind", "artifactPath", "evidenceId", "evidenceDigest", "reviewedRevision", "verdict", "sequence"] as const;
+const BREAK_GLASS_FURY_EVIDENCE_FIELDS = ["sourceKind", "artifactPath", "evidenceId", "evidenceDigest", "reviewedRevision", "verdict", "mackEvidenceDigest", "sequence"] as const;
+const BREAK_GLASS_REGRESSION_FIELDS = ["missionId", "subjectId", "implementationHead", "operationId", "operationDigest", "outcome", "reasonCode", "headRevision"] as const;
+const BREAK_GLASS_EFFECTS = Object.freeze(["review.branch.push", "review.pull_request.create_draft"] as const);
+const BREAK_GLASS_EXCLUSIONS = Object.freeze([
+  "merge", "deployment", "release", "final_acceptance", "issue_closure", "expanded_scope", "evidence_rewrite", "receipt_replay",
+] as const);
+const BREAK_GLASS_OWNED_PATHS = Object.freeze([
+  "packages/shield-team-system/src/mission-preparation-host-v1.mts",
+  "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs",
+] as const);
+const BREAK_GLASS_CONSTRUCTION_EXCLUSIONS = Object.freeze([
+  "authority_fabrication", "journal_fabrication", "evidence_fabrication", "receipt_replay", "publication", "merge", "deployment", "release", "final_acceptance", "parallel_crews", "scope_expansion",
+] as const);
+
+function breakGlassClosed(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
+  if (!plain(value)) return false;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== fields.length || keys.some((key) => typeof key !== "string") || fields.some((field) => !keys.includes(field))) return false;
+  return fields.every((field) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, field);
+    return descriptor !== undefined && "value" in descriptor && descriptor.get === undefined && descriptor.set === undefined && descriptor.enumerable === true;
+  });
+}
+
+function breakGlassArray(value: unknown, allowEmpty = false): readonly unknown[] | null {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > 256 || (!allowEmpty && value.length === 0)) return null;
+    if (Reflect.ownKeys(value).length !== value.length + 1) return null;
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (descriptor === undefined || !("value" in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined || descriptor.enumerable !== true) return null;
+    }
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function breakGlassDigest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(`shield.break-glass-publication-preparation.v1\0${canonicalJson(value)}`).digest("base64url")}`;
+}
+
+function breakGlassPathSet(value: unknown): readonly string[] | null {
+  const paths = breakGlassArray(value);
+  if (paths === null || paths.some((path) => typeof path !== "string" || path.length > 4096 || path !== path.normalize("NFC") || path.startsWith("/") || path.includes("\\") || path.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..") || isSensitiveReviewPublicationPath(path))) return null;
+  const strings = paths as readonly string[];
+  for (let index = 1; index < strings.length; index += 1) if (strings[index - 1] >= strings[index]) return null;
+  return strings;
+}
+
+function breakGlassEvidencePath(value: unknown): value is string {
+  return typeof value === "string" && value.startsWith(".shield/") && value.length <= 4096 && !value.includes("\\") &&
+    !value.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..") && !isSensitiveReviewPublicationPath(value);
+}
+
+function breakGlassDigestValue(value: unknown): value is string {
+  return typeof value === "string" && /^sha256:[A-Za-z0-9_-]{43}$/u.test(value);
+}
+
+function breakGlassRevision(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{40}$/u.test(value);
+}
+
+function breakGlassRoot(value: unknown): value is string {
+  return typeof value === "string" && value.startsWith(sep) && value.length <= 4096 && !value.includes("\\") && !value.split(sep).some((segment, index) => index > 0 && (segment === "" || segment === "." || segment === ".."));
+}
+
+function breakGlassError(reasonCode: BreakGlassPublicationPreparationInvalidCodeV1, message: string): BreakGlassPublicationPreparationResultV1 {
+  return Object.freeze({ state: "blocked" as const, reasonCode, errors: Object.freeze([message]) });
+}
+
+function breakGlassFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) breakGlassFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function bindLegacyBreakGlassPublicationPreparationV1(input: unknown): BreakGlassPublicationPreparationResultV1 {
+  if (!breakGlassClosed(input, BREAK_GLASS_PREPARATION_FIELDS)) return breakGlassError("malformed", "Break-glass publication preparation input must be closed.");
+  const candidate = input as unknown as BreakGlassPublicationPreparationInputV1;
+  if (candidate.schemaVersion !== 1 || candidate.contractVersion !== "shield.break-glass-publication-preparation.v1" || candidate.authority !== "none" ||
+      !identifier(candidate.preparationId) || !identifier(candidate.missionId) || !identifier(candidate.subjectId) || !identifier(candidate.repositoryId) ||
+      !breakGlassRoot(candidate.canonicalRepositoryRoot) || !identifier(candidate.branch)) return breakGlassError("malformed", "Break-glass publication preparation identity is malformed.");
+  if (!breakGlassClosed(candidate.constructionAuthority, BREAK_GLASS_CONSTRUCTION_FIELDS) ||
+      candidate.constructionAuthority.authority !== "coulson_human" || !identifier(candidate.constructionAuthority.authorityRef) ||
+      candidate.constructionAuthority.planCommit !== "52044ac5284a1b6980e422c7eeaf58ee76dc0e79" ||
+      candidate.constructionAuthority.planPath !== "docs/missions/issue-416-track-layer-mode-plan.md" ||
+      candidate.constructionAuthority.planRawSha256 !== "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc" ||
+      candidate.constructionAuthority.writerSeatId !== "may" || candidate.constructionAuthority.scope !== "issue-416-track-layer-publication-preparation" ||
+      canonicalJson(candidate.constructionAuthority.ownedPaths) !== canonicalJson(BREAK_GLASS_OWNED_PATHS) ||
+      canonicalJson(candidate.constructionAuthority.exclusions) !== canonicalJson(BREAK_GLASS_CONSTRUCTION_EXCLUSIONS)) {
+    return breakGlassError("malformed", "Issue #416 construction authority is not the exact Coulson-approved two-file scope.");
+  }
+  if (!breakGlassClosed(candidate.manualDecision, BREAK_GLASS_MANUAL_FIELDS) || candidate.manualDecision.sourceKind !== "manual_non_canonical" ||
+      !standingText(candidate.manualDecision.text) || !identifier(candidate.manualDecision.provenanceRef)) return breakGlassError("manual_provenance_invalid", "Manual decision provenance must be explicit and non-canonical.");
+  if (!breakGlassClosed(candidate.plan, BREAK_GLASS_PLAN_FIELDS) || candidate.plan.authority !== "none" || !breakGlassRevision(candidate.plan.planCommit) ||
+      !transitionPlanPath(candidate.plan.planPath) || !SHA256.test(candidate.plan.planRawSha256) || !TRANSITION_PLAN_ID.test(candidate.plan.transitionPlanId) ||
+      !breakGlassDigestValue(candidate.plan.transitionPlanDigest) || candidate.plan.planCommit !== candidate.constructionAuthority.planCommit ||
+      candidate.plan.planPath !== candidate.constructionAuthority.planPath || candidate.plan.planRawSha256 !== candidate.constructionAuthority.planRawSha256) return breakGlassError("plan_binding_invalid", "Plan and transition identities are not exact.");
+  if (!breakGlassClosed(candidate.implementation, BREAK_GLASS_IMPLEMENTATION_FIELDS) || !breakGlassRevision(candidate.implementation.headRevision)) return breakGlassError("implementation_binding_invalid", "Implementation HEAD binding is malformed.");
+  const implementationPaths = breakGlassPathSet(candidate.implementation.approvedPaths);
+  const publicationPaths = breakGlassPathSet(candidate.publication?.approvedPaths);
+  if (implementationPaths === null || !breakGlassClosed(candidate.publication, BREAK_GLASS_PUBLICATION_FIELDS) || publicationPaths === null) return breakGlassError("path_scope_invalid", "Approved implementation and publication paths are not exact safe sets.");
+  if (implementationPaths.some((path) => !(candidate.constructionAuthority.ownedPaths as readonly string[]).includes(path))) return breakGlassError("path_scope_invalid", "Implementation paths exceed the construction authority.");
+  if (publicationPaths.some((path) => !implementationPaths.includes(path))) return breakGlassError("path_scope_invalid", "Publication paths must be contained by the approved implementation paths.");
+  const effects = breakGlassArray(candidate.publication.permittedEffects);
+  if (effects === null || canonicalJson(effects) !== canonicalJson(BREAK_GLASS_EFFECTS)) return breakGlassError("effect_scope_invalid", "Only branch push and draft pull-request effects are permitted.");
+  const exclusions = breakGlassArray(candidate.exclusions);
+  if (exclusions === null || exclusions.some((value) => typeof value !== "string") || canonicalJson(exclusions) !== canonicalJson(BREAK_GLASS_EXCLUSIONS)) return breakGlassError("path_scope_invalid", "Break-glass exclusions are incomplete or widened.");
+  if (!breakGlassClosed(candidate.mackEvidence, BREAK_GLASS_EVIDENCE_FIELDS) || candidate.mackEvidence.sourceKind !== "repository" || !breakGlassEvidencePath(candidate.mackEvidence.artifactPath) || candidate.mackEvidence.sequence !== 1 || candidate.mackEvidence.verdict !== "PASS" || !identifier(candidate.mackEvidence.evidenceId) || !breakGlassDigestValue(candidate.mackEvidence.evidenceDigest) || candidate.mackEvidence.reviewedRevision !== candidate.implementation.headRevision ||
+      !breakGlassClosed(candidate.furyEvidence, BREAK_GLASS_FURY_EVIDENCE_FIELDS) || candidate.furyEvidence.sourceKind !== "repository" || !breakGlassEvidencePath(candidate.furyEvidence.artifactPath) || candidate.furyEvidence.sequence !== 2 || candidate.furyEvidence.verdict !== "APPROVE" || !identifier(candidate.furyEvidence.evidenceId) || !breakGlassDigestValue(candidate.furyEvidence.evidenceDigest) || candidate.furyEvidence.reviewedRevision !== candidate.implementation.headRevision || candidate.furyEvidence.mackEvidenceDigest !== candidate.mackEvidence.evidenceDigest) {
+    return breakGlassError("evidence_binding_invalid", "Mack and Fury evidence must be repository-owned, ordered, and bound to the exact implementation HEAD.");
+  }
+  if (!breakGlassClosed(candidate.regressionFixture, BREAK_GLASS_REGRESSION_FIELDS) || candidate.regressionFixture.missionId !== "mission:issue-intake:HgnxEl-ce9oshquwYlZJJS5IQKfFSciS8CfYeQmFSiY" || candidate.regressionFixture.subjectId !== "github:RanSolo/shield-workspace/issue/406" || candidate.regressionFixture.implementationHead !== "400a60a0eb4bf6dbf549b08e3b99a89572a57cec" || candidate.regressionFixture.outcome !== "failed" || !identifier(candidate.regressionFixture.operationId) || !breakGlassDigestValue(candidate.regressionFixture.operationDigest) || !identifier(candidate.regressionFixture.reasonCode) || candidate.regressionFixture.headRevision !== candidate.regressionFixture.implementationHead) {
+    return breakGlassError("failed_operation_invalid", "The unchanged #406 operation must remain a separate regression fixture.");
+  }
+  const evidenceRefs = Object.freeze([candidate.manualDecision.provenanceRef, candidate.plan.transitionPlanDigest, candidate.mackEvidence.evidenceDigest, candidate.furyEvidence.evidenceDigest, candidate.regressionFixture.operationDigest]);
+  const authority: ReviewPublicationAuthorityV1 = {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    authorityKind: "review.publish",
+    authorityRef: `break-glass-publication:${candidate.preparationId}`,
+    missionId: candidate.missionId,
+    subjectId: candidate.subjectId,
+    missionRevisionId: candidate.plan.transitionPlanDigest,
+    repositoryId: candidate.repositoryId,
+    canonicalRepositoryRoot: candidate.canonicalRepositoryRoot,
+    branch: candidate.branch,
+    baseRevisionId: candidate.plan.planCommit,
+    headRevisionId: candidate.implementation.headRevision,
+    authorizedPaths: [...publicationPaths],
+    permittedEffects: [...BREAK_GLASS_EFFECTS],
+  };
+  const semantic = computeReviewPublicationAuthoritySemanticIdentityV1(authority);
+  if (semantic.state === "blocked") return breakGlassError("replay_conflict", "Derived publication PIN input is not a valid review-publication identity.");
+  const bindingDigest = breakGlassDigest({
+    constructionAuthority: candidate.constructionAuthority,
+    manualDecision: candidate.manualDecision,
+    plan: candidate.plan,
+    implementation: { headRevision: candidate.implementation.headRevision, approvedPaths: implementationPaths },
+    publication: { approvedPaths: publicationPaths, permittedEffects: BREAK_GLASS_EFFECTS },
+    exclusions,
+    mackEvidence: candidate.mackEvidence,
+    furyEvidence: candidate.furyEvidence,
+    regressionFixture: candidate.regressionFixture,
+  });
+  const ledgerBody = {
+    contractVersion: "shield.break-glass-publication-preparation.v1" as const,
+    entryId: `repair:${candidate.preparationId}`,
+    writerSeatId: "may" as const,
+    singleConsumer: true as const,
+    failedOperationId: candidate.regressionFixture.operationId,
+    failedOperationDigest: candidate.regressionFixture.operationDigest,
+    bindingDigest,
+    evidenceRefs,
+    implementationHead: candidate.implementation.headRevision,
+    transitionPlanDigest: candidate.plan.transitionPlanDigest,
+  };
+  const result = {
+    state: "ready" as const,
+    authority: "none" as const,
+    contractVersion: "shield.break-glass-publication-preparation.v1" as const,
+    preparationId: candidate.preparationId,
+    writerSeatId: "may" as const,
+    bindings: {
+      missionId: candidate.missionId,
+      subjectId: candidate.subjectId,
+      repositoryId: candidate.repositoryId,
+      constructionAuthority: structuredClone(candidate.constructionAuthority),
+      manualDecision: structuredClone(candidate.manualDecision),
+      plan: structuredClone(candidate.plan),
+      implementationHead: candidate.implementation.headRevision,
+      approvedImplementationPaths: [...implementationPaths],
+      approvedPublicationPaths: [...publicationPaths],
+      exclusions: [...exclusions] as string[],
+      mackEvidence: structuredClone(candidate.mackEvidence),
+      furyEvidence: structuredClone(candidate.furyEvidence),
+    },
+    repairLedger: { ...ledgerBody, entryDigest: breakGlassDigest(ledgerBody) },
+    publicationPinInput: {
+      authority: structuredClone(authority),
+      authorityDigest: computeReviewPublicationAuthorityDigest(authority),
+      semanticIdentity: semantic.semanticIdentity,
+      requestedEffects: [...BREAK_GLASS_EFFECTS] as ["review.branch.push", "review.pull_request.create_draft"],
+    },
+  };
+  return breakGlassFreeze(result);
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -20,7 +20,10 @@ import {
   resolvePreparedMissionTransitionV1ForTest,
   resolveSeatDispatchIdentityByReceiptIdV1,
   stableRegularTextFileV1ForTest,
+  bindTrackLayerConstructionV1,
+  finalizeBreakGlassPublicationPreparationV1,
 } from "../dist/mission-preparation-host-v1.mjs";
+import * as missionPreparationHost from "../dist/mission-preparation-host-v1.mjs";
 import {
   computeCanonicalContractDigestV1,
   computeContentIdV1,
@@ -88,6 +91,327 @@ const LEGACY_SUBJECT_REVISION = "1".repeat(40);
 const LEGACY_PARENT_MISSION_REVISION = "2".repeat(40);
 const LEGACY_ARTIFACT_REVISION = "3".repeat(40);
 const BASE_TIMESTAMP = "2026-08-01T00:00:00.000Z";
+
+function trackLayerConstructionInput(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    contractVersion: "shield.track-layer-construction.v1",
+    missionId: "mission:issue-416",
+    subjectId: "github:RanSolo/shield-workspace/issue/416",
+    repositoryId: "RanSolo/shield-workspace",
+    plan: {
+      planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79",
+      planPath: "docs/missions/issue-416-track-layer-mode-plan.md",
+      planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc",
+      transitionPlanId: `transition-plan:${"a".repeat(43)}`,
+      transitionPlanDigest: `sha256:${"b".repeat(43)}`,
+    },
+    scope: "issue-416-track-layer-publication-preparation",
+    implementationHead: "b89e41057adfb275fb7d9bcdb96d04c31990a9cf",
+    writerSeatId: "may",
+    ownedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"],
+    exclusions: ["authority_fabrication", "journal_fabrication", "evidence_fabrication", "receipt_replay", "publication", "merge", "deployment", "release", "final_acceptance", "parallel_crews", "scope_expansion"],
+    regressionFixture: {
+      missionId: "mission:issue-intake:HgnxEl-ce9oshquwYlZJJS5IQKfFSciS8CfYeQmFSiY",
+      subjectId: "github:RanSolo/shield-workspace/issue/406",
+      implementationHead: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
+      operationId: "operation:issue-406:failed-publication-preparation",
+      operationDigest: "sha256:o0px9qVBk_fSJPg6ByKbS1POBs3tHcnGR9DdghGtcgw",
+      outcome: "failed",
+      reasonCode: "canonical_publication_authority_missing",
+      replayOutcome: "rejected_non_authorizing",
+      headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
+    },
+    ...overrides,
+  };
+}
+
+function rawSha256(bytes) {
+  return `sha256:${createHash("sha256").update(bytes, "utf8").digest("base64url")}`;
+}
+
+function artifactContentDigest(value) {
+  const { terminalEntryDigest: _terminalEntryDigest, ...content } = value;
+  return rawSha256(canonicalJson(content));
+}
+
+function artifactContentId(kind, digest) {
+  return `issue-416-${kind}-artifact:${digest.slice("sha256:".length)}`;
+}
+
+async function finalizationFixture() {
+  const root = await mkdtemp(join(tmpdir(), "issue-416-finalization-"));
+  const repositoryConfigValue = JSON.parse(await readFile(fileURLToPath(new URL("../../../.shield/config.json", import.meta.url)), "utf8"));
+  const trustedBindingsValue = JSON.parse(await readFile(fileURLToPath(new URL("../../../.shield/trusted-human-bindings.json", import.meta.url)), "utf8"));
+  const planBytes = await readFile(fileURLToPath(new URL("../../../docs/missions/issue-416-track-layer-mode-plan.md", import.meta.url)), "utf8");
+  await execFileSync("git", ["init", "-q", root]);
+  await execFileSync("git", ["-C", root, "config", "user.email", "test@example.invalid"]);
+  await execFileSync("git", ["-C", root, "config", "user.name", "Issue 416 Test"]);
+  await execFileSync("git", ["-C", root, "remote", "add", "origin", "https://github.com/RanSolo/shield-workspace.git"]);
+  await execFileSync("git", ["-C", root, "fetch", "-q", process.cwd(), "52044ac5284a1b6980e422c7eeaf58ee76dc0e79"]);
+  await execFileSync("git", ["-C", root, "checkout", "-q", "-B", "agent/issue-416-track-layer-mode", "52044ac5284a1b6980e422c7eeaf58ee76dc0e79"]);
+  await writeFile(join(root, "packages/shield-team-system/src/mission-preparation-host-v1.mts"), await readFile(fileURLToPath(new URL("../src/mission-preparation-host-v1.mts", import.meta.url)), "utf8"));
+  await writeFile(join(root, "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"), await readFile(fileURLToPath(new URL("./mission-preparation-host-v1.test.mjs", import.meta.url)), "utf8"));
+  await execFileSync("git", ["-C", root, "add", "packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"]);
+  await execFileSync("git", ["-C", root, "commit", "-q", "-m", "fixture implementation"]);
+  const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const keyPair = generateKeyPairSync("ed25519");
+  const publicKeySpkiBase64 = keyPair.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  const signingKeyRef = computeEd25519SigningKeyRef(publicKeySpkiBase64);
+  trustedBindingsValue.bindings[0] = { ...trustedBindingsValue.bindings[0], signingKeyRef, publicKeySpkiBase64 };
+  repositoryConfigValue.trustedHumanBindingRefs = repositoryConfigValue.trustedHumanBindingRefs.map((binding) => binding.seatId === "coulson" ? { ...binding, bindingRef: signingKeyRef } : binding);
+  const repositoryConfig = JSON.stringify(repositoryConfigValue);
+  const trustedBindings = JSON.stringify(trustedBindingsValue);
+  await mkdir(join(root, ".shield/audit/issue-416"), { recursive: true });
+  await writeFile(join(root, ".shield", "config.json"), repositoryConfig);
+  await writeFile(join(root, ".shield", "trusted-human-bindings.json"), trustedBindings);
+  const construction = bindTrackLayerConstructionV1(trackLayerConstructionInput({ implementationHead: head }));
+  assert.equal(construction.state, "ready");
+  const authorizationPayload = {
+    schemaVersion: 1, contractVersion: "shield.issue-416.coulson-authorization.v1", authorizationId: "authorization:coulson:issue-416",
+    missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", repositoryId: "RanSolo/shield-workspace",
+    planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79", planPath: "docs/missions/issue-416-track-layer-mode-plan.md", planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc",
+    writerSeatId: "may", ownedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"], scope: "issue-416-track-layer-publication-preparation",
+    exclusions: ["authority_fabrication", "journal_fabrication", "evidence_fabrication", "receipt_replay", "publication", "merge", "deployment", "release", "final_acceptance", "parallel_crews", "scope_expansion"],
+    humanPrincipalId: "human:ransolo", bindingId: "binding:coulson:ransolo", signingKeyRef, sourceRef: "manual:coulson:issue-416", registryRawSha256: createHash("sha256").update(trustedBindings, "utf8").digest("hex"), decision: "approved",
+  };
+  await writeFile(join(root, ".shield/audit/issue-416/coulson-authorization.json"), JSON.stringify({ payload: authorizationPayload, signatureBase64: sign(null, Buffer.from(canonicalJson(authorizationPayload)), keyPair.privateKey).toString("base64") }));
+  const dispatchPlan = { missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", repositoryId: "RanSolo/shield-workspace", id: `transition-plan:${"a".repeat(43)}`, digest: `sha256:${"b".repeat(43)}` };
+  const mackReview = { reviewerRuntimeId: "runtime:mack:test", reviewerModelId: "model:mack:test", reviewerExecutorId: "executor:mack:test" };
+  const furyReview = { reviewerRuntimeId: "runtime:fury:test", reviewerModelId: "model:fury:test", reviewerExecutorId: "executor:fury:test" };
+  const mackIdentity = dispatchIdentity(dispatchPlan, mackReview, { receiptId: "receipt:mack:issue-416", dispatchId: "dispatch:mack:issue-416", childTaskId: "task:mack:issue-416", childSessionId: "session:mack:issue-416", accountableSeatId: "mack", repositoryRevision: head });
+  const mackEvidenceId = "evidence:issue-416:mack:test";
+  const mackStarted = dispatchStarted(mackIdentity, { inputEvidenceRefs: [mackEvidenceId] });
+  const mackDraft = { schemaVersion: 1, artifactKind: "issue-416-mack", missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", implementationHead: head, constructionDigest: construction.constructionDigest, evidenceId: mackEvidenceId, verdict: "PASS", sequence: 1, seatId: "mack", receiptId: mackIdentity.receiptId, dispatchId: mackIdentity.dispatchId, taskId: mackIdentity.childTaskId, sessionId: mackIdentity.childSessionId, artifactId: dispatchPlan.id, artifactRevision: dispatchPlan.digest, repositoryRevision: head, runtimeId: mackReview.reviewerRuntimeId, modelId: mackReview.reviewerModelId, executorId: mackReview.reviewerExecutorId, terminalEntryDigest: "pending" };
+  const mackContentDigest = artifactContentDigest(mackDraft);
+  const mackContentId = artifactContentId("mack", mackContentDigest);
+  const mackCompleted = dispatchLifecycle(mackStarted, mackIdentity, "dispatch.completed", { outputEvidenceRefs: [mackEvidenceId, mackContentId, mackContentDigest] });
+  const mackBytes = canonicalJson({ ...mackDraft, terminalEntryDigest: mackCompleted.entryDigest });
+  const mackDigest = rawSha256(mackBytes);
+  const furyIdentity = dispatchIdentity(dispatchPlan, furyReview, { receiptId: "receipt:fury:issue-416", dispatchId: "dispatch:fury:issue-416", childTaskId: "task:fury:issue-416", childSessionId: "session:fury:issue-416", accountableSeatId: "fury", repositoryRevision: head });
+  const furyEvidenceId = "evidence:issue-416:fury:test";
+  const furyStarted = dispatchStarted(furyIdentity, { timestamp: new Date(Date.parse(mackCompleted.timestamp) + 1000).toISOString(), logSequence: 2, previousLogDigest: mackCompleted.entryDigest, inputEvidenceRefs: [furyEvidenceId, mackEvidenceId, mackContentId, mackContentDigest, mackDigest] });
+  const furyDraft = { schemaVersion: 1, artifactKind: "issue-416-fury", missionId: "mission:issue-416", subjectId: "github:RanSolo/shield-workspace/issue/416", implementationHead: head, constructionDigest: construction.constructionDigest, evidenceId: furyEvidenceId, verdict: "APPROVE", mackEvidenceDigest: mackDigest, sequence: 2, seatId: "fury", receiptId: furyIdentity.receiptId, dispatchId: furyIdentity.dispatchId, taskId: furyIdentity.childTaskId, sessionId: furyIdentity.childSessionId, artifactId: dispatchPlan.id, artifactRevision: dispatchPlan.digest, repositoryRevision: head, runtimeId: furyReview.reviewerRuntimeId, modelId: furyReview.reviewerModelId, executorId: furyReview.reviewerExecutorId, terminalEntryDigest: "pending" };
+  const furyContentDigest = artifactContentDigest(furyDraft);
+  const furyContentId = artifactContentId("fury", furyContentDigest);
+  const furyCompleted = dispatchLifecycle(furyStarted, furyIdentity, "dispatch.completed", { outputEvidenceRefs: [furyEvidenceId, furyContentId, furyContentDigest] });
+  const furyBytes = canonicalJson({ ...furyDraft, terminalEntryDigest: furyCompleted.entryDigest });
+  const mackPath = ".shield/audit/issue-416/mack.json";
+  const furyPath = ".shield/audit/issue-416/fury.json";
+  await writeFile(join(root, ".shield/dispatch-receipts.jsonl"), [mackStarted, mackCompleted, furyStarted, furyCompleted].map((event) => `${canonicalDispatchEventLine(event)}\n`).join(""));
+  await writeFile(join(root, mackPath), mackBytes);
+  await writeFile(join(root, furyPath), furyBytes);
+  return { repositoryRoot: root, construction: construction.binding, mackArtifact: { path: mackPath, rawSha256: mackDigest }, furyArtifact: { path: furyPath, rawSha256: rawSha256(furyBytes) } };
+}
+
+test("track-layer construction binds #416 without review artifacts", () => {
+  const result = bindTrackLayerConstructionV1(trackLayerConstructionInput());
+  assert.equal(result.state, "ready", JSON.stringify(result));
+  assert.equal(result.authority, "none");
+  assert.equal(result.binding.missionId, "mission:issue-416");
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.binding), true);
+  assert.match(result.constructionDigest, /^sha256:/u);
+  assert.equal(result.regressionFixtureDigest, "sha256:o0px9qVBk_fSJPg6ByKbS1POBs3tHcnGR9DdghGtcgw");
+  assert.equal(result.binding.regressionFixture.replayOutcome, "rejected_non_authorizing");
+  const tampered = bindTrackLayerConstructionV1(trackLayerConstructionInput({ regressionFixture: { ...trackLayerConstructionInput().regressionFixture, operationDigest: `sha256:${"d".repeat(43)}` } }));
+  assert.equal(tampered.state, "blocked");
+  assert.equal(tampered.reasonCode, "failed_operation_invalid");
+});
+
+test("track-layer finalization blocks missing and stale repository evidence", async () => {
+  const fixture = await finalizationFixture();
+  const result = await finalizeBreakGlassPublicationPreparationV1({
+    construction: fixture.construction,
+    repositoryRoot: fixture.repositoryRoot,
+    mackArtifact: { path: ".shield/audit/issue-416/mack.json", rawSha256: `sha256:${"a".repeat(43)}` },
+    furyArtifact: { path: ".shield/audit/issue-416/fury.json", rawSha256: `sha256:${"b".repeat(43)}` },
+  });
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "evidence_binding_invalid");
+});
+
+test("track-layer finalization succeeds only after recomputing construction and authentic Mack then Fury bytes", async () => {
+  const fixture = await finalizationFixture();
+  const result = await finalizeBreakGlassPublicationPreparationV1(fixture);
+  assert.equal(result.state, "ready", JSON.stringify(result));
+  assert.equal(result.mackEvidence.verdict, "PASS");
+  assert.equal(result.furyEvidence.mackEvidenceDigest, result.mackEvidence.rawSha256);
+  assert.equal(result.regressionFixtureDigest, "sha256:o0px9qVBk_fSJPg6ByKbS1POBs3tHcnGR9DdghGtcgw");
+  assert.deepEqual(result.publicationPinInput.requestedEffects, ["review.branch.push", "review.pull_request.create_draft"]);
+  const forged = await finalizeBreakGlassPublicationPreparationV1({ ...fixture, construction: { ...fixture.construction, constructionDigest: `sha256:${"f".repeat(43)}` } });
+  assert.equal(forged.state, "blocked");
+});
+
+test("track-layer finalization rejects root substitution and digest or sequence tampering", async () => {
+  const fixture = await finalizationFixture();
+  const substituted = await finalizeBreakGlassPublicationPreparationV1({ ...fixture, repositoryRoot: process.cwd() });
+  assert.equal(substituted.state, "blocked");
+  assert.equal(substituted.reasonCode, "implementation_binding_invalid");
+  const tampered = await finalizeBreakGlassPublicationPreparationV1({ ...fixture, mackArtifact: { ...fixture.mackArtifact, rawSha256: `sha256:${"0".repeat(43)}` } });
+  assert.equal(tampered.state, "blocked");
+  assert.equal(tampered.reasonCode, "evidence_binding_invalid");
+});
+
+test("track-layer finalization rejects reformatted Fury JSON even with a recomputed raw digest", async () => {
+  const fixture = await finalizationFixture();
+  const furyPath = join(fixture.repositoryRoot, fixture.furyArtifact.path);
+  const fury = JSON.parse(await readFile(furyPath, "utf8"));
+  const reformatted = JSON.stringify(fury, null, 2);
+  await writeFile(furyPath, reformatted);
+  const result = await finalizeBreakGlassPublicationPreparationV1({
+    ...fixture,
+    furyArtifact: { ...fixture.furyArtifact, rawSha256: rawSha256(reformatted) },
+  });
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "evidence_binding_invalid");
+});
+
+test("track-layer finalization replays #406 without consuming or mutating evidence or receipts", async () => {
+  const fixture = await finalizationFixture();
+  const mackPath = join(fixture.repositoryRoot, fixture.mackArtifact.path);
+  const furyPath = join(fixture.repositoryRoot, fixture.furyArtifact.path);
+  const ledgerPath = join(fixture.repositoryRoot, ".shield/dispatch-receipts.jsonl");
+  const before = {
+    mack: await readFile(mackPath, "utf8"),
+    fury: await readFile(furyPath, "utf8"),
+    ledger: await readFile(ledgerPath, "utf8"),
+  };
+  const result = await finalizeBreakGlassPublicationPreparationV1(fixture);
+  const after = {
+    mack: await readFile(mackPath, "utf8"),
+    fury: await readFile(furyPath, "utf8"),
+    ledger: await readFile(ledgerPath, "utf8"),
+  };
+  assert.equal(result.state, "ready", JSON.stringify(result));
+  assert.deepEqual(after, before);
+});
+
+test("track-layer finalization requires signed Coulson scope evidence", async () => {
+  const missing = await finalizationFixture();
+  await unlink(join(missing.repositoryRoot, ".shield/audit/issue-416/coulson-authorization.json"));
+  const missingResult = await finalizeBreakGlassPublicationPreparationV1(missing);
+  assert.equal(missingResult.state, "blocked");
+  assert.equal(missingResult.reasonCode, "implementation_binding_invalid");
+
+  const tampered = await finalizationFixture();
+  const authorizationPath = join(tampered.repositoryRoot, ".shield/audit/issue-416/coulson-authorization.json");
+  const authorization = JSON.parse(await readFile(authorizationPath, "utf8"));
+  authorization.payload.scope = "issue-416-expanded-scope";
+  await writeFile(authorizationPath, JSON.stringify(authorization));
+  const tamperedResult = await finalizeBreakGlassPublicationPreparationV1(tampered);
+  assert.equal(tamperedResult.state, "blocked");
+  assert.equal(tamperedResult.reasonCode, "implementation_binding_invalid");
+});
+
+test("track-layer finalization rejects dirty committed scope", async () => {
+  const fixture = await finalizationFixture();
+  await writeFile(join(fixture.repositoryRoot, "packages/shield-team-system/src/mission-preparation-host-v1.mts"), "dirty\n");
+  const result = await finalizeBreakGlassPublicationPreparationV1(fixture);
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "implementation_binding_invalid");
+});
+
+test("track-layer finalization rejects frozen-plan provenance and seat tampering", async () => {
+  const fixture = await finalizationFixture();
+  await writeFile(join(fixture.repositoryRoot, "docs/missions/issue-416-track-layer-mode-plan.md"), "tampered plan\n");
+  const planTampered = await finalizeBreakGlassPublicationPreparationV1(fixture);
+  assert.equal(planTampered.state, "blocked");
+  assert.equal(planTampered.reasonCode, "implementation_binding_invalid");
+
+  const secondFixture = await finalizationFixture();
+  const mackPath = join(secondFixture.repositoryRoot, secondFixture.mackArtifact.path);
+  const mack = JSON.parse(await readFile(mackPath, "utf8"));
+  mack.seatId = "fury";
+  await writeFile(mackPath, JSON.stringify(mack));
+  const seatTampered = await finalizeBreakGlassPublicationPreparationV1({
+    ...secondFixture,
+    mackArtifact: { path: secondFixture.mackArtifact.path, rawSha256: rawSha256(JSON.stringify(mack)) },
+  });
+  assert.equal(seatTampered.state, "blocked");
+  assert.equal(seatTampered.reasonCode, "evidence_binding_invalid");
+});
+
+test("legacy direct publication binder is not an exported bypass", () => {
+  assert.equal("bindBreakGlassPublicationPreparationV1" in missionPreparationHost, false);
+});
+
+function breakGlassPreparationInput(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    contractVersion: "shield.break-glass-publication-preparation.v1",
+    authority: "none",
+    preparationId: "preparation:issue-416:1",
+    missionId: "mission:issue-416",
+    subjectId: "github:RanSolo/shield-workspace/issue/416",
+    repositoryId: "RanSolo/shield-workspace",
+    canonicalRepositoryRoot: "/workspace/shield-workspace",
+    branch: "agent/issue-416-track-layer-mode",
+    constructionAuthority: {
+      authority: "coulson_human",
+      authorityRef: "authorization:coulson:issue-416",
+      planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79",
+      planPath: "docs/missions/issue-416-track-layer-mode-plan.md",
+      planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc",
+      writerSeatId: "may",
+      ownedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts", "packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs"],
+      scope: "issue-416-track-layer-publication-preparation",
+      exclusions: ["authority_fabrication", "journal_fabrication", "evidence_fabrication", "receipt_replay", "publication", "merge", "deployment", "release", "final_acceptance", "parallel_crews", "scope_expansion"],
+    },
+    manualDecision: {
+      text: "Coulson authorized the bounded break-glass construction contract.",
+      sourceKind: "manual_non_canonical",
+      provenanceRef: "transcript:issue-416:coulson",
+    },
+    plan: {
+      authority: "none",
+      planCommit: "52044ac5284a1b6980e422c7eeaf58ee76dc0e79",
+      planPath: "docs/missions/issue-416-track-layer-mode-plan.md",
+      planRawSha256: "72c194d7ed7a79e57a870e39744ba32f5573662cf6d73653c0813e8ffa331ecc",
+      transitionPlanId: `transition-plan:${"a".repeat(43)}`,
+      transitionPlanDigest: `sha256:${"b".repeat(43)}`,
+    },
+    implementation: {
+      headRevision: "3".repeat(40),
+      approvedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts"],
+    },
+    publication: {
+      approvedPaths: ["packages/shield-team-system/src/mission-preparation-host-v1.mts"],
+      permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
+    },
+    exclusions: ["merge", "deployment", "release", "final_acceptance", "issue_closure", "expanded_scope", "evidence_rewrite", "receipt_replay"],
+    mackEvidence: {
+      sourceKind: "repository",
+      artifactPath: ".shield/audit/issue-416/mack.json",
+      evidenceId: "evidence:issue-416:mack",
+      evidenceDigest: `sha256:${"d".repeat(43)}`,
+      reviewedRevision: "3".repeat(40),
+      verdict: "PASS",
+      sequence: 1,
+    },
+    furyEvidence: {
+      sourceKind: "repository",
+      artifactPath: ".shield/audit/issue-416/fury.json",
+      evidenceId: "evidence:issue-416:fury",
+      evidenceDigest: `sha256:${"e".repeat(43)}`,
+      reviewedRevision: "3".repeat(40),
+      verdict: "APPROVE",
+      mackEvidenceDigest: `sha256:${"d".repeat(43)}`,
+      sequence: 2,
+    },
+    regressionFixture: {
+      missionId: "mission:issue-intake:HgnxEl-ce9oshquwYlZJJS5IQKfFSciS8CfYeQmFSiY",
+      subjectId: "github:RanSolo/shield-workspace/issue/406",
+      implementationHead: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
+      operationId: "operation:issue-416:failed-publication-preparation",
+      operationDigest: `sha256:${"f".repeat(43)}`,
+      outcome: "failed",
+      reasonCode: "canonical_publication_authority_missing",
+      headRevision: "400a60a0eb4bf6dbf549b08e3b99a89572a57cec",
+    },
+    ...overrides,
+  };
+}
 
 test("prepared publication semantic tuple delegates to the shared closed identity material", () => {
   const preparedAuthority = {

@@ -80,6 +80,7 @@ export const MISSION_130_PREDECESSOR_ID = "mission:issue-130" as const;
 export const MISSION_130_JOURNAL_DIGEST = "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9" as const;
 export const ISSUE_INTAKE_SOURCE_BINDING_SCHEMA_VERSION = 1 as const;
 export const ISSUE_INTAKE_SOURCE_BINDING_CONTRACT_VERSION = "mission.issue-intake-source-binding.v1" as const;
+export const PROFILE_AWARE_SOURCE_BINDING_RECOVERY_CONTRACT_VERSION = "mission.profile-aware-source-binding-recovery.v1" as const;
 
 type GateRole = "coulson" | "fitz" | "simmons";
 type EvidenceKind = "mission_authorization" | "technical_review" | "product_domain_review" | "final_acceptance";
@@ -152,6 +153,111 @@ export interface IssueIntakeSourceBindingV1 {
   trustedBindingRegistryBytesDigest: string;
   briefRevisionId: string;
 }
+
+export interface ProfileAwareSourceBindingRecoveryFileIdentityV1 {
+  digest: string;
+  identity: string;
+}
+
+export interface ProfileAwareSourceBindingRecoveryRepositoryV1 {
+  canonicalRoot: string;
+  branch: string;
+  head: string;
+  porcelainStatus: string;
+  originRepositoryId: string;
+}
+
+export interface ProfileAwareSourceBindingRecoveryConfigurationV1 {
+  repositoryId: string;
+  bytes: string;
+  identity: string;
+}
+
+export interface ProfileAwareSourceBindingRecoveryRegistryV1 {
+  bytes: string;
+  identity: string;
+  bindings: TrustedHumanBinding[];
+}
+
+export interface ProfileAwareSourceBindingRecoveryPlanningV1 {
+  planDigest: string;
+  planningBaseRevision: string;
+  parentPlanCommit: string;
+  planningCommitRange: string[];
+}
+
+export interface ProfileAwareSourceBindingRecoveryInputV1 {
+  missionId: string;
+  journalBytes: string;
+  journalSha256: string;
+  journalIdentity: string;
+  entries: unknown;
+  repository: ProfileAwareSourceBindingRecoveryRepositoryV1;
+  configuration: ProfileAwareSourceBindingRecoveryConfigurationV1;
+  registry: ProfileAwareSourceBindingRecoveryRegistryV1;
+  staleReceipt: ProfileAwareSourceBindingRecoveryFileIdentityV1;
+  currentReceipt: ProfileAwareSourceBindingRecoveryFileIdentityV1;
+  planning: ProfileAwareSourceBindingRecoveryPlanningV1;
+}
+
+const PROFILE_AWARE_SOURCE_BINDING_RECOVERY_INPUT_FIELDS = Object.freeze([
+  "missionId", "journalBytes", "journalSha256", "journalIdentity", "entries", "repository",
+  "configuration", "registry", "staleReceipt", "currentReceipt", "planning",
+] as const);
+const PROFILE_AWARE_SOURCE_BINDING_RECOVERY_REPOSITORY_FIELDS = Object.freeze([
+  "canonicalRoot", "branch", "head", "porcelainStatus", "originRepositoryId",
+] as const);
+const PROFILE_AWARE_SOURCE_BINDING_RECOVERY_CONFIGURATION_FIELDS = Object.freeze(["repositoryId", "bytes", "identity"] as const);
+const PROFILE_AWARE_SOURCE_BINDING_RECOVERY_REGISTRY_FIELDS = Object.freeze(["bytes", "identity", "bindings"] as const);
+const PROFILE_AWARE_SOURCE_BINDING_RECOVERY_FILE_FIELDS = Object.freeze(["digest", "identity"] as const);
+const PROFILE_AWARE_SOURCE_BINDING_RECOVERY_PLANNING_FIELDS = Object.freeze([
+  "planDigest", "planningBaseRevision", "parentPlanCommit", "planningCommitRange",
+] as const);
+
+export interface ProfileAwareSourceBindingRecoveryRequiredV1 {
+  schemaVersion: 1;
+  contractVersion: typeof PROFILE_AWARE_SOURCE_BINDING_RECOVERY_CONTRACT_VERSION;
+  authority: "none";
+  state: "source_binding_recovery_required";
+  reasonCode: "source_binding_drifted_then_conflicting_replay";
+  missionId: string;
+  journal: ProfileAwareSourceBindingRecoveryFileIdentityV1;
+  staleSourceBinding: {
+    digest: string;
+    branch: string;
+    headRevision: string;
+    preparedWorktreeReceiptDigest: string;
+  };
+  currentRepository: {
+    canonicalRoot: string;
+    branch: string;
+    headRevision: string;
+    originRepositoryId: string;
+  };
+  currentPreparedWorktreeReceipt: ProfileAwareSourceBindingRecoveryFileIdentityV1;
+  coulsonAuthorization: {
+    evidenceId: string;
+    requirementId: string;
+    journalSequence: number;
+  };
+  planning: ProfileAwareSourceBindingRecoveryPlanningV1;
+  nextAction: "obtain_a_separately_authorized_source_binding_rebind";
+}
+
+export interface ProfileAwareSourceBindingRecoveryBlockedV1 {
+  schemaVersion: 1;
+  contractVersion: typeof PROFILE_AWARE_SOURCE_BINDING_RECOVERY_CONTRACT_VERSION;
+  authority: "none";
+  state: "blocked";
+  reasonCode: "source_binding_recovery_blocked";
+  missionId: string;
+  errors: string[];
+  nextAction: "inspect_exact_revision_and_preserve_all_existing_mission_evidence";
+}
+
+export type ProfileAwareSourceBindingRecoveryResultV1 =
+  | ProfileAwareSourceBindingRecoveryRequiredV1
+  | ProfileAwareSourceBindingRecoveryBlockedV1;
 
 export type ProfileAwareMissionEntryV1 =
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "mission.begun"; timestamp: EvidenceTimestamp; payload: { brief: ProfileAwareMissionBriefV1; trustedBindings: TrustedHumanBinding[]; requirements: ProfileRequirementV1[] } }
@@ -314,6 +420,181 @@ function computeIssueIntakeMissionIdForBinding(hostRepositoryId: string, hostIss
 
 export function isCanonicalIssueIntakeModeActivationV1(value: unknown): value is MissionModeActivation[] {
   return Array.isArray(value) && value.length === 1 && canonicalJson(value[0]) === canonicalJson(ISSUE_INTAKE_MODE);
+}
+
+function recoveryByteSha256(bytes: string): string {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function recoveryDigest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("base64url")}`;
+}
+
+function recoveryBlocked(missionId: string, ...errors: string[]): ProfileAwareSourceBindingRecoveryBlockedV1 {
+  return {
+    schemaVersion: 1,
+    contractVersion: PROFILE_AWARE_SOURCE_BINDING_RECOVERY_CONTRACT_VERSION,
+    authority: "none",
+    state: "blocked",
+    reasonCode: "source_binding_recovery_blocked",
+    missionId,
+    errors: [...errors],
+    nextAction: "inspect_exact_revision_and_preserve_all_existing_mission_evidence",
+  };
+}
+
+function recoveryClosedInput(input: unknown): input is ProfileAwareSourceBindingRecoveryInputV1 {
+  if (!exact(input, PROFILE_AWARE_SOURCE_BINDING_RECOVERY_INPUT_FIELDS) ||
+      !denseDataArray(input.entries) || !exact(input.repository, PROFILE_AWARE_SOURCE_BINDING_RECOVERY_REPOSITORY_FIELDS) ||
+      !exact(input.configuration, PROFILE_AWARE_SOURCE_BINDING_RECOVERY_CONFIGURATION_FIELDS) ||
+      !exact(input.registry, PROFILE_AWARE_SOURCE_BINDING_RECOVERY_REGISTRY_FIELDS) ||
+      !exact(input.staleReceipt, PROFILE_AWARE_SOURCE_BINDING_RECOVERY_FILE_FIELDS) ||
+      !exact(input.currentReceipt, PROFILE_AWARE_SOURCE_BINDING_RECOVERY_FILE_FIELDS) ||
+      !exact(input.planning, PROFILE_AWARE_SOURCE_BINDING_RECOVERY_PLANNING_FIELDS) ||
+      !denseDataArray(input.registry.bindings) || !denseDataArray(input.planning.planningCommitRange)) return false;
+  const value = input as unknown as ProfileAwareSourceBindingRecoveryInputV1;
+  const repository = value.repository;
+  const configuration = value.configuration;
+  const registry = value.registry;
+  const staleReceipt = value.staleReceipt;
+  const currentReceipt = value.currentReceipt;
+  const planning = value.planning;
+  return typeof value.missionId === "string" && value.missionId.length > 0 &&
+    typeof value.journalBytes === "string" && typeof value.journalSha256 === "string" && DIGEST.test(value.journalSha256) &&
+    typeof value.journalIdentity === "string" && value.journalIdentity.length > 0 &&
+    typeof repository.canonicalRoot === "string" && repository.canonicalRoot.length > 0 &&
+    typeof repository.branch === "string" && repository.branch.length > 0 &&
+    typeof repository.head === "string" && /^[0-9a-f]{40,64}$/u.test(repository.head) &&
+    typeof repository.porcelainStatus === "string" && typeof repository.originRepositoryId === "string" &&
+    typeof configuration.repositoryId === "string" && typeof configuration.bytes === "string" &&
+    typeof configuration.identity === "string" && configuration.identity.length > 0 &&
+    typeof registry.bytes === "string" && typeof registry.identity === "string" && registry.identity.length > 0 &&
+    typeof staleReceipt.digest === "string" && BYTE_DIGEST.test(staleReceipt.digest) &&
+    typeof staleReceipt.identity === "string" && staleReceipt.identity.length > 0 &&
+    typeof currentReceipt.digest === "string" && BYTE_DIGEST.test(currentReceipt.digest) &&
+    typeof currentReceipt.identity === "string" && currentReceipt.identity.length > 0 &&
+    typeof planning.planDigest === "string" && DIGEST.test(planning.planDigest) &&
+    typeof planning.planningBaseRevision === "string" && /^[0-9a-f]{40,64}$/u.test(planning.planningBaseRevision) &&
+    typeof planning.parentPlanCommit === "string" && /^[0-9a-f]{40,64}$/u.test(planning.parentPlanCommit) &&
+    planning.planningCommitRange.every((commit) => typeof commit === "string" && /^[0-9a-f]{40,64}$/u.test(commit));
+}
+
+function recoveryRegistryIsClosed(value: unknown): value is TrustedHumanBinding[] {
+  const bindings = denseDataArray(value);
+  if (bindings === null) return false;
+  return bindings.every((binding): binding is TrustedHumanBinding =>
+    plain(binding) && validateTrustedBindingRegistry({ schemaVersion: 1, bindings: [binding] }).state === "valid");
+}
+
+/**
+ * Reconstructs the one authority-none terminal for the proven issue-intake
+ * dead end. This is deliberately pure: the CLI owns all filesystem/git
+ * observation and this contract performs no journal or receipt writes.
+ */
+export function resolveProfileAwareSourceBindingRecoveryV1(
+  input: ProfileAwareSourceBindingRecoveryInputV1,
+): ProfileAwareSourceBindingRecoveryResultV1 {
+  try {
+    const missionId = typeof input?.missionId === "string" ? input.missionId : "unknown";
+    if (!recoveryClosedInput(input) || !recoveryRegistryIsClosed(input.registry.bindings)) {
+      return recoveryBlocked(missionId, "Recovery input is malformed.");
+    }
+    const replay = replayProfileAwareMissionJournal(input.entries);
+    if (replay.state === "invalid") return recoveryBlocked(missionId, "Profile-aware journal authentication failed.", ...replay.errors);
+    if (replay.value.missionId !== input.missionId) return recoveryBlocked(missionId, "Profile-aware journal mission identity is stale.");
+    const entries = input.entries as ProfileAwareMissionEntryV1[];
+    const begun = entries[0];
+    const authorization = entries[1];
+    if (entries.length !== 2 || begun?.type !== "mission.begun" || authorization?.type !== "governance.decided" ||
+        !Object.hasOwn(begun.payload, "issueIntakeSourceBinding") || replay.value.authorization !== "authorized" ||
+        replay.value.execution !== "not-started" || replay.value.finalAcceptance !== "waiting") {
+      return recoveryBlocked(input.missionId, "Existing journal is not the exact authorized profile-aware issue-intake terminal candidate.");
+    }
+    const sourceBinding = (begun.payload as { issueIntakeSourceBinding?: unknown }).issueIntakeSourceBinding;
+    const checkedBinding = validateIssueIntakeSourceBindingV1(sourceBinding, replay.value.brief);
+    if (checkedBinding.state === "invalid") return recoveryBlocked(input.missionId, "Authenticated issue-intake source binding is malformed or mismatched.", ...checkedBinding.errors);
+    const binding = checkedBinding.value;
+    const signedEvidence = authorization.payload.evidence;
+    if (signedEvidence.payload.seatId !== "coulson" || signedEvidence.payload.evidenceKind !== "mission_authorization" ||
+        signedEvidence.payload.decision !== "approved" || signedEvidence.payload.journalSequence !== 1) {
+      return recoveryBlocked(input.missionId, "Coulson authorization evidence is not the exact authenticated issue-intake decision.");
+    }
+    if (input.journalIdentity.length === 0 || input.journalSha256 !== recoveryByteSha256(input.journalBytes) ||
+        input.journalBytes !== `${entries.map((entry) => canonicalJson(entry)).join("\n")}\n`) {
+      return recoveryBlocked(input.missionId, "Mission journal bytes or identity are not an exact authenticated snapshot.");
+    }
+    const repository = input.repository;
+    if (!plain(repository) || typeof repository.canonicalRoot !== "string" || repository.canonicalRoot.length === 0 ||
+        typeof repository.branch !== "string" || typeof repository.head !== "string" || typeof repository.porcelainStatus !== "string" ||
+        typeof repository.originRepositoryId !== "string" || repository.originRepositoryId !== binding.repositoryId || repository.porcelainStatus !== "") {
+      return recoveryBlocked(input.missionId, "Repository root, branch, HEAD, origin, or clean-status snapshot is invalid.");
+    }
+    const configuration = input.configuration;
+    if (!plain(configuration) || typeof configuration.repositoryId !== "string" || typeof configuration.bytes !== "string" ||
+        typeof configuration.identity !== "string" || configuration.repositoryId !== binding.repositoryId ||
+        recoveryByteSha256(configuration.bytes) !== binding.configBytesDigest) {
+      return recoveryBlocked(input.missionId, "Repository configuration snapshot drifted from the authenticated source binding.");
+    }
+    const registry = input.registry;
+    if (!plain(registry) || typeof registry.bytes !== "string" || typeof registry.identity !== "string" ||
+        !Array.isArray(registry.bindings) || recoveryByteSha256(registry.bytes) !== binding.trustedBindingRegistryBytesDigest ||
+        canonicalJson(registry.bindings) !== canonicalJson(begun.payload.trustedBindings)) {
+      return recoveryBlocked(input.missionId, "Trusted binding registry snapshot drifted from the authenticated journal.");
+    }
+    const staleReceipt = input.staleReceipt;
+    const currentReceipt = input.currentReceipt;
+    if (!plain(staleReceipt) || !plain(currentReceipt) || typeof staleReceipt.digest !== "string" || typeof staleReceipt.identity !== "string" ||
+        typeof currentReceipt.digest !== "string" || typeof currentReceipt.identity !== "string" || staleReceipt.identity.length === 0 ||
+        currentReceipt.identity.length === 0 || staleReceipt.digest !== binding.preparedWorktreeReceiptDigest ||
+        currentReceipt.digest === staleReceipt.digest || repository.head === binding.headRevision || repository.branch !== binding.branch) {
+      return recoveryBlocked(input.missionId, "Prepared-worktree receipt or repository source-binding identity drifted outside the proven recovery tuple.");
+    }
+    const planning = input.planning;
+    if (!plain(planning) || typeof planning.planDigest !== "string" || typeof planning.planningBaseRevision !== "string" ||
+        typeof planning.parentPlanCommit !== "string" || !Array.isArray(planning.planningCommitRange) ||
+        planning.planningCommitRange.length === 0 || planning.planningCommitRange.some((commit) => typeof commit !== "string") ||
+        planning.planningBaseRevision !== binding.headRevision || planning.parentPlanCommit !== planning.planningCommitRange[0]) {
+      return recoveryBlocked(input.missionId, "Ordered planning commit provenance is malformed.");
+    }
+    const coulsonEvidence = replay.value.evidence.find(({ seatId, evidenceKind }) => seatId === "coulson" && evidenceKind === "mission_authorization");
+    if (coulsonEvidence === undefined) return recoveryBlocked(input.missionId, "Authenticated Coulson authorization evidence is missing.");
+    return {
+      schemaVersion: 1,
+      contractVersion: PROFILE_AWARE_SOURCE_BINDING_RECOVERY_CONTRACT_VERSION,
+      authority: "none",
+      state: "source_binding_recovery_required",
+      reasonCode: "source_binding_drifted_then_conflicting_replay",
+      missionId: input.missionId,
+      journal: { digest: input.journalSha256, identity: input.journalIdentity },
+      staleSourceBinding: {
+        digest: recoveryDigest(binding),
+        branch: binding.branch,
+        headRevision: binding.headRevision,
+        preparedWorktreeReceiptDigest: staleReceipt.digest,
+      },
+      currentRepository: {
+        canonicalRoot: repository.canonicalRoot,
+        branch: repository.branch,
+        headRevision: repository.head,
+        originRepositoryId: repository.originRepositoryId,
+      },
+      currentPreparedWorktreeReceipt: { digest: currentReceipt.digest, identity: currentReceipt.identity },
+      coulsonAuthorization: {
+        evidenceId: coulsonEvidence.evidenceId,
+        requirementId: coulsonEvidence.requirementId,
+        journalSequence: coulsonEvidence.journalSequence,
+      },
+      planning: {
+        planDigest: planning.planDigest,
+        planningBaseRevision: planning.planningBaseRevision,
+        parentPlanCommit: planning.parentPlanCommit,
+        planningCommitRange: [...planning.planningCommitRange],
+      },
+      nextAction: "obtain_a_separately_authorized_source_binding_rebind",
+    };
+  } catch {
+    return recoveryBlocked(typeof input?.missionId === "string" ? input.missionId : "unknown", "Source-binding recovery inspection failed closed.");
+  }
 }
 
 export function createProfileAwareMissionBrief(input: ProfileAwareMissionBriefContentV1): ProfileAwareMissionBriefV1 {

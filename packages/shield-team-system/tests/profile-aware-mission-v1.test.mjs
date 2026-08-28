@@ -23,6 +23,7 @@ import {
   validateProfileAwareMissionBrief,
   createProfileAwareRuntimeBindingRecordedEntryV1,
   createProfileAwareRuntimeBindingSupersessionEntryV1,
+  resolveProfileAwareSourceBindingRecoveryV1,
 } from "../dist/profile-aware-mission-v1.mjs";
 import {
   computeReviewPublicationAuthorityDigest,
@@ -1255,4 +1256,113 @@ test("schema-9 publication replay rejects signed-envelope, scope, sequence, dupl
   assert.equal(replayProfileAwareMissionJournal([...late, lateAuthorization]).state, "invalid");
 
   assert.equal(computeReviewPublicationAuthorityDigest(fixture.authority), fixture.authorization.payload.authorityDigest);
+});
+
+test("profile-aware source-binding recovery is a deterministic authenticated terminal", () => {
+  const hostRepositoryId = "R_416";
+  const hostIssueId = "I_416";
+  const missionId = `mission:issue-intake:${createHash("sha256").update(canonicalJson(["shield.mission.issue-intake.v1", hostRepositoryId, hostIssueId])).digest("base64url")}`;
+  const coulson = authority("coulson");
+  const configBytes = "config snapshot\n";
+  const registryValue = { schemaVersion: 1, bindings: [coulson.binding] };
+  const registryBytes = `${canonicalJson(registryValue)}\n`;
+  const digest = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const missionBrief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Recover one exact profile-aware source binding.",
+    subjectId: "github:RanSolo/demo/issue/416",
+    riskFlags,
+    participants: [{ seatId: "hill" }, { seatId: "may" }, { seatId: "coulson" }],
+    activatedModes: [{ modeId: "delivery", modeVersion: "1.0.0", seatId: "hill", activationSource: "issue-intake" }],
+    requireSimmons: false,
+    createdAt: { value: "2026-07-29T15:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: predecessorDigest,
+  });
+  const sourceBinding = {
+    schemaVersion: 1,
+    contractVersion: "mission.issue-intake-source-binding.v1",
+    repositoryId: "RanSolo/demo",
+    hostRepositoryId,
+    repositoryNameWithOwner: "RanSolo/demo",
+    hostIssueId,
+    issueNumber: 416,
+    issueUrl: "https://github.com/RanSolo/demo/issues/416",
+    issueRevisionId: "revision:416",
+    updatedAt: missionBrief.createdAt.value,
+    criteriaDigest: `sha256:${"A".repeat(43)}`,
+    profileId: "standard",
+    profileVersion: 1,
+    branch: "main",
+    headRevision: "a".repeat(40),
+    preparedWorktreeReceiptDigest: "b".repeat(64),
+    configBytesDigest: digest(configBytes),
+    trustedBindingRegistryBytesDigest: digest(registryBytes),
+    briefRevisionId: missionBrief.revisionId,
+  };
+  const begun = createProfileAwareMissionBegunEntry(missionBrief, [coulson.binding], missionBrief.createdAt, sourceBinding);
+  const begunProjection = replay([begun]);
+  const authorization = createProfileAwareGovernanceDecisionEntryV1({
+    projection: begunProjection,
+    trustedBindings: [coulson.binding],
+    evidence: evidence(coulson, begunProjection, begunProjection.requirements[0], 1),
+  });
+  const entries = [begun, authorization];
+  const journalBytes = `${entries.map((entry) => canonicalJson(entry)).join("\n")}\n`;
+  const input = {
+    missionId,
+    journalBytes,
+    journalSha256: digest(journalBytes),
+    journalIdentity: "1:2:420",
+    entries,
+    repository: { canonicalRoot: "/workspace/demo", branch: "main", head: "c".repeat(40), porcelainStatus: "", originRepositoryId: "RanSolo/demo" },
+    configuration: { repositoryId: "RanSolo/demo", bytes: configBytes, identity: "1:3:420" },
+    registry: { bytes: registryBytes, identity: "1:4:420", bindings: [coulson.binding] },
+    staleReceipt: { digest: "b".repeat(64), identity: "1:5:420" },
+    currentReceipt: { digest: "d".repeat(64), identity: "1:6:420" },
+    planning: { planDigest: `sha256:${"c".repeat(64)}`, planningBaseRevision: "a".repeat(40), parentPlanCommit: "b".repeat(40), planningCommitRange: ["b".repeat(40), "c".repeat(40)] },
+  };
+  const first = resolveProfileAwareSourceBindingRecoveryV1(input);
+  assert.equal(first.state, "source_binding_recovery_required");
+  assert.equal(first.reasonCode, "source_binding_drifted_then_conflicting_replay");
+  assert.deepEqual(resolveProfileAwareSourceBindingRecoveryV1(structuredClone(input)), first);
+  const changed = structuredClone(input);
+  changed.currentReceipt.digest = "e".repeat(64);
+  assert.equal(resolveProfileAwareSourceBindingRecoveryV1(changed).state, "source_binding_recovery_required");
+  changed.registry.bytes += "\n";
+  assert.equal(resolveProfileAwareSourceBindingRecoveryV1(changed).state, "blocked");
+  const closedMutations = [
+    (value) => { value.extra = true; },
+    (value) => { value.repository.extra = true; },
+    (value) => { value.configuration.extra = true; },
+    (value) => { value.registry.extra = true; },
+    (value) => { value.staleReceipt.extra = true; },
+    (value) => { value.currentReceipt.extra = true; },
+    (value) => { value.planning.extra = true; },
+    (value) => { value.registry.bindings[0].extra = true; },
+    (value) => { value.entries.extra = true; },
+    (value) => { value.planning.planningCommitRange.extra = true; },
+  ];
+  for (const mutate of closedMutations) {
+    const malformed = structuredClone(input);
+    mutate(malformed);
+    assert.equal(resolveProfileAwareSourceBindingRecoveryV1(malformed).state, "blocked");
+  }
+  const tupleMutations = [
+    ["branch", (value) => { value.repository.branch = "other/branch"; }],
+    ["non-descendant", (value) => { value.repository.head = value.entries[0].payload.issueIntakeSourceBinding.headRevision; }],
+    ["origin", (value) => { value.repository.originRepositoryId = "RanSolo/other"; }],
+    ["planning-base", (value) => { value.planning.planningBaseRevision = "f".repeat(40); }],
+    ["parent", (value) => { value.planning.parentPlanCommit = "f".repeat(40); }],
+  ];
+  for (const [label, mutate] of tupleMutations) {
+    const mismatched = structuredClone(input);
+    mutate(mismatched);
+    assert.equal(resolveProfileAwareSourceBindingRecoveryV1(mismatched).state, "blocked", label);
+  }
 });
