@@ -2701,6 +2701,252 @@ test("prepare-next exhaustively consumes the exported transition result without 
   assert.match(consumer, /result\.state === "runtime_binding_already_authorized"/u);
 });
 
+test("source-binding recovery is an explicit closed, read-only CLI route", async () => {
+  const current = await fixture();
+  const configPath = join(current.root, ".shield", "config.json");
+  const configBefore = await readFile(configPath, "utf8");
+  const result = await runMissionCliCaptured([
+    "mission", "recover-source-binding", "--mission-id", "mission:issue-416-missing", "--root", current.root, "--json",
+  ]);
+  assert.equal(result.status, 1);
+  const blocked = JSON.parse(result.stdout);
+  assert.equal(blocked.state, "blocked");
+  assert.equal(blocked.reasonCode, "source_binding_recovery_blocked");
+  assert.equal(await readFile(configPath, "utf8"), configBefore);
+  assert.match(missionUsage(), /recover-source-binding --mission-id/u);
+});
+
+test("Issue #416 prepare-next terminally blocks a missing recovery journal", async () => {
+  const current = await fixture();
+  const missionId = "mission:issue-intake:cZePw1cHKbJMdb0yI-K4XxpP0xNU0RwNnTRxBVqIrzQ";
+  const paths = [
+    join(current.root, ".shield", "config.json"),
+    join(current.root, ".shield", "trusted-human-bindings.json"),
+  ];
+  const before = await Promise.all(paths.map((path) => readFile(path, "utf8")));
+  const calls = [];
+  const dependencies = {
+    prepareSession: async () => { calls.push("preparation"); throw new Error("preparation must not run"); },
+    preflightProtectedGraphAbsence: async () => { calls.push("preflight"); throw new Error("preflight must not run"); },
+    issueObserver: async () => { calls.push("issue-observer"); throw new Error("issue observer must not run"); },
+    issueObservationWrapper: async () => { calls.push("wrapper"); throw new Error("wrapper must not run"); },
+    continueLegacyReviewedTransition: async () => { calls.push("legacy"); throw new Error("legacy must not run"); },
+  };
+  const result = await runMissionCliCaptured([
+    "mission", "prepare-next", "--mission-id", missionId, "--root", current.root, "--json",
+  ], dependencies);
+  const blocked = JSON.parse(result.stdout);
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.equal(blocked.state, "blocked");
+  assert.equal(blocked.reasonCode, "source_binding_recovery_blocked");
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await Promise.all(paths.map((path) => readFile(path, "utf8"))), before);
+});
+
+test("Issue #416 prepare-next terminally blocks a valid non-candidate recovery journal", async () => {
+  const current = await fixture();
+  const missionId = "mission:issue-intake:cZePw1cHKbJMdb0yI-K4XxpP0xNU0RwNnTRxBVqIrzQ";
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Read one profile-aware mission without changing it.",
+    subjectId: "issue:130",
+    riskFlags: {
+      production: false,
+      destructive: false,
+      migration: false,
+      credentialsOrSecurity: false,
+      externalCommunication: false,
+      merge: false,
+      deploy: false,
+      release: false,
+      hillHighRisk: true,
+    },
+    participants: ["hill", "may", "coulson", "fitz"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-07-29T15:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const path = journalPath(current.root, missionId);
+  await mkdir(join(current.root, ".shield", "journals"), { recursive: true });
+  const entry = createProfileAwareMissionBegunEntry(brief, [current.coulson.binding, current.fitz.binding]);
+  await writeFile(path, `${JSON.stringify(entry)}\n`);
+  const paths = [
+    join(current.root, ".shield", "config.json"),
+    join(current.root, ".shield", "trusted-human-bindings.json"),
+    path,
+  ];
+  const before = await Promise.all(paths.map((candidate) => readFile(candidate, "utf8")));
+  const calls = [];
+  const dependencies = {
+    prepareSession: async () => { calls.push("preparation"); throw new Error("preparation must not run"); },
+    preflightProtectedGraphAbsence: async () => { calls.push("preflight"); throw new Error("preflight must not run"); },
+    issueObserver: async () => { calls.push("issue-observer"); throw new Error("issue observer must not run"); },
+    issueObservationWrapper: async () => { calls.push("wrapper"); throw new Error("wrapper must not run"); },
+    continueLegacyReviewedTransition: async () => { calls.push("legacy"); throw new Error("legacy must not run"); },
+  };
+  const result = await runMissionCliCaptured([
+    "mission", "prepare-next", "--mission-id", missionId, "--root", current.root, "--json",
+  ], dependencies);
+  const blocked = JSON.parse(result.stdout);
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.equal(blocked.state, "blocked");
+  assert.equal(blocked.reasonCode, "source_binding_recovery_blocked");
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await Promise.all(paths.map((candidate) => readFile(candidate, "utf8"))), before);
+});
+
+test("Issue #416 exact-tuple prepare-next replay blocks dirty implementation HEAD before provider or intake", async () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const missionId = "mission:issue-intake:cZePw1cHKbJMdb0yI-K4XxpP0xNU0RwNnTRxBVqIrzQ";
+  const paths = [
+    join(root, ".shield", "config.json"),
+    journalPath(root, missionId),
+    join(root, ".shield", "trusted-human-bindings.json"),
+    join(root, ".shield", "worktree-state.json"),
+  ];
+  const before = await Promise.all(paths.map((path) => readFile(path, "utf8")));
+  const calls = [];
+  const dependencies = {
+    prepareSession: async () => { calls.push("provider"); throw new Error("provider must not run"); },
+    issueObserver: async () => { calls.push("intake"); throw new Error("intake must not run"); },
+    issueObservationWrapper: async () => { calls.push("wrapper"); throw new Error("wrapper must not run"); },
+    continueLegacyReviewedTransition: async () => { calls.push("legacy"); throw new Error("legacy must not run"); },
+  };
+  const first = await runMissionCliCaptured([
+    "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--json",
+  ], dependencies);
+  const second = await runMissionCliCaptured([
+    "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--json",
+  ], dependencies);
+  assert.equal(first.status, 1);
+  assert.deepEqual(second, first);
+  assert.equal(JSON.parse(first.stdout).reasonCode, "source_binding_recovery_blocked");
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await Promise.all(paths.map((path) => readFile(path, "utf8"))), before);
+});
+
+test("Issue #416 production-shaped historical tuple CLI emits one replay-identical terminal without writes", async () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const missionId = "mission:issue-intake:cZePw1cHKbJMdb0yI-K4XxpP0xNU0RwNnTRxBVqIrzQ";
+  const paths = [
+    join(root, ".shield", "config.json"),
+    journalPath(root, missionId),
+    join(root, ".shield", "trusted-human-bindings.json"),
+    join(root, ".shield", "worktree-state.json"),
+    join(root, ".shield", "worktree-state-receipts", "cf8a5f9b58221c9974bf83400b5c05aa2f7a4cdc71dc630e54de7dd3f229d44b.json"),
+    join(root, ".shield", "worktree-state-receipts", "8090f06e4a475c594ba2d18b0f6476874962a5c72b582393e1c8f67bf67a97cb.json"),
+    join(root, "docs", "missions", "issue-416-dispatcher-allowance-recovery-plan.md"),
+  ];
+  const before = await Promise.all(paths.map((path) => readFile(path, "utf8")));
+  const fakeGitRoot = await mkdtemp(join(tmpdir(), "shield-416-historical-git-"));
+  const fakeGit = join(fakeGitRoot, "git");
+  const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+  await writeFile(fakeGit, `#!/bin/sh
+if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD" ]; then
+  printf '%s\\n' "\${SHIELD_416_FAKE_HEAD:-c775ad43f077eae1b63ad7244871dc96bd562c29}"
+  exit 0
+fi
+if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "--abbrev-ref" ] && [ "$5" = "HEAD" ]; then
+  printf '%s\\n' "\${SHIELD_416_FAKE_BRANCH:-agent/issue-416-recovery-successor}"
+  exit 0
+fi
+if [ "$1" = "-C" ] && [ "$3" = "status" ]; then
+  if [ -n "\${SHIELD_416_FAKE_STATUS:-}" ]; then
+    printf '%s\\n' "$SHIELD_416_FAKE_STATUS"
+  fi
+  exit 0
+fi
+exec ${realGit} "$@"
+`);
+  await chmod(fakeGit, 0o755);
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${fakeGitRoot}:${originalPath ?? ""}`;
+  const calls = [];
+  const dependencies = {
+    prepareSession: async () => { calls.push("provider"); throw new Error("provider must not run"); },
+    issueObserver: async () => { calls.push("intake"); throw new Error("intake must not run"); },
+    issueObservationWrapper: async () => { calls.push("wrapper"); throw new Error("wrapper must not run"); },
+    continueLegacyReviewedTransition: async () => { calls.push("legacy"); throw new Error("legacy must not run"); },
+  };
+  try {
+    const first = await runMissionCliCaptured([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--json",
+    ], dependencies);
+    const second = await runMissionCliCaptured([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--json",
+    ], dependencies);
+    assert.equal(first.status, 1);
+    assert.deepEqual(second, first);
+    assert.equal(JSON.parse(first.stdout).state, "source_binding_recovery_required", first.stdout);
+    assert.deepEqual(calls, []);
+    assert.deepEqual(await Promise.all(paths.map((path) => readFile(path, "utf8"))), before);
+  } finally {
+    process.env.PATH = originalPath;
+  }
+});
+
+test("Issue #416 exact tuple blocks branch, non-descendant, and snapshot-race drift", async () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const missionId = "mission:issue-intake:cZePw1cHKbJMdb0yI-K4XxpP0xNU0RwNnTRxBVqIrzQ";
+  const configPath = join(root, ".shield", "config.json");
+  const configBefore = await readFile(configPath, "utf8");
+  const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+  const scenarios = [
+    { name: "branch", branch: "agent/other" },
+    { name: "non-descendant", head: "09d85d12b3c15f088983f3fc4bc60dad607e167e" },
+    { name: "snapshot-race", mutate: async () => { await writeFile(configPath, `${configBefore}\n`); } },
+  ];
+  const originalPath = process.env.PATH;
+  try {
+    for (const scenario of scenarios) {
+      const fakeGitRoot = await mkdtemp(join(tmpdir(), "shield-416-drift-git-"));
+      const fakeGit = join(fakeGitRoot, "git");
+      await writeFile(fakeGit, `#!/bin/sh
+if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD" ]; then
+  printf '%s\\n' '${scenario.head ?? "c775ad43f077eae1b63ad7244871dc96bd562c29"}'
+  exit 0
+fi
+if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "--abbrev-ref" ] && [ "$5" = "HEAD" ]; then
+  printf '%s\\n' '${scenario.branch ?? "agent/issue-416-recovery-successor"}'
+  exit 0
+fi
+if [ "$1" = "-C" ] && [ "$3" = "status" ]; then
+  exit 0
+fi
+exec ${realGit} "$@"
+`);
+      await chmod(fakeGit, 0o755);
+      process.env.PATH = `${fakeGitRoot}:${originalPath ?? ""}`;
+      const calls = [];
+      const result = await runMissionCliCaptured([
+        "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--json",
+      ], {
+        prepareSession: async () => { calls.push("provider"); throw new Error("provider must not run"); },
+        issueObserver: async () => { calls.push("intake"); throw new Error("intake must not run"); },
+        issueObservationWrapper: async () => { calls.push("wrapper"); throw new Error("wrapper must not run"); },
+        continueLegacyReviewedTransition: async () => { calls.push("legacy"); throw new Error("legacy must not run"); },
+        ...(scenario.mutate === undefined ? {} : { afterInitialSourceBindingRecoverySnapshot: scenario.mutate }),
+      });
+      assert.equal(result.status, 1, scenario.name);
+      assert.equal(JSON.parse(result.stdout).state, "blocked", scenario.name);
+      assert.deepEqual(calls, [], scenario.name);
+      await writeFile(configPath, configBefore);
+    }
+  } finally {
+    await writeFile(configPath, configBefore);
+    process.env.PATH = originalPath;
+  }
+});
+
 test("prepare-next composes the guarded legacy continuation with one preparation replay", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "shield-prepare-next-composition-")));
   const missionId = "mission:issue-362-composition";
