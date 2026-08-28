@@ -1,4 +1,4 @@
-# Dispatcher allowance recovery — bounded successor to #416
+# Profile-aware source-binding recovery — bounded successor to #416
 
 ## Planning identity
 
@@ -22,7 +22,7 @@ must be regression-validated on the successor: signed and verified
 Issue-406 source identity; bounded parse/replay failure handling; and terminal
 revalidation of canonical root, revision, tree, origin, clean status, and
 authenticated snapshots. Any changed path outside the two-file implementation
-allowlist is a fail-closed plan mismatch.
+four-path implementation allowlist is a fail-closed plan mismatch.
 
 ## Proven profile-aware recovery dead end
 
@@ -49,38 +49,41 @@ returns blocked with zero writes. A future supported rebind, if separately
 authorized and implemented, must consume this terminal contract rather than
 retrying intake blindly.
 
-## Observed blocker
+## Excluded inherited repair
 
-The #416 terminal replay requirement cannot read the immutable W8 predecessor because the current dispatcher rejects its closed `allowedTools:["read"]` request before historical evidence is read. The rejection is at `packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts:1629`. The required allowance exists only on the separate `agent/issue-406-fury-read-path` revision and is not part of #416.
+The inherited dispatcher/W8 repair is a separate terminal-result contract and
+is not part of this profile-aware recovery. Its historical W8 request,
+evidence, receipt, denial, dispatcher allowance, and any #386/#406 fixture
+remain preserved external evidence only; this plan neither reads, rewrites,
+replays, authenticates, nor modifies them. No copilot dispatcher path is in
+the implementation allowlist below.
 
-Immutable predecessor facts, preserved without rewrite or replay:
+## Smallest recovery repair
 
-- request bytes: `sha256:1iQWgPCQshwNFIgSypbbJxe1bD8fWx2KwpiUwUVMqtM`
-- evidence content: `sha256:fhZYUlmN2vr48BQFfNK_CHlDiVX7FzTS8kU6KABQg_8`
-- receipt: `receipt:W8EY-iQrzqU-XXQjFWE3srDeqG_X2P4o`
-- terminal receipt digest: `sha256:23lYRNxPfetl2ZNIeAIH1Vqw_f6iZ5HUw2cx-jQYYJQ`
-- unchanged denial: `FURY_TOOL_ADMISSION_DENIED`, reason `admission_argument_shape_denied`, ordinal `35`
+Implement one repository-owned, durable terminal recovery contract for the
+proven `source_binding_drifted` then `conflicting_replay` sequence. It must
+authenticate the existing profile-aware journal and Coulson evidence, the
+stale source binding, current repository/config/registry snapshots, old and
+current prepared-worktree receipt identities, and the exact ordered planning
+commit range. It returns a closed
+`source_binding_recovery_required` result with the existing mission ID,
+stale/current identities, reason, and one next action. It never creates a
+second mission, rewrites or invalidates the journal, retries intake, carries
+authorization forward, appends authority, or invokes a provider.
 
-The predecessor dispatch identifies #386 at its historical revision and must remain distinct from #406’s non-authorizing regression facts. No identity relabeling is permitted. The `[read]` exception must authenticate the complete W8 ledger/evidence/packet binding before returning the existing denial with `replayed:true`; malformed or mismatched input returns without claim, append, execution, re-emission, or receipt emission.
-
-## Smallest repair
-
-Change only the repository-owned corrected-successor capability gate needed to accept the exact already-closed W8 `[read]` tuple: request digest, evidence digest, receipt, terminal digest, denial code/reason/ordinal, and durable repository/workspace/mission/subject/revision identities. Every mismatch must fail closed; all other `[read]` requests and existing `[read,search]` behavior remain unchanged. Preserve strict closed JSON, path/no-follow boundaries, search policy, claim identity, append integrity, single-consumer replay, and cross-repository isolation.
-
-The terminal result is the existing W8 failed result with `replayed:true`, returned before claim, successor construction, execution, re-emission, ledger append, or receipt emission. This recovery creates no successor and does not replay or rewrite a receipt. Do not change read/search descriptors, argument validation, path policy, ranged-read EOF behavior, prompts, or general tool admission; the defect is only the corrected-successor capability gate.
-
-Add a hermetic focused test fixture in the existing test file that proves the exact request reaches historical evidence replay, returns the unchanged denial with `replayed:true`, preserves byte-for-byte identical ledger and evidence snapshots, and performs no claim, append, execution, re-emission, or receipt emission. Mutate every immutable binding (including stale/conflicting/cross-repository identities) and reject each mutation. Reject absolute, unsafe, malformed, and extra-field requests. The fixture must not depend on `/private/tmp` or #386/#406 branches.
+Focused tests must prove byte-identical terminal replay; rejection of every
+authenticated-binding mutation; branch, non-descendant, dirty, and snapshot
+drift; unchanged journal bytes and identities; zero writes; no second mission;
+no authority carry-forward; and preservation of all four prior invariants.
 
 ## Exact implementation scope
 
-The future writer may change only:
+The future writer may change only these four paths:
 
 - `packages/shield-team-system/src/mission-cli.mts`
 - `packages/shield-team-system/src/profile-aware-mission-v1.mts`
 - `packages/shield-team-system/tests/supervised-cli.test.mjs`
 - `packages/shield-team-system/tests/profile-aware-mission-v1.test.mjs`
-- `packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts`
-- `packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs`
 
 The plan artifact itself is the only current change. This plan does not authorize implementation.
 
