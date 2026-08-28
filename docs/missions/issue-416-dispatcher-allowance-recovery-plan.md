@@ -21,8 +21,8 @@ must be regression-validated on the successor: signed and verified
 `transitionPlanId`/`transitionPlanDigest`; authenticated content-addressed
 Issue-406 source identity; bounded parse/replay failure handling; and terminal
 revalidation of canonical root, revision, tree, origin, clean status, and
-authenticated snapshots. Any changed path outside the two-file implementation
-four-path implementation allowlist is a fail-closed plan mismatch.
+authenticated snapshots. Any changed path outside the four-path implementation
+allowlist is a fail-closed plan mismatch.
 
 ## Proven profile-aware recovery dead end
 
@@ -89,7 +89,7 @@ The plan artifact itself is the only current change. This plan does not authoriz
 
 ## Explicit exclusions
 
-No changes to #416 implementation files, #386 or #406 evidence, receipts, journals, plans, or branches; no evidence rewrite, receipt replay, receipt re-emission, ledger append, authority creation, new tool policy, broad search-policy change, read/search descriptor changes, argument/path/EOF changes, prompts, new rail activation, GitHub mutation, publication, merge, deployment, release, or final acceptance. No human gate is requested by this authority-none plan.
+No changes outside the four permitted implementation paths above, and no changes to #386 or #406 evidence, receipts, journals, plans, or branches; no evidence rewrite, receipt replay, receipt re-emission, ledger append, authority creation, new tool policy, broad search-policy change, read/search descriptor changes, argument/path/EOF changes, prompts, new rail activation, GitHub mutation, publication, merge, deployment, release, or final acceptance. No human gate is requested by this authority-none plan.
 
 ## Validation and review
 
