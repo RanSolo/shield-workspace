@@ -3,10 +3,24 @@
 ## Planning identity
 
 - Repository: `RanSolo/shield-workspace`
-- Current base: `fe1785fbb5c74732186403d819ab43eb8d195b3c`
+- Mission: `mission:issue-intake:cZePw1cHKbJMdb0yI-K4XxpP0xNU0RwNnTRxBVqIrzQ`
+- Successor branch: `agent/issue-416-recovery-successor`
+- Successor HEAD: `6506edf72acd9c19c959744d5e7ea69e97c94771`
+- Issue URL: `https://github.com/RanSolo/shield-workspace/issues/416`
+- Issue revision: `sha256:KE89aNbkhxnh3flruAMge8jgbD2D-LSygQy8VS3UGPY`
+- Acceptance-criteria digest: `sha256:f793f0ac6217b1f039fee9e1202fdebf9ef60c5bafcd84a81d86e0a77152dfc4`
+- Planning source: `6506edf72acd9c19c959744d5e7ea69e97c94771:docs/missions/issue-416-dispatcher-allowance-recovery-plan.md`
 - Related repair: [Issue #416](https://github.com/RanSolo/shield-workspace/issues/416)
 - Authority: `none`
 - Owner: Hill planning; one future writer only
+
+The four previously reviewed compatibility corrections remain required and
+must be regression-validated on the successor: signed and verified
+`transitionPlanId`/`transitionPlanDigest`; authenticated content-addressed
+Issue-406 source identity; bounded parse/replay failure handling; and terminal
+revalidation of canonical root, revision, tree, origin, clean status, and
+authenticated snapshots. Any changed path outside the two-file implementation
+allowlist is a fail-closed plan mismatch.
 
 ## Observed blocker
 
@@ -20,7 +34,7 @@ Immutable predecessor facts, preserved without rewrite or replay:
 - terminal receipt digest: `sha256:23lYRNxPfetl2ZNIeAIH1Vqw_f6iZ5HUw2cx-jQYYJQ`
 - unchanged denial: `FURY_TOOL_ADMISSION_DENIED`, reason `admission_argument_shape_denied`, ordinal `35`
 
-The predecessor dispatch identifies #386 at its historical revision and must remain distinct from #406’s non-authorizing regression facts. No identity relabeling is permitted.
+The predecessor dispatch identifies #386 at its historical revision and must remain distinct from #406’s non-authorizing regression facts. No identity relabeling is permitted. The `[read]` exception must authenticate the complete W8 ledger/evidence/packet binding before returning the existing denial with `replayed:true`; malformed or mismatched input returns without claim, append, execution, re-emission, or receipt emission.
 
 ## Smallest repair
 
