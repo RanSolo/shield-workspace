@@ -1,0 +1,614 @@
+{
+  "schemaId": "shield.track-layer.factory-program.v1",
+  "schemaVersion": 1,
+  "programId": "mission-rail-v1",
+  "status": "proposed",
+  "constructionMode": "track-layer",
+  "primaryHost": "factory",
+  "architecture": {
+    "humanOverviewPath": "docs/architecture/mission-rail-v1-overview.md",
+    "referencePath": "docs/architecture/mission-rail-v1.md",
+    "maintainabilityPath": "docs/architecture/mission-rail-maintainability.md",
+    "factoryBootstrapPath": "docs/architecture/mission-rail-factory-bootstrap.md",
+    "binding": "same-git-tree"
+  },
+  "sourceBaseline": {
+    "repositoryId": "RanSolo/shield-workspace",
+    "revision": "af4c3a76c8c65def029dce2e68c25f556b2790d7",
+    "existingProjects": [
+      "@shield/mission-preparation",
+      "@shield/multiband",
+      "@shield/team-system"
+    ]
+  },
+  "goBindingRequiredFields": [
+    "accountableHumanId",
+    "acceptedFeatureIds",
+    "architectureGitRevision",
+    "architectureRawSha256",
+    "autonomyLevel",
+    "budgetAndExpiry",
+    "effectEnvelope",
+    "factoryMissionPlanSha256",
+    "featureManifestRawSha256",
+    "milestoneIds",
+    "ownedPathUnion",
+    "recordedAt"
+  ],
+  "epicWheelsUp": {
+    "scope": "accepted_feature_graph_and_bounded_corrections",
+    "reviewCadence": "architecture_before_go_then_milestone_and_epic_completion",
+    "perIssuePinRequired": false,
+    "materialAmendmentRequiredFor": [
+      "new_product_outcome",
+      "owned_path_expansion",
+      "destructive_effect",
+      "merge",
+      "deployment",
+      "release"
+    ]
+  },
+  "defaultEffects": {
+    "allowedAfterGo": [
+      "repository.read",
+      "repository.write_owned_paths",
+      "process.run_declared_validation",
+      "git.create_feature_branch",
+      "git.commit",
+      "git.push_feature_branch",
+      "github.create_draft_pull_request"
+    ],
+    "excluded": [
+      "delete_existing_shield_runtime",
+      "deployment",
+      "destructive_migration",
+      "merge",
+      "release"
+    ]
+  },
+  "identityEvidenceFields": [
+    "accountableSeatId",
+    "factoryFeatureId",
+    "factoryMissionId",
+    "hostKind",
+    "modelId",
+    "reasoningRuntimeId",
+    "runId",
+    "toolExecutorId"
+  ],
+  "integration": {
+    "branch": "integration/mission-rail-v1",
+    "ownedPaths": [
+      ".github/workflows/**",
+      "eslint.config.*",
+      "nx.json",
+      "package-lock.json",
+      "package.json",
+      "sonar-project.properties",
+      "tsconfig*.json"
+    ],
+    "baseAdvancement": {
+      "actor": "factory-parent-mission",
+      "requires": [
+        "all_dependencies_integrated",
+        "exact_integration_tree",
+        "milestone_validation_when_boundary_reached",
+        "unchanged_feature_scope_paths_effects_and_dependencies"
+      ],
+      "output": "integration-receipt.v1",
+      "regeneratesDownstreamPacketIdentity": true
+    },
+    "genesisReceipt": {
+      "schemaId": "integration-receipt.v1",
+      "createdBy": "epic-wheels-up",
+      "candidateTree": "accepted architecture Git tree",
+      "predecessorReceiptDigest": null,
+      "binding": "GO digest plus architecture revision plus manifest digest",
+      "purpose": "exact base for MR-000 before any feature receipt exists"
+    }
+  },
+  "featurePacketDefaults": {
+    "architectureSource": {
+      "path": "docs/architecture/mission-rail-v1.md",
+      "binding": "same-git-tree"
+    },
+    "exactBaseDerivation": "terminal accepted integration-receipt.v1 candidateTree",
+    "excludedBehavior": [
+      "legacy_runtime_rewrite",
+      "undeclared_compatibility",
+      "unowned_path_change"
+    ],
+    "excludedEffects": [
+      "delete_existing_shield_runtime",
+      "deployment",
+      "destructive_migration",
+      "merge",
+      "release"
+    ],
+    "factory": {
+      "mode": "mission",
+      "autonomy": "bounded_by_epic_wheels_up",
+      "parallelism": "only_after_named_dependencies_with_disjoint_owned_paths"
+    },
+    "requiredArtifacts": [
+      "exact_candidate_revision",
+      "changed_path_manifest",
+      "nx_validation_receipt",
+      "cache_status",
+      "implementation_summary",
+      "typed_handoff"
+    ]
+  },
+  "featurePacketResolution": {
+    "manifestIsSoleAcceptedFeatureGraph": true,
+    "githubIssuesAreDeliveryIndexesCreatedFromFeatureIds": true,
+    "verifier": "tools/mission-rail/verify-packets.mjs",
+    "mergeOrder": "featurePacketDefaults_then_feature_record",
+    "materialization": {
+      "outcome": "feature.title",
+      "exactBase": "resolved terminal integration receipt candidateTree",
+      "factory.milestone": "feature.milestone",
+      "packetDigestBinding": [
+        "materialized packet canonical digest",
+        "manifest canonical digest",
+        "integration receipt canonical digest"
+      ]
+    },
+    "rejectUnknownOrMissingFields": true
+  },
+  "qualityTargets": {
+    "project": "mission-rail-quality",
+    "revisionResolution": "resolve-revisions uses the GO-bound genesis receipt for MR-000 and the terminal accepted integration receipt thereafter; it verifies receipt base and current Git HEAD as full object IDs and their lineage, then writes a locally ignored content-addressed revisions/<receipt-digest>/<head-digest>.json consumed by later targets",
+    "revisionResolutionCache": false,
+    "staleInputRule": "every consumer verifies receipt digest base head and current repository tuple before work; mismatch rejects the input",
+    "commands": [
+      "npm exec nx run mission-rail-quality:resolve-revisions",
+      "npm exec nx run mission-rail-quality:verify-packets",
+      "npm exec nx run mission-rail-quality:affected",
+      "npm exec nx run mission-rail-quality:cache-proof",
+      "npm exec nx run mission-rail-quality:package-surface",
+      "npm exec nx run mission-rail-quality:sonar",
+      "npm exec nx run mission-rail-quality:sonar-gate",
+      "npm exec nx run mission-rail-quality:proving-flight"
+    ]
+  },
+  "milestoneValidation": {
+    "foundation": [
+      "npm exec nx run mission-rail-quality:resolve-revisions",
+      "npm exec nx run mission-rail-quality:verify-packets",
+      "npm exec nx run @shield/mission-rail:property-test",
+      "npm exec nx run @shield/mission-rail:mutation-test",
+      "npm exec nx run mission-rail-quality:affected",
+      "npm exec nx run mission-rail-quality:cache-proof",
+      "npm exec nx run mission-rail-quality:sonar-gate"
+    ],
+    "lifecycle": [
+      "npm exec nx run mission-rail-quality:resolve-revisions",
+      "npm exec nx run @shield/mission-store:property-test",
+      "npm exec nx run @shield/mission-store:mutation-test",
+      "npm exec nx run mission-rail-quality:affected",
+      "npm exec nx run mission-rail-quality:cache-proof",
+      "npm exec nx run mission-rail-quality:package-surface",
+      "npm exec nx run mission-rail-quality:sonar-gate"
+    ],
+    "vertical-flight": [
+      "npm exec nx run mission-rail-quality:resolve-revisions",
+      "npm exec nx run mission-rail-quality:affected",
+      "npm exec nx run mission-rail-quality:cache-proof",
+      "npm exec nx run mission-rail-quality:package-surface",
+      "npm exec nx run mission-rail-quality:sonar-gate",
+      "npm exec nx run mission-rail-quality:proving-flight"
+    ]
+  },
+  "packages": [
+    {
+      "name": "@shield/canonical-contract",
+      "runtimeDependencies": [],
+      "sideEffects": "none"
+    },
+    {
+      "name": "@shield/mission-rail",
+      "runtimeDependencies": ["@shield/canonical-contract"],
+      "sideEffects": "none"
+    },
+    {
+      "name": "@shield/guided-review",
+      "runtimeDependencies": [
+        "@shield/canonical-contract",
+        "@shield/mission-rail"
+      ],
+      "sideEffects": "none"
+    },
+    {
+      "name": "@shield/lane-lifecycle",
+      "runtimeDependencies": ["@shield/canonical-contract"],
+      "sideEffects": "none"
+    },
+    {
+      "name": "@shield/mission-store",
+      "runtimeDependencies": [
+        "@shield/canonical-contract",
+        "@shield/mission-rail"
+      ],
+      "sideEffects": "none"
+    },
+    {
+      "name": "@shield/mission-projection",
+      "runtimeDependencies": [
+        "@shield/canonical-contract",
+        "@shield/guided-review",
+        "@shield/lane-lifecycle",
+        "@shield/mission-rail",
+        "@shield/mission-store"
+      ],
+      "sideEffects": "none"
+    },
+    {
+      "name": "@shield/mission-host",
+      "runtimeDependencies": [
+        "@shield/canonical-contract",
+        "@shield/lane-lifecycle",
+        "@shield/mission-rail",
+        "@shield/mission-store"
+      ],
+      "sideEffects": "git_filesystem_jsonl_github_process_signer_agent_host"
+    },
+    {
+      "name": "@shield/team-system",
+      "newRailRuntimeDependencies": [
+        "@shield/mission-host",
+        "@shield/mission-projection"
+      ],
+      "retainedLegacyRuntimeDependencies": ["@shield/mission-preparation"],
+      "sideEffects": "cli_and_legacy_compatibility"
+    }
+  ],
+  "milestones": [
+    {
+      "id": "foundation",
+      "featureIds": ["MR-000", "MR-010", "MR-020", "MR-025"],
+      "validators": ["mack", "fury"]
+    },
+    {
+      "id": "lifecycle",
+      "featureIds": ["MR-030", "MR-035", "MR-040", "MR-050"],
+      "validators": ["mack", "fury"]
+    },
+    {
+      "id": "vertical-flight",
+      "featureIds": ["MR-060", "MR-070"],
+      "validators": ["mack", "fury"]
+    }
+  ],
+  "features": [
+    {
+      "id": "MR-000",
+      "issueRef": "manifest:mission-rail-v1:MR-000",
+      "title": "Bootstrap Factory Track-Layer construction and quality gates",
+      "milestone": "foundation",
+      "dependsOn": [],
+      "ownedPaths": [
+        ".factory/**",
+        "docs/architecture/mission-rail-legacy-disposition.json",
+        "tools/mission-rail/**"
+      ],
+      "integrationPaths": [
+        ".github/workflows/**",
+        "eslint.config.*",
+        "nx.json",
+        "package-lock.json",
+        "package.json",
+        "sonar-project.properties",
+        "tsconfig*.json"
+      ],
+      "legacySources": [
+        "AGENTS.md",
+        ".codex/agents/**",
+        ".github/agents/**",
+        "fc36144f0ed44e2fa9ca1b90f56e82f54e58eee1:Issue-324 extraction-generator candidate",
+        "issues:99,255,278,315,316,416,419"
+      ],
+      "requiredBehavior": [
+        "Factory project Droids preserve canonical seat responsibilities",
+        "Every new package receives build test typecheck lint and SonarQube analysis",
+        "Quality tooling covers typed lint architecture boundaries dead code property invariants and package surfaces without overlapping ceremony",
+        "Nx dependency constraints reject forbidden edges and cycles",
+        "Machine manifest and issue packets validate before construction",
+        "Generator bootstrap dry-runs and source-inspects the pinned Issue-324 candidate; if unsuitable it installs a pinned public @nx/js generator and freezes exact noninteractive options",
+        "Named Nx targets implement revision resolution packet verification affected validation cache proof package surfaces Sonar scan and gate and the proving flight"
+      ],
+      "validation": [
+        "npm exec nx show projects --json",
+        "npm exec nx run mission-rail-quality:resolve-revisions",
+        "npm exec nx run mission-rail-quality:verify-packets",
+        "npm exec nx run mission-rail-quality:affected",
+        "npm exec nx run mission-rail-quality:cache-proof",
+        "npm exec nx run mission-rail-quality:package-surface",
+        "npm exec nx run mission-rail-quality:sonar",
+        "npm exec nx run mission-rail-quality:sonar-gate"
+      ],
+      "handoff": {"kind": "feature", "target": "MR-010"}
+    },
+    {
+      "id": "MR-010",
+      "issueRef": "manifest:mission-rail-v1:MR-010",
+      "title": "Extract the dependency-free canonical contract library",
+      "milestone": "foundation",
+      "dependsOn": ["MR-000"],
+      "ownedPaths": ["packages/canonical-contract/**"],
+      "integrationPaths": ["package-lock.json", "package.json"],
+      "legacySources": [
+        "af4c3a76c8c65def029dce2e68c25f556b2790d7:packages/mission-preparation/src/canonical-json-v1.mts",
+        "af4c3a76c8c65def029dce2e68c25f556b2790d7:packages/mission-preparation/tests/package-boundary.test.mjs"
+      ],
+      "requiredBehavior": [
+        "Canonical JSON digest content ID and closed-result primitives are deterministic",
+        "No runtime dependencies or host concepts",
+        "Existing mission-preparation package remains unchanged"
+      ],
+      "validation": [
+        "npm exec nx run @shield/canonical-contract:lint",
+        "npm exec nx run @shield/canonical-contract:typecheck",
+        "npm exec nx run @shield/canonical-contract:test",
+        "npm exec nx run @shield/canonical-contract:build"
+      ],
+      "handoff": {"kind": "feature", "target": "MR-020"}
+    },
+    {
+      "id": "MR-020",
+      "issueRef": "manifest:mission-rail-v1:MR-020",
+      "title": "Build the pure mission rail state machine",
+      "milestone": "foundation",
+      "dependsOn": ["MR-010"],
+      "ownedPaths": ["packages/mission-rail/**"],
+      "integrationPaths": ["package-lock.json", "package.json"],
+      "legacySources": [
+        "af4c3a76c8c65def029dce2e68c25f556b2790d7:packages/mission-preparation/src/preparation-compiler-v1.mts",
+        "issues:251,268,368,372,374,375,383,400"
+      ],
+      "requiredBehavior": [
+        "Closed mission phases include mandatory exact-plan Fury review before human GO",
+        "Epic Wheels Up binds a feature graph owned-path union milestones effects budget and expiry",
+        "Accepted Track-Layer issues and bounded corrections do not require per-issue PINs",
+        "Code review approval bound to the exact candidate is required before publication",
+        "Guided QA PASS bound to the exact candidate is required before delivered reconciled or complete",
+        "Next returns automatic human_gate external_blocker repair_required or complete",
+        "Intent scope technical evidence and final acceptance have separate lifetimes",
+        "No host imports effects clocks environment or legacy schema dependency"
+      ],
+      "validation": [
+        "npm exec nx run @shield/mission-rail:lint",
+        "npm exec nx run @shield/mission-rail:typecheck",
+        "npm exec nx run @shield/mission-rail:test",
+        "npm exec nx run @shield/mission-rail:property-test",
+        "npm exec nx run @shield/mission-rail:mutation-test",
+        "npm exec nx run @shield/mission-rail:build"
+      ],
+      "handoff": {"kind": "feature", "target": "MR-025"}
+    },
+    {
+      "id": "MR-025",
+      "issueRef": "manifest:mission-rail-v1:MR-025",
+      "title": "Build the lightweight Guided Review engine",
+      "milestone": "foundation",
+      "dependsOn": ["MR-020"],
+      "ownedPaths": ["packages/guided-review/**"],
+      "integrationPaths": ["package-lock.json", "package.json"],
+      "legacySources": ["issues:238,304,305,344,377,378,379,380"],
+      "requiredBehavior": [
+        "One closed contract supports plan code and qa review kinds",
+        "Plans exact diffs and QA scenarios project into ordered acceptance-criterion-aligned sections",
+        "Plan and code decisions are accept question or revise with deterministic revise incomplete approved precedence",
+        "QA scenario acceptance is separate from pass fail or blocked execution outcome",
+        "Human decisions preserve concise comments and evidence references",
+        "Plan and code aggregate to approved revision_requested or incomplete",
+        "Mandatory QA aggregates with failed blocked incomplete passed precedence while optional scenarios remain advisory",
+        "Every mandatory QA PASS contains setup action expected observed visible evidence operator identity and exact candidate revision",
+        "Every decision binds exact subject digest and repository revision",
+        "Terminal and static HTML adapters share one versioned JSON contract for all review kinds",
+        "No UI event grants authority or owns canonical mission state"
+      ],
+      "validation": [
+        "npm exec nx run @shield/guided-review:lint",
+        "npm exec nx run @shield/guided-review:typecheck",
+        "npm exec nx run @shield/guided-review:test",
+        "npm exec nx run @shield/guided-review:build"
+      ],
+      "handoff": {"kind": "milestone", "target": "foundation"}
+    },
+    {
+      "id": "MR-030",
+      "issueRef": "manifest:mission-rail-v1:MR-030",
+      "title": "Build closed mission event codecs and replay",
+      "milestone": "lifecycle",
+      "dependsOn": ["MR-020", "MR-025"],
+      "ownedPaths": ["packages/mission-store/**"],
+      "integrationPaths": ["package-lock.json", "package.json"],
+      "legacySources": [
+        "af4c3a76c8c65def029dce2e68c25f556b2790d7:packages/shield-team-system/src/mission-store.mts",
+        "issues:279,319,390,394,398"
+      ],
+      "requiredBehavior": [
+        "Closed event envelope preserves exact seat host runtime model executor and run identity",
+        "Observation envelopes bind canonical digest subject repository tuple event watermark predecessor observation ordinal host time and lineage relation",
+        "Exact ID and digest replay is idempotent while same ID different digest conflicts",
+        "Replay rejects gaps unknown versions stale watermarks non-increasing ordinals diverged or unknown lineage and snapshot terminal mismatch",
+        "Uncertain effects require fresh attempt-bound reconciliation and are never blindly repeated",
+        "Store package performs no I/O"
+      ],
+      "validation": [
+        "npm exec nx run @shield/mission-store:lint",
+        "npm exec nx run @shield/mission-store:typecheck",
+        "npm exec nx run @shield/mission-store:test",
+        "npm exec nx run @shield/mission-store:property-test",
+        "npm exec nx run @shield/mission-store:mutation-test",
+        "npm exec nx run @shield/mission-store:build"
+      ],
+      "handoff": {"kind": "feature", "target": "MR-035"}
+    },
+    {
+      "id": "MR-035",
+      "issueRef": "manifest:mission-rail-v1:MR-035",
+      "title": "Scaffold the mission-host package and frozen adapter ports",
+      "milestone": "lifecycle",
+      "dependsOn": ["MR-030"],
+      "ownedPaths": [
+        "packages/mission-host/package.json",
+        "packages/mission-host/project.json",
+        "packages/mission-host/tsconfig.json",
+        "packages/mission-host/tsconfig.lib.json",
+        "packages/mission-host/tsconfig.spec.json",
+        "packages/mission-host/src/index.mts",
+        "packages/mission-host/src/ports/**",
+        "packages/mission-host/tests/package-boundary.test.mjs"
+      ],
+      "integrationPaths": ["package-lock.json", "package.json"],
+      "legacySources": ["packages/shield-team-system/package.json"],
+      "requiredBehavior": [
+        "Package configuration build targets wildcard subpath exports and host port contracts are frozen before adapters",
+        "Package has no implementation adapter beyond inert typed ports",
+        "Later features add only non-overlapping adapter subpaths"
+      ],
+      "validation": [
+        "npm exec nx run @shield/mission-host:lint",
+        "npm exec nx run @shield/mission-host:typecheck",
+        "npm exec nx run @shield/mission-host:test",
+        "npm exec nx run @shield/mission-host:build"
+      ],
+      "handoff": {"kind": "feature", "target": "MR-040"}
+    },
+    {
+      "id": "MR-040",
+      "issueRef": "manifest:mission-rail-v1:MR-040",
+      "title": "Build persistent lane lifecycle and minimum host adapters",
+      "milestone": "lifecycle",
+      "dependsOn": ["MR-010", "MR-030", "MR-035"],
+      "ownedPaths": [
+        "packages/lane-lifecycle/**",
+        "packages/mission-host/src/lane/**",
+        "packages/mission-host/tests/lane/**"
+      ],
+      "integrationPaths": ["package-lock.json", "package.json"],
+      "legacySources": [
+        "af4c3a76c8c65def029dce2e68c25f556b2790d7:packages/shield-team-system/src/worktree-state-v1.mts",
+        "issues:355,367,385,387,402,416"
+      ],
+      "requiredBehavior": [
+        "Alpha Bravo Charlie paths survive clean branch reassignment",
+        "Reconcile requires published merged or archived disposition before ready",
+        "Retire removes only clean merged or explicitly archived ephemeral worktrees",
+        "Dirty unique active wrong-repository or ambiguous lanes fail without mutation"
+      ],
+      "validation": [
+        "npm exec nx run @shield/lane-lifecycle:lint",
+        "npm exec nx run @shield/lane-lifecycle:typecheck",
+        "npm exec nx run @shield/lane-lifecycle:test",
+        "npm exec nx run @shield/lane-lifecycle:build",
+        "npm exec nx run @shield/mission-host:test -- --test-name-pattern=lane"
+      ],
+      "handoff": {"kind": "feature", "target": "MR-050"}
+    },
+    {
+      "id": "MR-050",
+      "issueRef": "manifest:mission-rail-v1:MR-050",
+      "title": "Build the Mission Control read projection",
+      "milestone": "lifecycle",
+      "dependsOn": ["MR-025", "MR-030", "MR-040"],
+      "ownedPaths": ["packages/mission-projection/**"],
+      "integrationPaths": ["package-lock.json", "package.json"],
+      "legacySources": ["issues:238,304,305,377,378,379,380,397"],
+      "requiredBehavior": [
+        "Projection exposes phase lane revision seat run blocker gate validation publication and one next action",
+        "Projection is read-only and cannot own authority journals dispatch or effects",
+        "Mission projection consumes Guided Review aggregate facts and is the read model for Mission Control and CLI",
+        "Guided Review renders only its own review contract and never imports mission projection"
+      ],
+      "validation": [
+        "npm exec nx run @shield/mission-projection:lint",
+        "npm exec nx run @shield/mission-projection:typecheck",
+        "npm exec nx run @shield/mission-projection:test",
+        "npm exec nx run @shield/mission-projection:build"
+      ],
+      "handoff": {"kind": "milestone", "target": "lifecycle"}
+    },
+    {
+      "id": "MR-060",
+      "issueRef": "manifest:mission-rail-v1:MR-060",
+      "title": "Compose host effects and the thin Shield CLI",
+      "milestone": "vertical-flight",
+      "dependsOn": ["MR-040", "MR-050"],
+      "ownedPaths": [
+        "packages/mission-host/src/dispatch/**",
+        "packages/mission-host/src/filesystem/**",
+        "packages/mission-host/src/git/**",
+        "packages/mission-host/src/github/**",
+        "packages/mission-host/src/process/**",
+        "packages/mission-host/src/signer/**",
+        "packages/mission-host/tests/dispatch/**",
+        "packages/mission-host/tests/filesystem/**",
+        "packages/mission-host/tests/git/**",
+        "packages/mission-host/tests/github/**",
+        "packages/mission-host/tests/process/**",
+        "packages/mission-host/tests/signer/**",
+        "packages/shield-team-system/src/mission-rail-adapter/**",
+        "packages/shield-team-system/tests/mission-rail-adapter/**",
+        "packages/shield-team-system/src/cli.mts",
+        "packages/shield-team-system/src/mission-cli.mts",
+        "packages/shield-team-system/package.json",
+        "packages/shield-team-system/tests/cli.test.mjs",
+        "packages/shield-team-system/tests/package-surface.test.mjs",
+        "packages/shield-team-system/tests/supervised-cli.test.mjs"
+      ],
+      "integrationPaths": ["package-lock.json", "package.json"],
+      "legacySources": [
+        "issues:286,309,311,319,362,364,370,384,392,407"
+      ],
+      "requiredBehavior": [
+        "All machine packets are derived from durable state and fresh observations",
+        "External effects use deterministic claim and terminal-result identities",
+        "CLI exposes begin next status lane reconcile and lane retire with human-readable projections",
+        "Legacy commands remain unchanged until separately migrated"
+      ],
+      "validation": [
+        "npm exec nx run @shield/mission-host:lint",
+        "npm exec nx run @shield/mission-host:typecheck",
+        "npm exec nx run @shield/mission-host:test",
+        "npm exec nx run @shield/mission-host:build",
+        "npm exec nx run @shield/team-system:test -- --test-name-pattern=mission-rail"
+      ],
+      "handoff": {"kind": "feature", "target": "MR-070"}
+    },
+    {
+      "id": "MR-070",
+      "issueRef": "manifest:mission-rail-v1:MR-070",
+      "title": "Prove one complete Mission Rail V1 issue flight",
+      "milestone": "vertical-flight",
+      "dependsOn": ["MR-060"],
+      "ownedPaths": [
+        "docs/proofs/mission-rail-v1/**",
+        "fixtures/mission-rail-v1/**"
+      ],
+      "integrationPaths": [],
+      "legacySources": ["issues:251,307,375,420"],
+      "requiredBehavior": [
+        "Cold Hill begins one curated issue without composing JSON",
+        "One exact-plan human GO reaches implementation validation conformance and draft PR",
+        "The flight uses Guided Plan Review Guided Code Review and Guided QA against its own exact artifacts",
+        "Guided QA launches the exact candidate and retains visible expected-versus-observed proof",
+        "A checklist mocked unit test or prose claim alone cannot produce a QA PASS",
+        "No unique commits remain only in the delivery lane",
+        "Stable lane returns to ready and can accept a successor mission",
+        "Mission Control projection reports every phase without owning state"
+      ],
+      "validation": [
+        "npm exec nx run mission-rail-quality:resolve-revisions",
+        "npm exec nx run mission-rail-quality:affected",
+        "npm exec nx run mission-rail-quality:cache-proof",
+        "npm exec nx run mission-rail-quality:package-surface",
+        "npm exec nx run mission-rail-quality:sonar-gate",
+        "npm exec nx run mission-rail-quality:proving-flight"
+      ],
+      "handoff": {"kind": "terminal_review", "target": "mack_then_fury_then_human_pr_review"}
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "schemaId": "shield.mission-rail-legacy-disposition.v1",
+  "schemaVersion": 1,
+  "programId": "mission-rail-v1",
+  "auditedAt": "2026-08-28",
+  "repositoryId": "RanSolo/shield-workspace",
+  "dispositions": [
+    {
+      "kind": "keep",
+      "issueNumbers": [251, 268, 279, 319, 375, 383, 387, 390, 398, 400, 417, 420],
+      "reason": "Required happy-path invariants: deterministic progression, meaningful human authority, effect idempotency, stable lanes, exact dispatch identity, bounded parallelism, and proving-flight readiness."
+    },
+    {
+      "kind": "simplify",
+      "issueNumbers": [238, 255, 286, 311, 317, 370, 384, 397, 418, 419],
+      "reason": "Retain operator review, Nx validation, concise gates, credential/tool discovery, safe reads, read-only Mission Control, observational lane status, and field promotion while removing redundant gates and host-specific overconstraint."
+    },
+    {
+      "kind": "replace",
+      "issueNumbers": [16, 17, 18, 19, 344, 381, 382],
+      "reason": "Replace broad or overlapping workflow/UI concepts with the mission projection boundary, the Guided Review stack, and semantic issue identity from Issue 400."
+    },
+    {
+      "kind": "defer",
+      "issueNumbers": [76, 189, 209, 212, 213, 214, 331, 332, 333, 334, 335, 336, 380, 408, 413],
+      "reason": "Useful extensions after the first vertical flight: starter profiles, database choice, external-host effects, Guided QA suite, optional Guided Review integration, and advanced break-glass recovery."
+    },
+    {
+      "kind": "drop_from_v1",
+      "issueNumbers": [14, 15, 29, 61, 169, 229, 261, 307, 354],
+      "reason": "Explicitly stale, superseded, host-trial-specific, or unrelated to the minimal clean rail. They remain historical evidence and are not silently closed by this program."
+    },
+    {
+      "kind": "requirement_source",
+      "issueNumbers": [
+        99, 145, 146, 147, 148, 150, 151, 152, 153, 167, 224, 230, 240,
+        247, 248, 249, 266, 269, 271, 274, 278, 304, 305, 309, 312, 315,
+        316, 323, 324, 338, 339, 355, 362, 364, 367, 368, 372, 374, 377,
+        378, 379, 385, 386, 388, 392, 394, 396, 401, 402, 404, 406, 407,
+        411, 416
+      ],
+      "reason": "Source evidence for seat contracts, architecture boundaries, operator UX, worktree lifecycle, publication recovery, validation, guided review, and Track-Layer construction. These issues do not automatically become implementation features."
+    }
+  ],
+  "retainedInvariants": [
+    "Exact repository artifact and actor identity",
+    "Explicit scope-bound human authority for meaningful decisions",
+    "Content-addressed evidence and deterministic idempotency keys",
+    "Independent Mack validation and Fury conformance evidence",
+    "Fail-before-effect behavior for stale malformed conflicting or ambiguous facts",
+    "Immutable predecessor evidence with fresh narrowed correction successors"
+  ],
+  "rejectedPatterns": [
+    "Construction repair requiring the defective delivery rail",
+    "Manual authority or transition JSON",
+    "Temporary paths or chat output as durable mission state",
+    "Host version probes treated as authority",
+    "Every warning promoted to a blocking gate",
+    "Component completion without publication merge or explicit archive",
+    "Focused PASS used to conceal contradictory full or fixture evidence"
+  ],
+  "adoptionWarning": "A merged component is not an adopted capability until the canonical toolhost and eligible stable lanes consume it and one complete proving flight exercises it."
+}
