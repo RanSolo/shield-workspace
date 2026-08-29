@@ -169,12 +169,12 @@ function renderDecision(container: HTMLElement, view: ReviewView): void {
 
 function revisionNote(view: ReviewView, hint: string): HTMLElement {
   const wrapper = element("div", "revision-note");
-  const changeLabel = element("label", "field-label", "Requested change");
+  const changeLabel = element("label", "field-label", "Requested change to the document");
   changeLabel.htmlFor = "requested-change";
   const requestedChange = document.createElement("textarea");
   requestedChange.id = "requested-change";
   requestedChange.rows = 4;
-  requestedChange.placeholder = "Capture a question, correction, missing detail, or exact change while it is fresh.";
+  requestedChange.placeholder = "Describe what the document should say or become. Leave blank when the design is right.";
   requestedChange.value = view.session.answers[view.checkpoint.checkpointId].requestedChange ?? "";
   wrapper.append(changeLabel, requestedChange, element("p", "hint", hint));
   return wrapper;
