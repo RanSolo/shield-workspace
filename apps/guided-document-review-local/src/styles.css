@@ -90,6 +90,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .completion-title { font: 800 clamp(2.4rem, 5vw, 5rem)/1 Georgia, serif; }
 .completion-copy { max-width: 60ch; margin: 0 auto 28px; color: var(--muted); }
 .completion-list { width: min(600px, 100%); margin: 20px auto; text-align: left; }
+.completion-change { margin: 6px 0 14px; color: #ffba9f; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 
 @media (max-width: 980px) {

@@ -38,13 +38,39 @@ test("a complete explain-back journey produces educational evidence", async () =
     fixedClock,
   ));
   session = success(recordConfidence(session, expected(session, "purpose", "five"), 5, fixedClock));
-  session = success(recordDecision(session, set, expected(session, "purpose", "six"), "understand", fixedClock));
+  session = success(recordDecision(session, set, expected(session, "purpose", "six"), { decision: "understand" }, fixedClock));
 
   const artifact = await createReviewArtifact(source, set, session);
   assert.equal(session.phase, "complete");
   assert.equal(artifact.authority, "none");
   assert.equal(artifact.effect, "educational_review_only");
   assert.deepEqual(artifact.summary, { understand: 1, question: 0, revise: 0, approve: 0 });
+});
+
+test("Needs revision requires an actionable change request", async () => {
+  const source = await createSourceDocument("Rail", "# Purpose\nBuild a clear path.");
+  const set = await createCheckpointSet("Rail review", checkpoints);
+  let session = await startReviewSession(source, set, { kind: "unattributed", name: null }, fixedClock);
+
+  session = success(advancePhase(session, expected(session, "purpose", "one"), fixedClock));
+  session = success(advancePhase(session, expected(session, "purpose", "two"), fixedClock));
+  session = success(advancePhase(session, expected(session, "purpose", "three"), fixedClock));
+  session = success(recordExplanation(session, expected(session, "purpose", "four"), "This explanation is long enough to continue.", fixedClock));
+  session = success(recordConfidence(session, expected(session, "purpose", "five"), 3, fixedClock));
+
+  const missing = recordDecision(session, set, expected(session, "purpose", "six"), { decision: "revise" }, fixedClock);
+  assert.deepEqual(missing, {
+    ok: false,
+    code: "change_request_required",
+    message: "Describe the requested change before choosing Needs revision.",
+  });
+  assert.equal(session.revision, 5);
+
+  session = success(recordDecision(session, set, expected(session, "purpose", "seven"), {
+    decision: "revise",
+    requestedChange: "Define what a clear path means and add one concrete example.",
+  }, fixedClock));
+  assert.equal(session.answers.purpose.requestedChange, "Define what a clear path means and add one concrete example.");
 });
 
 test("stale, replayed, and out-of-order actions do not mutate a session", async () => {

@@ -115,7 +115,10 @@ async function handleClick(event: MouseEvent): Promise<void> {
     result = recordConfidence(state.session, expected, Number(button.dataset.value) as 1 | 2 | 3 | 4 | 5, clock);
   }
   if (action === "decision") {
-    result = recordDecision(state.session, state.checkpointSet, expected, button.dataset.value as ReviewDecision, clock);
+    result = recordDecision(state.session, state.checkpointSet, expected, {
+      decision: button.dataset.value as ReviewDecision,
+      requestedChange: valueOf("requested-change"),
+    }, clock);
   }
   if (!result) return;
   if (!result.ok) {

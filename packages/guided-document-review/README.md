@@ -20,6 +20,8 @@ orient → teach → ask → explain back → confidence → decide
 
 Every transition names the expected checkpoint, phase, revision, and event ID. A stale, out-of-order, or replayed action returns an error and leaves the original session unchanged.
 
+Choosing `revise` requires an actionable, source-bound change request. The request remains attached to that checkpoint in the exported review artifact.
+
 The final artifact always says:
 
 ```json

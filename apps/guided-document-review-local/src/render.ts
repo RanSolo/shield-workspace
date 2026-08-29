@@ -87,7 +87,11 @@ export function renderCompletion(container: HTMLElement, session: ReviewSession)
   );
   const list = element("ul", "completion-list");
   Object.values(session.answers).forEach((answer) => {
-    list.append(element("li", "", `${answer.checkpointId}: ${labelDecision(answer.decision ?? "question")}`));
+    const item = element("li", "", `${answer.checkpointId}: ${labelDecision(answer.decision ?? "question")}`);
+    if (answer.requestedChange) {
+      item.append(element("p", "completion-change", `Requested change: ${answer.requestedChange}`));
+    }
+    list.append(item);
   });
   container.append(list);
 }
@@ -139,6 +143,14 @@ function renderConfidence(container: HTMLElement, view: ReviewView): void {
 
 function renderDecision(container: HTMLElement, view: ReviewView): void {
   container.append(element("p", "prompt", "What is your disposition on this checkpoint?"));
+  const changeLabel = element("label", "field-label", "Requested change");
+  changeLabel.htmlFor = "requested-change";
+  const requestedChange = document.createElement("textarea");
+  requestedChange.id = "requested-change";
+  requestedChange.rows = 4;
+  requestedChange.placeholder = "Required for Needs revision: describe exactly what should change and why.";
+  requestedChange.value = view.session.answers[view.checkpoint.checkpointId].requestedChange ?? "";
+  container.append(changeLabel, requestedChange);
   const group = element("div", "decision-grid");
   const decisions: readonly [ReviewDecision, string][] = [
     ["understand", "I understand"],

@@ -13,7 +13,13 @@ export interface CheckpointAnswer {
   readonly explanation: string | null;
   readonly confidence: 1 | 2 | 3 | 4 | 5 | null;
   readonly decision: ReviewDecision | null;
+  readonly requestedChange: string | null;
   readonly decidedAt: string | null;
+}
+
+export interface ReviewDispositionInput {
+  readonly decision: ReviewDecision;
+  readonly requestedChange?: string;
 }
 
 export interface ReviewEvent {
@@ -73,6 +79,7 @@ export async function startReviewSession(
     explanation: null,
     confidence: null,
     decision: null,
+    requestedChange: null,
     decidedAt: null,
   }]));
   return {
@@ -138,17 +145,25 @@ export function recordDecision(
   session: ReviewSession,
   checkpointSet: CheckpointSet,
   expected: ExpectedTransition,
-  decision: ReviewDecision,
+  input: ReviewDispositionInput,
   clock: Clock,
 ): SessionResult {
   const check = checkTransition(session, expected, "decide");
   if (check) return check;
+  const requestedChange = input.requestedChange?.trim() ?? "";
+  if (input.decision === "revise" && requestedChange.length < 10) {
+    return invalid("change_request_required", "Describe the requested change before choosing Needs revision.");
+  }
   const decidedAt = validTime(clock());
   const finalCheckpoint = session.currentCheckpointIndex === checkpointSet.checkpoints.length - 1;
   return changed(session, expected, {
     phase: finalCheckpoint ? "complete" : "orient",
     currentCheckpointIndex: finalCheckpoint ? session.currentCheckpointIndex : session.currentCheckpointIndex + 1,
-    answers: updateAnswer(session, expected.checkpointId, { decision, decidedAt }),
+    answers: updateAnswer(session, expected.checkpointId, {
+      decision: input.decision,
+      requestedChange: input.decision === "revise" ? requestedChange : null,
+      decidedAt,
+    }),
   }, () => decidedAt);
 }
 
