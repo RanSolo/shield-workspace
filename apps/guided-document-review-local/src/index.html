@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Document Trail</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="brand-kicker">SHIELD LEARNING TRAIL</p>
+          <h1>Document Trail</h1>
+        </div>
+        <p class="topbar__promise">Read it. Explain it. Own it.</p>
+      </header>
+
+      <main id="setup-panel" class="setup">
+        <section class="hero">
+          <p class="eyebrow">Choose your trail</p>
+          <h2>Keep up with the fast, smart fuckers.</h2>
+          <p>Turn a long document into a guided learning journey. The finish line is not a checkbox—it is your explanation in your own words.</p>
+          <button id="start-sample" class="button button--primary" type="button">Review Mission Rail V1</button>
+        </section>
+
+        <section class="custom-review">
+          <h2>Load another document</h2>
+          <div class="field-grid">
+            <label>Reviewer name <input id="reviewer-name" placeholder="Optional" autocomplete="name" /></label>
+            <label>Document title <input id="document-title" placeholder="Architecture proposal" /></label>
+          </div>
+          <label>Document file <input id="document-file" type="file" accept=".md,.txt,text/plain,text/markdown" /></label>
+          <label>Or paste the document <textarea id="document-text" rows="10" placeholder="# Purpose&#10;Paste Markdown or text here..."></textarea></label>
+          <details>
+            <summary>Optional agent-authored checkpoints</summary>
+            <p class="hint">Load a JSON array using the documented checkpoint shape. Leave blank to generate checkpoints from headings.</p>
+            <input id="checkpoint-file" type="file" accept=".json,application/json" />
+            <textarea id="checkpoint-json" rows="7" placeholder='[{"checkpointId":"purpose", ...}]'></textarea>
+          </details>
+          <p id="setup-message" class="message message--warning" aria-live="polite"></p>
+          <button id="start-custom" class="button button--secondary" type="button">Build my trail</button>
+        </section>
+      </main>
+
+      <main id="review-panel" class="review-layout" hidden>
+        <aside class="trail-sidebar">
+          <div id="stats" class="stats"></div>
+          <ol id="journey" class="journey"></ol>
+        </aside>
+        <section id="checkpoint-panel" class="checkpoint-panel"></section>
+        <aside id="source-panel" class="source-panel"></aside>
+        <section id="completion-panel" class="completion-panel" hidden></section>
+      </main>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

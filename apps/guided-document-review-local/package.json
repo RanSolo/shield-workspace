@@ -1,0 +1,35 @@
+{
+  "name": "@shield/guided-document-review-local",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "serve": "npm run build && node scripts/server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "nx": {
+    "tags": [
+      "scope:guided-review",
+      "type:app"
+    ],
+    "targets": {
+      "build": {
+        "dependsOn": [
+          "^build"
+        ],
+        "outputs": [
+          "{projectRoot}/dist"
+        ]
+      }
+    }
+  },
+  "devDependencies": {
+    "esbuild": "0.25.9",
+    "typescript": "5.4.5"
+  },
+  "dependencies": {
+    "@shield/guided-document-review": "0.1.0"
+  }
+}
