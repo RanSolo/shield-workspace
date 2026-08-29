@@ -36,3 +36,7 @@ Code map:
 ```
 
 The engine validates this as a closed shape. Unknown fields, duplicate IDs, empty values, stale transitions, and replayed event IDs are rejected without changing the session.
+
+## Mission Rail architecture review
+
+The curated study kit is `review-kits/mission-rail-v1-checkpoints.json`. Pair it with the exact architecture document at `docs/architecture/mission-rail-v1.md` from the `agent/mission-rail-architecture` branch.
