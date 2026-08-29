@@ -114,8 +114,8 @@ function renderOrient(container: HTMLElement, view: ReviewView): void {
 
 function renderTeach(container: HTMLElement, view: ReviewView): void {
   container.append(
-    card("Trail guide", view.checkpoint.teaching),
-    actionButton("Show me what to look for", "advance", "primary"),
+    guidedReveals([{ question: view.checkpoint.question, answer: view.checkpoint.teaching }]),
+    actionButton("Continue to explain it in your own words", "advance", "primary", "reveal-continue"),
   );
 }
 
@@ -150,7 +150,7 @@ function renderConfidence(container: HTMLElement, view: ReviewView): void {
 }
 
 function renderDecision(container: HTMLElement, view: ReviewView): void {
-  container.append(element("p", "prompt", "What is your disposition on this checkpoint?"));
+  container.append(element("p", "prompt", "What should happen with this checkpoint?"));
   container.append(revisionNote(view, "Edit the note if needed. A specific note is required for Needs revision."));
   const group = element("div", "decision-grid");
   const decisions: readonly [ReviewDecision, string][] = [
@@ -180,13 +180,31 @@ function revisionNote(view: ReviewView, hint: string): HTMLElement {
   return wrapper;
 }
 
-function actionButton(label: string, action: string, style: string): HTMLButtonElement {
+function actionButton(label: string, action: string, style: string, extraClass = ""): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = `button button--${style}`;
+  button.className = `button button--${style}${extraClass ? ` ${extraClass}` : ""}`;
   button.dataset.action = action;
   button.textContent = label;
   return button;
+}
+
+function guidedReveals(items: readonly Readonly<{ question: string; answer: string }>[]): HTMLElement {
+  const group = element("section", "guided-reveals");
+  group.append(element("p", "eyebrow", "Explore the checkpoint"));
+  items.forEach(({ question, answer }, index) => {
+    const reveal = document.createElement("details");
+    reveal.className = "guided-reveal";
+    const prompt = document.createElement("summary");
+    prompt.append(
+      element("span", "guided-reveal__number", String(index + 1)),
+      element("span", "guided-reveal__question", question),
+      element("span", "guided-reveal__hint", "Click to reveal"),
+    );
+    reveal.append(prompt, element("p", "guided-reveal__answer", answer));
+    group.append(reveal);
+  });
+  return group;
 }
 
 function speechActions(label: string, action: string): HTMLElement {

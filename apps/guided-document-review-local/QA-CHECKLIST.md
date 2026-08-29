@@ -17,6 +17,7 @@
 - [ ] Verify the complete source excerpt can be copied with one visible action.
 - [ ] Verify compact Copy/Read/Stop controls remain visible at the top while source content scrolls.
 - [ ] Verify the desktop review shell stays within the viewport and each long panel scrolls internally.
+- [ ] Hovering a checkpoint question highlights its source excerpt; clicking reveals the answer before explain-back.
 - [ ] In curated review, show two or three source-grounded questions one at a time.
 - [ ] Give each question a bright source marker and highlight the exact passage that supports it.
 - [ ] After an answer is submitted, advance to the next question and move the source highlight with it.

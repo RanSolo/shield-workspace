@@ -97,6 +97,48 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .checkpoint-count { color: var(--muted); }
 .learning-card { margin: 28px 0; padding: 22px; border-left: 4px solid var(--orange); background: var(--panel-raised); border-radius: 0 12px 12px 0; }
 .learning-card__copy, .prompt { font-size: 1.12rem; }
+.guided-reveals { margin: 26px 0; }
+.guided-reveal {
+  margin: 12px 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #43555b;
+  border-radius: 12px;
+  background: var(--panel-raised);
+}
+.guided-reveal summary {
+  display: grid;
+  grid-template-columns: 34px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  color: var(--ink);
+}
+.guided-reveal summary::-webkit-details-marker { display: none; }
+.guided-reveal__number {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--gold);
+  color: #07100e;
+  font-weight: 900;
+}
+.guided-reveal__question { font-size: 1.02rem; }
+.guided-reveal__hint { color: var(--teal); font-size: .74rem; text-transform: uppercase; letter-spacing: .08em; }
+.guided-reveal__answer { margin: 0; padding: 16px 20px 20px 62px; border-top: 1px solid var(--line); color: #dce5e2; }
+.guided-reveal[open] { border-color: var(--gold); }
+.reveal-continue { display: none; }
+.checkpoint-panel:has(.guided-reveal[open]) .reveal-continue { display: inline-block; }
+.review-layout:has(.guided-reveal:hover) .source-markdown,
+.review-layout:has(.guided-reveal[open]) .source-markdown {
+  border-radius: 10px;
+  background: #f1b84b12;
+  box-shadow: 0 0 0 2px #f1b84b66;
+}
+.review-layout:has(.guided-reveal:hover) .source-section,
+.review-layout:has(.guided-reveal[open]) .source-section { padding-inline: 12px; }
 .revision-note { margin: 22px 0; padding-top: 4px; border-top: 1px dashed var(--line); }
 .confidence-grid, .decision-grid, .completion-actions, .speech-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
 .speech-actions { margin-top: 0; }
@@ -161,5 +203,8 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
   .journey { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .trail-stop { padding: 0; }
   .trail-stop::after { display: none; }
+  .guided-reveal summary { grid-template-columns: 34px 1fr; }
+  .guided-reveal__hint { grid-column: 2; }
+  .guided-reveal__answer { padding-left: 20px; }
 }
 @media (prefers-reduced-motion: reduce) { .button { transition: none; } }
