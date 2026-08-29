@@ -155,6 +155,7 @@ function renderLearn(container: HTMLElement, view: ReviewView): void {
 
 function renderExplain(container: HTMLElement, view: ReviewView): void {
   container.append(learningRecap(view.checkpoint));
+  container.append(element("p", "prompt", "How do these ideas work together, and what should someone understand or challenge after reading this checkpoint?"));
   const label = element("label", "field-label", "Explain the checkpoint in your own words");
   label.htmlFor = "explanation";
   const textarea = document.createElement("textarea");

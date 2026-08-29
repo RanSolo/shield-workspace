@@ -21,6 +21,7 @@
 - [ ] On the reveal step, Read checkpoint aloud speaks both the question and its answer.
 - [ ] Prove it to yourself retains the hover/highlight/click-reveal question above the explanation field.
 - [ ] Verify the header wagon advances once per checkpoint and reaches the end when the trail is complete.
+- [ ] Verify the CSS ox team and oversized spinning wagon wheels remain visible across the full progress track.
 - [ ] In curated review, show one source-grounded learning step at a time.
 - [ ] Give each step a bright source marker and highlight its exact passage.
 - [ ] Reveal each step and verify the revealed step remains visible after refresh.

@@ -47,18 +47,25 @@ button { cursor: pointer; }
   inset: -6px 0;
   background: repeating-linear-gradient(90deg, transparent 0 12px, #526168 12px 15px, transparent 15px 25px);
 }
-.trail-progress__wagon {
+.trail-progress__caravan {
   position: absolute;
   left: calc(var(--trail-progress) * 1%);
-  bottom: 15px;
+  bottom: 5px;
+  width: 116px;
+  height: 44px;
+  transform: translateX(calc(var(--trail-progress) * -1%));
+  transition: left 650ms cubic-bezier(.22, .8, .3, 1), transform 650ms cubic-bezier(.22, .8, .3, 1);
+}
+.trail-progress__wagon {
+  position: absolute;
+  left: 0;
+  bottom: 10px;
   width: 62px;
   height: 30px;
   border: 2px solid #ffd275;
   border-radius: 5px 5px 3px 3px;
   background: linear-gradient(#ef6f38 0 65%, #a63e22 65%);
   box-shadow: 0 3px 12px #000a;
-  transform: translateX(calc(var(--trail-progress) * -1%));
-  transition: left 650ms cubic-bezier(.22, .8, .3, 1), transform 650ms cubic-bezier(.22, .8, .3, 1);
 }
 .trail-progress__wagon::before,
 .trail-progress__wagon::after {
@@ -85,7 +92,49 @@ button { cursor: pointer; }
   background: #ffe9a9;
   box-shadow: 20px 0 #ffe9a9;
 }
+.trail-progress__team {
+  position: absolute;
+  right: 0;
+  bottom: 10px;
+  display: flex;
+  gap: 5px;
+  width: 46px;
+}
+.trail-progress__team i {
+  position: relative;
+  display: block;
+  width: 19px;
+  height: 12px;
+  border-radius: 8px 7px 5px 5px;
+  background: #c99b61;
+  box-shadow: inset 0 -3px #855d36;
+  animation: ox-team-bob .8s ease-in-out infinite alternate;
+}
+.trail-progress__team i:nth-child(2) { animation-delay: -.4s; }
+.trail-progress__team i::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: -5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50% 55% 45% 50%;
+  background: #d9ad72;
+  box-shadow: 1px -3px 0 -1px #f1d39a;
+}
+.trail-progress__team i::after {
+  content: "";
+  position: absolute;
+  bottom: -6px;
+  left: 4px;
+  width: 3px;
+  height: 8px;
+  border-radius: 0 0 2px 2px;
+  background: #855d36;
+  box-shadow: 9px 0 #855d36;
+}
 @keyframes wagon-wheel-turn { to { rotate: 1turn; } }
+@keyframes ox-team-bob { to { translate: 0 -2px; } }
 .brand-kicker, .eyebrow { margin: 0 0 8px; color: var(--gold); font-size: .72rem; font-weight: 900; letter-spacing: .16em; text-transform: uppercase; }
 .topbar__promise { margin: 0; color: var(--teal); font-weight: 800; }
 
@@ -169,48 +218,6 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .learning-recap__card { margin: 10px 0; padding: 14px 16px; border: 1px solid var(--line); border-left: 3px solid var(--teal); border-radius: 9px; background: var(--panel-raised); }
 .learning-recap__question { margin: 0 0 6px; color: var(--gold); font-size: 1rem; }
 .learning-recap__answer { margin: 0; color: #dce5e2; font-size: .94rem; }
-.guided-reveals { margin: 26px 0; }
-.guided-reveal {
-  margin: 12px 0;
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid #43555b;
-  border-radius: 12px;
-  background: var(--panel-raised);
-}
-.guided-reveal summary {
-  display: grid;
-  grid-template-columns: 34px 1fr auto;
-  align-items: center;
-  gap: 12px;
-  padding: 16px;
-  color: var(--ink);
-}
-.guided-reveal summary::-webkit-details-marker { display: none; }
-.guided-reveal__number {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: var(--gold);
-  color: #07100e;
-  font-weight: 900;
-}
-.guided-reveal__question { font-size: 1.02rem; }
-.guided-reveal__hint { color: var(--teal); font-size: .74rem; text-transform: uppercase; letter-spacing: .08em; }
-.guided-reveal__answer { margin: 0; padding: 16px 20px 20px 62px; border-top: 1px solid var(--line); color: #dce5e2; }
-.guided-reveal[open] { border-color: var(--gold); }
-.reveal-continue { display: none; }
-.checkpoint-panel:has(.guided-reveal[open]) .reveal-continue { display: inline-block; }
-.review-layout:has(.guided-reveal:hover) .source-markdown,
-.review-layout:has(.guided-reveal[open]) .source-markdown {
-  border-radius: 10px;
-  background: #f1b84b12;
-  box-shadow: 0 0 0 2px #f1b84b66;
-}
-.review-layout:has(.guided-reveal:hover) .source-section,
-.review-layout:has(.guided-reveal[open]) .source-section { padding-inline: 12px; }
 .revision-note { margin: 22px 0; padding-top: 4px; border-top: 1px dashed var(--line); }
 .confidence-grid, .decision-grid, .completion-actions, .speech-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
 .speech-actions { margin-top: 0; }
@@ -289,6 +296,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
   .guided-reveal__answer { padding-left: 20px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .button, .trail-progress__wagon { transition: none; }
+  .button, .trail-progress__caravan { transition: none; }
   .trail-progress__wagon::before, .trail-progress__wagon::after { animation: none; }
+  .trail-progress__team i { animation: none; }
 }
