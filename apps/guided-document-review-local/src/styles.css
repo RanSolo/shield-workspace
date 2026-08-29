@@ -85,6 +85,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .confidence-grid .button { min-width: 50px; }
 
 .source-panel { position: sticky; top: 18px; max-height: calc(100vh - 36px); overflow: auto; }
+.source-panel > .button { margin: 10px 10px 20px 0; }
 .source-title { margin-top: 0; font-family: Georgia, serif; }
 .source-excerpt { white-space: pre-wrap; overflow-wrap: anywhere; color: #d3dcda; font: .9rem/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .completion-panel { grid-column: 2 / 4; text-align: center; padding: clamp(36px, 7vw, 90px); }
