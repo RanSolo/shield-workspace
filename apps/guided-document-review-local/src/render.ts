@@ -64,13 +64,18 @@ export function renderSource(
   excerpt: string,
   speechSupported: boolean,
 ): void {
+  const actions = element("div", "source-actions");
+  actions.append(actionButton("Copy", "copy-source", "secondary"));
+  if (speechSupported) {
+    actions.append(actionButton("▶ Read", "read-source", "secondary"));
+    actions.append(actionButton("■ Stop", "stop-reading", "quiet"));
+  }
   container.replaceChildren(
     element("p", "eyebrow", "Source document"),
     element("h2", "source-title", source.title),
+    actions,
     renderMarkdownSections(excerpt),
   );
-  container.append(actionButton("Copy source excerpt", "copy-source", "secondary"));
-  if (speechSupported) container.append(speechActions("Read excerpt aloud", "read-source"));
 }
 
 export function renderStats(container: HTMLElement, session: ReviewSession, total: number): void {
