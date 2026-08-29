@@ -84,7 +84,14 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .speech-actions { margin-top: 0; }
 .confidence-grid .button { min-width: 50px; }
 
-.source-panel { position: sticky; top: 18px; max-height: calc(100vh - 36px); overflow: auto; }
+.source-panel {
+  position: sticky;
+  top: 18px;
+  max-height: calc(100dvh - 36px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .source-panel > .button { margin: 10px 10px 20px 0; }
 .source-title { margin-top: 0; font-family: Georgia, serif; }
 .source-excerpt { white-space: pre-wrap; overflow-wrap: anywhere; color: #d3dcda; font: .9rem/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -100,7 +107,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
   .setup { grid-template-columns: 1fr; }
   .hero { min-height: 420px; }
   .review-layout { grid-template-columns: 220px 1fr; }
-  .source-panel { position: static; grid-column: 2; max-height: none; }
+  .source-panel { position: static; grid-column: 2; }
   .completion-panel { grid-column: 2; }
 }
 @media (max-width: 680px) {
