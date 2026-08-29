@@ -27,13 +27,29 @@ export function findSourceExcerpt(document: SourceDocument, searchText: string):
     ? blocks.findIndex((block) => block.toLowerCase().includes(needle))
     : 0;
   const index = matchIndex < 0 ? 0 : matchIndex;
-  const matchedHeading = isHeading(blocks[index]);
-  const previousHeading = index > 0 && isHeading(blocks[index - 1]);
-  const start = previousHeading ? index - 1 : index;
-  const end = matchedHeading ? Math.min(blocks.length, index + 2) : index + 1;
-  return blocks.slice(start, end).join("\n\n").trim();
+  const headingIndex = findOwningHeading(blocks, index);
+  if (headingIndex < 0) return blocks[index].trim();
+
+  const level = headingLevel(blocks[headingIndex]);
+  if (level === null) return blocks[index].trim();
+  let end = headingIndex + 1;
+  while (end < blocks.length) {
+    const candidateLevel = headingLevel(blocks[end]);
+    const startsNextSection = candidateLevel !== null && (level === 1 || candidateLevel <= level);
+    if (startsNextSection) break;
+    end += 1;
+  }
+  return blocks.slice(headingIndex, end).join("\n\n").trim();
 }
 
-function isHeading(block: string): boolean {
-  return /^#{1,6}\s+/u.test(block.trim());
+function findOwningHeading(blocks: readonly string[], matchIndex: number): number {
+  for (let index = matchIndex; index >= 0; index -= 1) {
+    if (headingLevel(blocks[index]) !== null) return index;
+  }
+  return -1;
+}
+
+function headingLevel(block: string): number | null {
+  const match = /^(#{1,6})\s+/u.exec(block.trim());
+  return match ? match[1].length : null;
 }
