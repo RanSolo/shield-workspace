@@ -161,6 +161,14 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .step-count, .source-quote-label { color: var(--teal); font-size: .86rem; font-weight: 800; }
 .learning-card { margin: 28px 0; padding: 22px; border-left: 4px solid var(--orange); background: var(--panel-raised); border-radius: 0 12px 12px 0; }
 .learning-card__copy, .prompt { font-size: 1.12rem; }
+.learning-question { display: block; width: 100%; margin: 8px 0 20px; color: var(--ink); background: var(--panel-raised); border-color: #52656c; border-radius: 12px; text-align: left; }
+.learning-question:hover, .learning-question:focus-visible { border-color: var(--gold); color: var(--ink); }
+.review-layout:has(.learning-question:hover) .source-highlight,
+.review-layout:has(.learning-question:focus-visible) .source-highlight { background: var(--gold); color: #07100e; box-shadow: 0 0 0 4px #f1b84b55; }
+.learning-recap { margin: 20px 0 28px; }
+.learning-recap__card { margin: 10px 0; padding: 14px 16px; border: 1px solid var(--line); border-left: 3px solid var(--teal); border-radius: 9px; background: var(--panel-raised); }
+.learning-recap__question { margin: 0 0 6px; color: var(--gold); font-size: 1rem; }
+.learning-recap__answer { margin: 0; color: #dce5e2; font-size: .94rem; }
 .guided-reveals { margin: 26px 0; }
 .guided-reveal {
   margin: 12px 0;

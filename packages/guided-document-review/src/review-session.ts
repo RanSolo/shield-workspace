@@ -257,6 +257,9 @@ function createReplacement(
   const step = checkpoint.learningSteps.find((candidate) => candidate.stepId === input.stepId);
   if (!step) return { ok: false, code: "step_mismatch", message: "Choose a learning step from this checkpoint." };
   if (!input.replacement.trim()) return { ok: false, code: "replacement_required", message: "Describe the desired replacement text." };
+  if (input.replacement.trim() === step.sourceQuote) {
+    return { ok: false, code: "replacement_unchanged", message: "The desired replacement must differ from the immutable original." };
+  }
   return {
     ok: true,
     value: {

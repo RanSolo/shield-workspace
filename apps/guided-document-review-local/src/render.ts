@@ -136,21 +136,25 @@ function renderOrient(container: HTMLElement, view: ReviewView): void {
 function renderLearn(container: HTMLElement, view: ReviewView): void {
   const answer = view.session.answers[view.checkpoint.checkpointId];
   const revealed = answer.revealedStepIds.includes(view.step.stepId);
+  const question = actionButton(view.step.question, "reveal-step", "quiet");
+  question.classList.add("learning-question");
+  question.setAttribute("aria-expanded", String(revealed));
   container.append(
     element("p", "step-count", `Learning step ${view.session.currentStepIndex + 1} of ${view.checkpoint.learningSteps.length}`),
     card("Purpose", view.step.purpose),
-    card("Question", view.step.question),
+    element("p", "eyebrow", "Question · hover the source passage, then click to reveal"),
+    question,
   );
   if (revealed) {
     container.append(card("Explanation", view.step.explanation), card("Why it matters", view.step.whyItMatters));
     container.append(actionButton("Continue to the next step", "advance", "primary"));
   } else {
-    container.append(actionButton("Reveal this learning step", "reveal-step", "primary"));
+    container.append(element("p", "hint", "Click the question after reading the highlighted source passage."));
   }
 }
 
 function renderExplain(container: HTMLElement, view: ReviewView): void {
-  container.append(card("Final question", view.step.question));
+  container.append(learningRecap(view.checkpoint));
   const label = element("label", "field-label", "Explain the checkpoint in your own words");
   label.htmlFor = "explanation";
   const textarea = document.createElement("textarea");
@@ -160,6 +164,20 @@ function renderExplain(container: HTMLElement, view: ReviewView): void {
   textarea.value = view.session.answers[view.checkpoint.checkpointId].explanation ?? "";
   container.append(label, textarea, actionButton("Lock in my explanation", "save-explanation", "primary"));
   textarea.focus();
+}
+
+function learningRecap(checkpoint: ReviewCheckpoint): HTMLElement {
+  const recap = element("section", "learning-recap");
+  recap.append(element("p", "eyebrow", "Learning recap"));
+  checkpoint.learningSteps.forEach((step, index) => {
+    const item = element("article", "learning-recap__card");
+    item.append(
+      element("h3", "learning-recap__question", `${index + 1}. ${step.question}`),
+      element("p", "learning-recap__answer", `${step.explanation} ${step.whyItMatters}`),
+    );
+    recap.append(item);
+  });
+  return recap;
 }
 
 function renderConfidence(container: HTMLElement): void {

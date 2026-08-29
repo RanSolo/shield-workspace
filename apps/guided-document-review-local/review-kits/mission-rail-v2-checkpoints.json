@@ -4,12 +4,20 @@
     "title": "The problem and the promised outcome",
     "learningSteps": [
       {
-        "stepId": "problem-and-objective-step-1",
+        "stepId": "problem-failure",
         "sourceQuote": "## Problem being solved",
-        "purpose": "Understand the problem and the promised outcome.",
-        "question": "What specific delivery failures is Mission Rail fixing, and what observable outcome would prove the replacement works?",
-        "explanation": "Start by separating the pain we experienced from the product outcome we are committing to deliver.",
-        "whyItMatters": "If the problem and outcome are vague, the new system can reproduce the old complexity with cleaner names."
+        "purpose": "Name the delivery problem before choosing a solution.",
+        "question": "What is failing in the current delivery process?",
+        "explanation": "This section describes a useful system trapped inside delivery and governance mechanics that grew together. The problem is the way work is composed and recovered, not a lack of individual safety checks.",
+        "whyItMatters": "A precise problem keeps the replacement from recreating the same friction."
+      },
+      {
+        "stepId": "problem-composition",
+        "sourceQuote": "The failure is primarily lifecycle composition, not a lack",
+        "purpose": "Separate lifecycle design from isolated safeguards.",
+        "question": "Why would adding another guard fail to fix the main problem?",
+        "explanation": "A guard can catch one mistake, but it cannot make a tangled sequence easy to audit. The rail needs a small path that composes the right steps.",
+        "whyItMatters": "This prevents more ceremony from being mistaken for better governance."
       }
     ]
   },
@@ -18,12 +26,20 @@
     "title": "The rules that constrain every design",
     "learningSteps": [
       {
-        "stepId": "design-principles-step-1",
+        "stepId": "principles-heading",
         "sourceQuote": "## Design principles",
-        "purpose": "Understand the rules that constrain every design.",
-        "question": "Which principles are non-negotiable, and where would you push back if implementation made the rail slower or more complicated?",
-        "explanation": "These principles decide which safety guarantees remain and which forms of ceremony must disappear.",
-        "whyItMatters": "The principles are the test for future design decisions that the architecture cannot predict today."
+        "purpose": "Treat the principles as decision rules for the whole design.",
+        "question": "What should guide a design choice when the architecture is silent?",
+        "explanation": "The principles are the stable rules behind the system: clear next actions, human-readable gates, stable lanes, portability, and small maintainable parts.",
+        "whyItMatters": "Future changes need a shared test even when no existing example answers them."
+      },
+      {
+        "stepId": "principles-threat-model",
+        "sourceQuote": "filesystem namespaces.",
+        "purpose": "Understand the boundary of the safety model.",
+        "question": "Which failures does the rail handle, and which threat is intentionally outside its promise?",
+        "explanation": "The rail handles ordinary drift, stale evidence, bad input, and misuse. It assumes the same trusted user is not actively racing the operating system underneath it.",
+        "whyItMatters": "Clear limits make safety claims testable instead of unlimited."
       }
     ]
   },
@@ -32,12 +48,20 @@
     "title": "Identity and the pure mission rail",
     "learningSteps": [
       {
-        "stepId": "canonical-and-rail-step-1",
+        "stepId": "canonical-contract",
         "sourceQuote": "### `@shield/canonical-contract`",
-        "purpose": "Understand identity and the pure mission rail.",
-        "question": "Why must canonical identity and next-action calculation be separate, pure package responsibilities?",
-        "explanation": "Canonical identity answers what exact thing is being discussed; the pure rail answers the one legal next action without performing effects.",
-        "whyItMatters": "This boundary prevents filesystem, model, or host behavior from changing the meaning of mission state."
+        "purpose": "Understand the package that gives records stable identity.",
+        "question": "What does canonical contract work make stable?",
+        "explanation": "This package turns equivalent data into one canonical form and gives it a deterministic digest. It does not know about Git, seats, or authority.",
+        "whyItMatters": "Stable identity lets every later decision refer to the same exact thing."
+      },
+      {
+        "stepId": "mission-rail",
+        "sourceQuote": "### `@shield/mission-rail`",
+        "purpose": "Understand the pure rail that chooses the next operation.",
+        "question": "Why should next-action calculation be separate from host effects?",
+        "explanation": "The mission rail reads durable state and observations, then returns one legal next operation. A host may perform that operation, but it must not change the rule while doing so.",
+        "whyItMatters": "Pure decisions are easier to test, replay, and move between hosts."
       }
     ]
   },
@@ -46,12 +70,20 @@
     "title": "Guided Review as the human steering surface",
     "learningSteps": [
       {
-        "stepId": "guided-review-step-1",
+        "stepId": "guided-review-contract",
         "sourceQuote": "### `@shield/guided-review`",
-        "purpose": "Understand guided review as the human steering surface.",
-        "question": "At which moments should Guided Review appear, and what information must it provide for you to make a meaningful decision?",
-        "explanation": "Guided Review lets the human understand, challenge, and steer plans, exact code, and QA without reading agent transcripts.",
-        "whyItMatters": "This is how autonomy remains understandable instead of turning the human into either a bottleneck or a spectator."
+        "purpose": "See Guided Review as a small projection over canonical work.",
+        "question": "What should a reviewer see instead of raw agent protocol?",
+        "explanation": "Guided Review turns plan, code, and QA evidence into ordered sections with decisions and proof a person can understand.",
+        "whyItMatters": "The human can steer meaningful decisions without becoming a transcript reader."
+      },
+      {
+        "stepId": "guided-review-loss",
+        "sourceQuote": "no UI event can grant authority by itself.",
+        "purpose": "Separate the review view from durable state.",
+        "question": "Why must closing the review screen not erase the mission?",
+        "explanation": "The screen is only a view. Canonical state lives in the engine and store, so losing the view loses no fact or decision.",
+        "whyItMatters": "A useful review surface must remain safe even when the interface is interrupted."
       }
     ]
   },
@@ -60,12 +92,28 @@
     "title": "Deterministic history and reusable lanes",
     "learningSteps": [
       {
-        "stepId": "store-and-lanes-step-1",
+        "stepId": "mission-store",
         "sourceQuote": "### `@shield/mission-store`",
-        "purpose": "Understand deterministic history and reusable lanes.",
-        "question": "How do deterministic replay and stable Alpha, Bravo, and Charlie lanes prevent completed work from becoming stranded or ambiguous?",
-        "explanation": "The store owns replayable history while lane lifecycle owns assignment, reconciliation, and return-to-ready decisions.",
-        "whyItMatters": "Durable state and reusable workspaces address two of the most expensive failures in the original system."
+        "purpose": "Understand what deterministic history owns.",
+        "question": "What should the store record without deciding?",
+        "explanation": "The store validates, saves, and replays events and observations. It preserves facts; the rail still decides the next action.",
+        "whyItMatters": "Separating memory from policy prevents history code from becoming a hidden workflow engine."
+      },
+      {
+        "stepId": "store-no-database",
+        "sourceQuote": "adopting a database in V1.",
+        "purpose": "Recognize the smallest durable starting point.",
+        "question": "Why can the first version use repository-local event files?",
+        "explanation": "A repository-local JSONL log and canonical snapshots can record the first flight without introducing a database. A later storage system can keep the same contract.",
+        "whyItMatters": "Starting small reduces infrastructure risk while preserving replayable evidence."
+      },
+      {
+        "stepId": "lane-lifecycle",
+        "sourceQuote": "### `@shield/lane-lifecycle`",
+        "purpose": "Understand stable lanes as reusable workspace identities.",
+        "question": "What does lane lifecycle manage that the store does not?",
+        "explanation": "Lane lifecycle assigns stable Alpha, Bravo, and Charlie paths, reconciles completed work, and returns a clean lane to ready.",
+        "whyItMatters": "A successful mission should leave a workspace another mission can use."
       }
     ]
   },
@@ -74,12 +122,20 @@
     "title": "Effects outside, visibility inside",
     "learningSteps": [
       {
-        "stepId": "effects-and-projection-step-1",
+        "stepId": "mission-host",
         "sourceQuote": "### `@shield/mission-host`",
-        "purpose": "Understand effects outside, visibility inside.",
-        "question": "Why should Mission Control display projections rather than calculate or mutate mission state itself?",
-        "explanation": "The host performs Git, filesystem, process, signer, and agent effects; projection turns canonical state into readable status without becoming another workflow engine.",
-        "whyItMatters": "Keeping effects and presentation outside the pure kernel makes the system portable and testable."
+        "purpose": "Locate real-world effects at the host boundary.",
+        "question": "Which work belongs in the host rather than the pure rail?",
+        "explanation": "The host performs Git, filesystem, process, GitHub, dispatch, model, clock, and signing effects. It reports results back to pure contracts.",
+        "whyItMatters": "Keeping effects at the edge makes the core portable and predictable."
+      },
+      {
+        "stepId": "mission-projection",
+        "sourceQuote": "### `@shield/mission-projection`",
+        "purpose": "Understand projection as a readable status view.",
+        "question": "What should Mission Control display, and what must it never do?",
+        "explanation": "Projection converts validated facts into phase, lane, blocker, gate, and next-action views. It must not write journals, dispatch agents, or mutate state.",
+        "whyItMatters": "Readable status helps people act without creating a second workflow engine."
       }
     ]
   },
@@ -88,26 +144,42 @@
     "title": "Who decides, who acts, and when work stops",
     "learningSteps": [
       {
-        "stepId": "seat-autonomy-step-1",
+        "stepId": "seat-model",
         "sourceQuote": "## Seat and autonomy model",
-        "purpose": "Understand who decides, who acts, and when work stops.",
-        "question": "Which decisions remain human, which transitions should be automatic, and what conditions genuinely justify parking a team?",
-        "explanation": "Seat contracts preserve specialized responsibility while green signals should move routine work automatically.",
-        "whyItMatters": "This is the core balance between trustworthy governance and the speed you want from the team."
+        "purpose": "Understand why responsibilities are assigned to seats.",
+        "question": "How do seat contracts divide judgment and execution?",
+        "explanation": "Hill sequences, Daisy gathers evidence, Fury reviews, May implements, and Mack validates. The runtime may change, but each responsibility stays recognizable.",
+        "whyItMatters": "Clear ownership prevents fast automation from erasing accountability."
+      },
+      {
+        "stepId": "human-gates",
+        "sourceQuote": "Humans decide only meaningful gates.",
+        "purpose": "Identify the intended human stopping points.",
+        "question": "What should happen automatically, and what should still stop for a person?",
+        "explanation": "Routine mechanical progress should advance automatically. Material scope, authorization, contradictory evidence, and excluded effects still require a human or an explicit blocker.",
+        "whyItMatters": "The system can move quickly without making people spectators at consequential decisions."
       }
     ]
   },
   {
     "checkpointId": "factory-and-epic-go",
-    "title": "Track layers take trucks to work",
+    "title": "Factory construction and Epic Wheels Up",
     "learningSteps": [
       {
-        "stepId": "factory-and-epic-go-step-1",
+        "stepId": "factory-program",
         "sourceQuote": "## Factory construction program",
-        "purpose": "Understand track layers take trucks to work.",
-        "question": "What does Epic Wheels Up authorize once, and what material changes would still require the team to return to you?",
-        "explanation": "The replacement rail is built in Track-Layer Mode under one bounded Epic Wheels Up decision; it is not forced to ride the defective system it replaces.",
-        "whyItMatters": "This construction model is what converts a large architecture into autonomous progress without abandoning human control."
+        "purpose": "See the architecture as a bounded construction mission.",
+        "question": "What does Factory receive instead of an open-ended rewrite prompt?",
+        "explanation": "Factory receives an architecture, dependency graph, owned paths, milestones, effects, and validation envelope. Teams can then build one bounded rail.",
+        "whyItMatters": "Bounded inputs turn a large rewrite into work that can be assigned and checked."
+      },
+      {
+        "stepId": "factory-go",
+        "sourceQuote": "Human GO approves the Factory Mission plan and selected autonomy level.",
+        "purpose": "Understand the human GO decision.",
+        "question": "What does the human approve before autonomous construction starts?",
+        "explanation": "The human approves the rendered mission plan and its autonomy level. That decision starts the bounded construction work; it does not authorize unrelated effects.",
+        "whyItMatters": "A clear starting gate gives autonomy a known boundary."
       }
     ]
   },
@@ -116,12 +188,20 @@
     "title": "Issues as executable construction packets",
     "learningSteps": [
       {
-        "stepId": "executable-issue-packet-step-1",
+        "stepId": "issue-packet",
         "sourceQuote": "### Factory executable issue packet",
-        "purpose": "Understand issues as executable construction packets.",
-        "question": "What must every issue packet contain so a fresh team can implement it without improvising hidden contracts?",
-        "explanation": "Each issue must carry enough exact scope, dependencies, acceptance criteria, paths, and validation information for a team to act without rediscovering the architecture.",
-        "whyItMatters": "The issue graph is where architectural intent becomes repeatable team execution."
+        "purpose": "Understand the minimum shape of an executable issue.",
+        "question": "What must a fresh team receive before it starts?",
+        "explanation": "The issue packet names the outcome, exact base, dependencies, owned paths, required behavior, exclusions, validation, artifacts, and handoff.",
+        "whyItMatters": "A complete packet prevents each team from rediscovering hidden architecture."
+      },
+      {
+        "stepId": "issue-headings",
+        "sourceQuote": "Every issue contains these headings:",
+        "purpose": "Recognize the packet as a repeatable interface.",
+        "question": "Why make issue sections consistent across hosts?",
+        "explanation": "Consistent headings let another team or host find scope, inputs, commands, and proof in the same places.",
+        "whyItMatters": "A repeatable packet makes work portable and easier to review."
       }
     ]
   },
@@ -130,12 +210,28 @@
     "title": "Portable execution and selective legacy extraction",
     "learningSteps": [
       {
-        "stepId": "portability-and-legacy-step-1",
+        "stepId": "executor-portability",
         "sourceQuote": "## Executor portability",
-        "purpose": "Understand portable execution and selective legacy extraction.",
-        "question": "What should remain invariant across AI hosts, and what evidence should justify extracting old code instead of rebuilding it?",
-        "explanation": "Seat meaning remains stable across Factory, Codex, Copilot, and local models, while old code is harvested only when it fits the new boundary cleanly.",
-        "whyItMatters": "This prevents both host lock-in and accidental reconstruction of the legacy ball of twine."
+        "purpose": "Separate task meaning from the host that runs it.",
+        "question": "What should remain invariant across Codex, Copilot, Factory, and local models?",
+        "explanation": "The task packet remains the source of truth: objective, owned paths, exact base, exclusions, inputs, validation, and handoff. Only the executor changes.",
+        "whyItMatters": "Portable contracts prevent the tool brand from becoming part of the product meaning."
+      },
+      {
+        "stepId": "packet-history",
+        "sourceQuote": "They do not depend on chat history.",
+        "purpose": "Understand why packets must stand alone.",
+        "question": "What makes a task recoverable by another worker?",
+        "explanation": "A worker can continue from the packet because it contains the objective, exact repository context, and required proof instead of relying on private conversation.",
+        "whyItMatters": "Work survives handoffs, interruptions, and host changes."
+      },
+      {
+        "stepId": "legacy-protocol",
+        "sourceQuote": "## Legacy audit and extraction protocol",
+        "purpose": "Use old code selectively rather than copying it blindly.",
+        "question": "What should happen before legacy behavior moves into the new rail?",
+        "explanation": "Each old behavior gets a keep, simplify, replace, drop, or defer decision. Only the smallest proven invariant is extracted into the new boundary.",
+        "whyItMatters": "Selective reuse avoids carrying the old system's coupling into the replacement."
       }
     ]
   },
@@ -144,12 +240,20 @@
     "title": "The order of construction",
     "learningSteps": [
       {
-        "stepId": "delivery-sequence-step-1",
+        "stepId": "delivery-sequence",
         "sourceQuote": "## Delivery sequence",
-        "purpose": "Understand the order of construction.",
-        "question": "Does this sequence prove the riskiest assumptions early enough, and are any dependencies ordered incorrectly?",
-        "explanation": "The flights build identity first, then the pure rail, storage and lanes, host composition, and finally the thin CLI and proving issue.",
-        "whyItMatters": "A sound architecture can still fail if its implementation order creates unnecessary coupling or delays the first real proof."
+        "purpose": "Understand why construction order matters.",
+        "question": "Why build identity and pure decisions before host composition?",
+        "explanation": "The sequence establishes stable identity and deterministic rules before adding storage, lanes, effects, projection, and a CLI.",
+        "whyItMatters": "Early boundaries reduce later rework and expose risky assumptions sooner."
+      },
+      {
+        "stepId": "first-proving-issue",
+        "sourceQuote": "Carry one curated real issue through the complete path.",
+        "purpose": "Recognize the first end-to-end proof.",
+        "question": "What must the first proving issue demonstrate?",
+        "explanation": "One real issue should travel from intake through review, implementation, validation, conformance, draft PR, and lane reconciliation.",
+        "whyItMatters": "A complete flight proves the pieces work together, not just in isolation."
       }
     ]
   },
@@ -158,12 +262,20 @@
     "title": "The proof and your GO decision",
     "learningSteps": [
       {
-        "stepId": "first-flight-and-go-step-1",
+        "stepId": "flight-criteria",
         "sourceQuote": "## First-flight acceptance criteria",
-        "purpose": "Understand the proof and your go decision.",
-        "question": "Would the first-flight evidence convince you Mission Rail is real, and what must change in this architecture before you give Epic Wheels Up?",
-        "explanation": "The architecture succeeds only when a cold Hill carries one curated issue from intake through visible QA and draft PR while returning the lane to ready.",
-        "whyItMatters": "This checkpoint turns the document review into a concrete decision about starting the new rail."
+        "purpose": "Turn the architecture into observable acceptance evidence.",
+        "question": "What would count as proof that the first flight is real?",
+        "explanation": "The criteria require a cold start, one legal next action, exact review binding, visible QA, draft publication, and a stable lane that can accept another mission.",
+        "whyItMatters": "Concrete evidence prevents a polished prototype from being mistaken for a working rail."
+      },
+      {
+        "stepId": "go-exclusions",
+        "sourceQuote": "existing SHIELD runtime.",
+        "purpose": "Keep the GO boundary explicit.",
+        "question": "Which consequential effects remain outside this GO?",
+        "explanation": "GO permits bounded construction under the accepted plan. It does not silently permit merging, deploying, releasing, destructive migration, or deleting the current runtime.",
+        "whyItMatters": "Explicit exclusions protect human control while the team moves autonomously."
       }
     ]
   }

@@ -66,6 +66,22 @@ test("a replacement cannot be recorded without a desired replacement", async () 
   assert.equal(session.revision, 7);
 });
 
+test("a replacement cannot repeat the immutable original", async () => {
+  const source = await createSourceDocument("Rail", sourceText);
+  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
+  const session = await completeToDecision(source, set);
+  const unchanged = recordDecision(session, set, expected(session, "purpose"), {
+    decision: "revise",
+    replacement: { stepId: "purpose-why", replacement: "one clear next action" },
+  }, fixedClock);
+  assert.deepEqual(unchanged, {
+    ok: false,
+    code: "replacement_unchanged",
+    message: "The desired replacement must differ from the immutable original.",
+  });
+  assert.equal(session.revision, 7);
+});
+
 test("stale and replayed actions do not mutate a V2 session", async () => {
   const source = await createSourceDocument("Rail", sourceText);
   const set = await createCheckpointSet("Rail review", checkpoints, source.text);
