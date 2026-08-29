@@ -292,7 +292,7 @@ function slug(value: string): string { return value.toLowerCase().replace(/[^a-z
 function visibleCheckpointText(checkpoint: ReviewCheckpoint, phase: ReviewPhase): string {
   const visibleText: Partial<Record<ReviewPhase, string>> = {
     orient: checkpoint.whyItMatters,
-    teach: checkpoint.teaching,
+    teach: `${checkpoint.question} ${checkpoint.teaching}`,
     ask: checkpoint.question,
     explain_back: "Explain this checkpoint in your own words.",
     confidence: "How confidently could you explain this to someone else?",
