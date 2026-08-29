@@ -67,6 +67,7 @@ export function renderSource(
     element("h2", "source-title", source.title),
     element("pre", "source-excerpt", excerpt),
   );
+  container.append(actionButton("Copy source excerpt", "copy-source", "secondary"));
   if (speechSupported) container.append(speechActions("Read excerpt aloud", "read-source"));
 }
 

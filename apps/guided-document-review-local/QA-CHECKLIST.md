@@ -12,6 +12,7 @@
 
 - [ ] Verify the source panel shows the complete matching section without truncation.
 - [ ] Render the source as friendly Markdown rather than raw preformatted text.
+- [ ] Verify the complete source excerpt can be copied with one visible action.
 - [ ] In curated review, show two or three source-grounded questions one at a time.
 - [ ] Give each question a bright source marker and highlight the exact passage that supports it.
 - [ ] After an answer is submitted, advance to the next question and move the source highlight with it.

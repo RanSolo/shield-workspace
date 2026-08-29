@@ -97,6 +97,15 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (button.dataset.action === "restart") return restart();
   if (button.dataset.action === "download") return void downloadArtifact();
   if (button.dataset.action === "stop-reading") return speech.stop(showSpeechStatus);
+  if (button.dataset.action === "copy-source" && state && state.session.phase !== "complete") {
+    try {
+      await navigator.clipboard.writeText(findSourceExcerpt(state.source, activeCheckpoint().sourceSearch));
+      button.textContent = "✓ Source copied";
+    } catch {
+      button.textContent = "Copy failed — select the text";
+    }
+    return;
+  }
   if (!state || state.session.phase === "complete") return;
 
   const checkpoint = activeCheckpoint();
