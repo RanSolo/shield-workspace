@@ -43,6 +43,7 @@ const sourcePanel = required("source-panel");
 const stats = required("stats");
 const completionPanel = required("completion-panel");
 const speechStatus = required("speech-status");
+const trailProgress = required("trail-progress");
 const speech = createSpeechControls();
 const sourceHeightObserver = new ResizeObserver(() => syncReviewViewport());
 sourceHeightObserver.observe(checkpointPanel);
@@ -153,6 +154,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
 
 function render(): void {
   if (!state) return;
+  renderTrailProgress();
   renderJourney(journey, state);
   renderStats(stats, state.session, state.checkpointSet.checkpoints.length);
   if (state.session.phase === "complete") {
@@ -171,6 +173,16 @@ function render(): void {
   renderCheckpoint(checkpointPanel, { ...state, checkpoint, excerpt }, speech.supported);
   renderSource(sourcePanel, state.source, excerpt, speech.supported);
   syncReviewViewport();
+}
+
+function renderTrailProgress(): void {
+  if (!state) return;
+  const total = state.checkpointSet.checkpoints.length;
+  const percent = state.session.phase === "complete" ? 100 :
+    total <= 1 ? 0 : Math.round((state.session.currentCheckpointIndex / (total - 1)) * 100);
+  trailProgress.style.setProperty("--trail-progress", String(percent));
+  trailProgress.setAttribute("aria-valuenow", String(percent));
+  trailProgress.setAttribute("aria-valuetext", `Checkpoint ${Math.min(state.session.currentCheckpointIndex + 1, total)} of ${total}`);
 }
 
 function completionActions(): HTMLElement {
