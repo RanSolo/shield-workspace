@@ -2,6 +2,8 @@
 
 Document Trail turns a Markdown or text document into a small learning journey. It shows one checkpoint at a time, asks the reviewer to explain the idea back, and exports an educational evidence artifact. It never grants authority or approves repository effects.
 
+The review screen also offers browser-native **Read aloud** controls for the checkpoint and source excerpt. No text leaves the browser for an application API.
+
 Start it locally with one copy-safe command from the repository root:
 
 ```sh

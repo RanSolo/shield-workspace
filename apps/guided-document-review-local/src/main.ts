@@ -19,6 +19,7 @@ import {
 
 import { renderCheckpoint, renderCompletion, renderJourney, renderSource, renderStats } from "./render.js";
 import { sampleCheckpoints, sampleDocument } from "./sample-review.js";
+import { createSpeechControls } from "./speech.js";
 
 interface AppState {
   source: SourceDocument;
@@ -37,6 +38,8 @@ const checkpointPanel = required("checkpoint-panel");
 const sourcePanel = required("source-panel");
 const stats = required("stats");
 const completionPanel = required("completion-panel");
+const speechStatus = required("speech-status");
+const speech = createSpeechControls();
 
 document.addEventListener("click", (event) => void handleClick(event));
 required("start-sample").addEventListener("click", () => void startSample());
@@ -77,9 +80,21 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (!button) return;
   if (button.dataset.action === "restart") return restart();
   if (button.dataset.action === "download") return void downloadArtifact();
+  if (button.dataset.action === "stop-reading") return speech.stop(showSpeechStatus);
   if (!state || state.session.phase === "complete") return;
 
   const checkpoint = activeCheckpoint();
+  if (button.dataset.action === "read-checkpoint") {
+    return speech.read([
+      checkpoint.title,
+      checkpoint.whyItMatters,
+      checkpoint.teaching,
+      checkpoint.question,
+    ].join(". "), showSpeechStatus);
+  }
+  if (button.dataset.action === "read-source") {
+    return speech.read(findSourceExcerpt(state.source, checkpoint.sourceSearch), showSpeechStatus);
+  }
   const expected = expectation(checkpoint.checkpointId);
   const action = button.dataset.action;
   let result;
@@ -120,8 +135,8 @@ function render(): void {
   checkpointPanel.hidden = false;
   sourcePanel.hidden = false;
   completionPanel.hidden = true;
-  renderCheckpoint(checkpointPanel, { ...state, checkpoint, excerpt });
-  renderSource(sourcePanel, state.source, excerpt);
+  renderCheckpoint(checkpointPanel, { ...state, checkpoint, excerpt }, speech.supported);
+  renderSource(sourcePanel, state.source, excerpt, speech.supported);
 }
 
 function completionActions(): HTMLElement {
@@ -218,5 +233,6 @@ function required(id: string): HTMLElement {
   return node;
 }
 function showSetupMessage(message: string): void { required("setup-message").textContent = message; }
+function showSpeechStatus(message: string): void { speechStatus.textContent = message; }
 function clock(): string { return new Date().toISOString(); }
 function slug(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, ""); }

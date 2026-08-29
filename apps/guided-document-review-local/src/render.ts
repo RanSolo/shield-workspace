@@ -34,7 +34,7 @@ export function renderJourney(
   });
 }
 
-export function renderCheckpoint(container: HTMLElement, view: ReviewView): void {
+export function renderCheckpoint(container: HTMLElement, view: ReviewView, speechSupported: boolean): void {
   container.replaceChildren();
   const header = element("header", "checkpoint-header");
   header.append(
@@ -43,6 +43,8 @@ export function renderCheckpoint(container: HTMLElement, view: ReviewView): void
     element("p", "checkpoint-count", `Checkpoint ${view.session.currentCheckpointIndex + 1} of ${view.checkpointSet.checkpoints.length}`),
   );
   container.append(header);
+
+  if (speechSupported) container.append(speechActions("Read checkpoint aloud", "read-checkpoint"));
 
   if (view.message) container.append(element("p", "message message--warning", view.message));
   if (view.session.phase === "orient") renderOrient(container, view);
@@ -53,12 +55,18 @@ export function renderCheckpoint(container: HTMLElement, view: ReviewView): void
   if (view.session.phase === "decide") renderDecision(container, view);
 }
 
-export function renderSource(container: HTMLElement, source: SourceDocument, excerpt: string): void {
+export function renderSource(
+  container: HTMLElement,
+  source: SourceDocument,
+  excerpt: string,
+  speechSupported: boolean,
+): void {
   container.replaceChildren(
     element("p", "eyebrow", "Source document"),
     element("h2", "source-title", source.title),
     element("pre", "source-excerpt", excerpt),
   );
+  if (speechSupported) container.append(speechActions("Read excerpt aloud", "read-source"));
 }
 
 export function renderStats(container: HTMLElement, session: ReviewSession, total: number): void {
@@ -153,6 +161,13 @@ function actionButton(label: string, action: string, style: string): HTMLButtonE
   button.dataset.action = action;
   button.textContent = label;
   return button;
+}
+
+function speechActions(label: string, action: string): HTMLElement {
+  const actions = element("div", "speech-actions");
+  actions.append(actionButton(`▶ ${label}`, action, "secondary"));
+  actions.append(actionButton("■ Stop", "stop-reading", "quiet"));
+  return actions;
 }
 
 function card(label: string, body: string): HTMLElement {
