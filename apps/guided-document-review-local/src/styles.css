@@ -57,9 +57,25 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .message { min-height: 1.4em; }
 .message--warning { color: #ffb19f; }
 
-.review-layout { display: grid; grid-template-columns: 260px minmax(400px, 1fr) minmax(300px, .82fr); gap: 18px; padding-top: 28px; align-items: start; }
+.review-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(400px, 1fr) minmax(300px, .82fr);
+  gap: 18px;
+  height: var(--review-viewport-height, auto);
+  min-height: 0;
+  padding-top: 28px;
+  overflow: hidden;
+  align-items: stretch;
+}
 .trail-sidebar, .checkpoint-panel, .source-panel, .completion-panel { padding: 22px; }
-.trail-sidebar { position: sticky; top: 18px; }
+.trail-sidebar, .checkpoint-panel, .source-panel {
+  min-height: 0;
+  max-height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.trail-sidebar { position: static; }
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
 .stat { min-width: 0; }
 .stat__value, .stat__label { display: block; }
@@ -74,7 +90,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .trail-stop--active { color: var(--gold); }
 .trail-stop--complete { color: var(--teal); }
 
-.checkpoint-panel { min-height: 560px; }
+.checkpoint-panel { min-height: 0; }
 .checkpoint-panel > .button { margin: 10px 10px 10px 0; }
 .checkpoint-header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
 .checkpoint-title { margin: 0; font: 800 clamp(2rem, 4vw, 3.6rem)/1 Georgia, serif; letter-spacing: -.04em; }
@@ -87,12 +103,8 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .confidence-grid .button { min-width: 50px; }
 
 .source-panel {
-  position: sticky;
-  top: 18px;
+  position: static;
   min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
 }
 .source-title { margin-top: 0; font-family: Georgia, serif; }
 .source-actions {
@@ -135,7 +147,8 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 @media (max-width: 980px) {
   .setup { grid-template-columns: 1fr; }
   .hero { min-height: 420px; }
-  .review-layout { grid-template-columns: 220px 1fr; }
+  .review-layout { grid-template-columns: 220px 1fr; height: auto; overflow: visible; }
+  .trail-sidebar, .checkpoint-panel, .source-panel { max-height: none; }
   .source-panel { position: static; grid-column: 2; }
   .completion-panel { grid-column: 2; }
 }
