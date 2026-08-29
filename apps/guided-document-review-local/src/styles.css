@@ -87,7 +87,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .source-panel {
   position: sticky;
   top: 18px;
-  max-height: calc(100dvh - 36px);
+  min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;

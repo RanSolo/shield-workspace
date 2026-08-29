@@ -11,7 +11,7 @@
 ## Review each checkpoint
 
 - [ ] Verify the source panel shows the complete matching section without truncation.
-- [ ] Verify long lists scroll inside a viewport-height source panel without pushing review controls off-page.
+- [ ] Verify long lists scroll inside a source panel matching the current checkpoint card's height.
 - [ ] Render the source as friendly Markdown rather than raw preformatted text.
 - [ ] Verify the complete source excerpt can be copied with one visible action.
 - [ ] In curated review, show two or three source-grounded questions one at a time.

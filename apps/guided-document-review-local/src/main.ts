@@ -44,6 +44,8 @@ const stats = required("stats");
 const completionPanel = required("completion-panel");
 const speechStatus = required("speech-status");
 const speech = createSpeechControls();
+const sourceHeightObserver = new ResizeObserver(() => syncSourcePanelHeight());
+sourceHeightObserver.observe(checkpointPanel);
 
 document.addEventListener("click", (event) => void handleClick(event));
 required("start-sample").addEventListener("click", () => void startSample());
@@ -167,6 +169,7 @@ function render(): void {
   completionPanel.hidden = true;
   renderCheckpoint(checkpointPanel, { ...state, checkpoint, excerpt }, speech.supported);
   renderSource(sourcePanel, state.source, excerpt, speech.supported);
+  syncSourcePanelHeight();
 }
 
 function completionActions(): HTMLElement {
@@ -264,6 +267,9 @@ function required(id: string): HTMLElement {
 }
 function showSetupMessage(message: string): void { required("setup-message").textContent = message; }
 function showSpeechStatus(message: string): void { speechStatus.textContent = message; }
+function syncSourcePanelHeight(): void {
+  sourcePanel.style.height = checkpointPanel.hidden ? "" : `${checkpointPanel.getBoundingClientRect().height}px`;
+}
 function clock(): string { return new Date().toISOString(); }
 function slug(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, ""); }
 
