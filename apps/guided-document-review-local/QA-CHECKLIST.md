@@ -4,9 +4,9 @@
 
 - [ ] Open the local app at `http://127.0.0.1:4177/`.
 - [ ] Load the complete Mission Rail architecture Markdown file.
-- [ ] Load the curated Mission Rail checkpoint JSON file.
+- [ ] Load the curated Mission Rail V2 checkpoint JSON file.
 - [ ] Select **Build my trail** and verify the page returns to the top.
-- [ ] Verify the trail contains 12 ordered checkpoints.
+- [ ] Verify the trail contains ordered V2 checkpoints with 1–3 learning steps each.
 
 ## Review each checkpoint
 
@@ -21,15 +21,16 @@
 - [ ] On the reveal step, Read checkpoint aloud speaks both the question and its answer.
 - [ ] Prove it to yourself retains the hover/highlight/click-reveal question above the explanation field.
 - [ ] Verify the header wagon advances once per checkpoint and reaches the end when the trail is complete.
-- [ ] In curated review, show two or three source-grounded questions one at a time.
-- [ ] Give each question a bright source marker and highlight the exact passage that supports it.
-- [ ] After an answer is submitted, advance to the next question and move the source highlight with it.
-- [ ] Keep the final explain-back step after the multiple-choice sequence.
+- [ ] In curated review, show one source-grounded learning step at a time.
+- [ ] Give each step a bright source marker and highlight its exact passage.
+- [ ] Reveal each step and verify the revealed step remains visible after refresh.
+- [ ] After a revealed step is submitted, advance to the next step and move the source highlight with it.
+- [ ] Keep the final explain-back, confidence, and disposition steps after learning steps.
 - [ ] Verify **Read checkpoint** reads only the visible review step.
 - [ ] Verify **Read source** reads the complete visible source section.
 - [ ] Record an explanation and confirm an empty explanation cannot advance.
-- [ ] Add a revision note beside the explanation and verify it remains at disposition.
-- [ ] Verify the checkpoint question remains directly above the explanation field.
+- [ ] At disposition, choose a step and enter a desired replacement plus optional rationale.
+- [ ] Verify the original passage is shown as locked and remains tied to the selected step.
 - [ ] Use **Back** through the checkpoint steps and verify saved answers are retained.
 - [ ] Record a confidence level.
 - [ ] Choose each disposition at least once during the review.
@@ -39,11 +40,15 @@
 
 - [ ] Refresh midway and verify the exact review position is restored.
 - [ ] Complete all checkpoints and download the review artifact.
-- [ ] Verify the artifact contains the source digest, checkpoint-set digest, explanations, confidence, decisions, and requested changes.
+- [ ] Verify the V2 artifact contains source/revised digests and ordered structured replacements.
+- [ ] Complete with replacement requests and verify completion shows only the changes, then explicitly confirm educational/document approval.
+- [ ] Verify revised Markdown download applies confirmed, non-overlapping replacements deterministically.
+- [ ] Complete without replacements and verify the no-change message offers no revision actions.
 - [ ] Verify **Start another document** clears the saved trail and returns to setup.
 
 ## Safety and usability
 
 - [ ] Verify the app remains usable by keyboard at desktop and narrow widths.
 - [ ] Verify no document text is sent to an external service during the no-AI review.
+- [ ] Verify educational/document approval never claims implementation, publication, merge, or release authority.
 - [ ] Verify malformed checkpoint JSON fails visibly without starting or altering a review.

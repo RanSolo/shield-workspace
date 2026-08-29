@@ -1,10 +1,12 @@
 import type { CheckpointSet } from "./checkpoint.js";
-import { sha256Json } from "./canonical-json.js";
-import type { ReviewSession } from "./review-session.js";
+import { sha256Json, sha256Text } from "./canonical-json.js";
+import { collectReplacementRequests } from "./checkpoint-prompt.js";
+import type { ReplacementRequest, ReviewSession } from "./review-session.js";
+import { applyConfirmedReplacements } from "./replacements.js";
 import type { SourceDocument } from "./source-document.js";
 
-export interface ReviewArtifactV1 {
-  readonly schemaVersion: 1;
+export interface ReviewArtifactV2 {
+  readonly schemaVersion: 2;
   readonly authority: "none";
   readonly effect: "educational_review_only";
   readonly artifactId: string;
@@ -12,10 +14,11 @@ export interface ReviewArtifactV1 {
   readonly checkpointSet: Pick<CheckpointSet, "checkpointSetId" | "title" | "checkpointSetDigest">;
   readonly sessionId: string;
   readonly reviewer: ReviewSession["reviewer"];
-  readonly answers: ReviewSession["answers"];
   readonly startedAt: string;
   readonly completedAt: string;
-  readonly summary: Readonly<Record<"understand" | "question" | "revise" | "approve", number>>;
+  readonly sourceDigest: string;
+  readonly revisedSourceDigest: string;
+  readonly replacements: readonly ReplacementRequest[];
   readonly artifactDigest: string;
 }
 
@@ -23,14 +26,13 @@ export async function createReviewArtifact(
   source: SourceDocument,
   checkpointSet: CheckpointSet,
   session: ReviewSession,
-): Promise<ReviewArtifactV1> {
+): Promise<ReviewArtifactV2> {
   if (session.phase !== "complete") throw new TypeError("Finish every checkpoint before exporting the artifact.");
-  const summary = { understand: 0, question: 0, revise: 0, approve: 0 };
-  Object.values(session.answers).forEach((answer) => {
-    if (answer.decision) summary[answer.decision] += 1;
-  });
+  const replacements = collectReplacementRequests(checkpointSet, session).map(({ replacement }) => replacement);
+  const revisedText = applyConfirmedReplacements(source.text, replacements);
+  const revisedSourceDigest = await sha256Text(revisedText);
   const material = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     authority: "none" as const,
     effect: "educational_review_only" as const,
     source: { sourceId: source.sourceId, title: source.title, sourceDigest: source.sourceDigest },
@@ -41,10 +43,11 @@ export async function createReviewArtifact(
     },
     sessionId: session.sessionId,
     reviewer: session.reviewer,
-    answers: session.answers,
     startedAt: session.startedAt,
     completedAt: session.updatedAt,
-    summary,
+    sourceDigest: source.sourceDigest,
+    revisedSourceDigest,
+    replacements,
   };
   const artifactDigest = await sha256Json(material);
   return { ...material, artifactId: `artifact:${artifactDigest.slice(7, 23)}`, artifactDigest };

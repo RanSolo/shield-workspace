@@ -1,11 +1,13 @@
 import type {
   CheckpointSet,
+  LearningStep,
   ReviewCheckpoint,
   ReviewDecision,
   ReviewSession,
   SourceDocument,
 } from "@shield/guided-document-review";
 
+import type { RevisionPromptChange } from "@shield/guided-document-review";
 import { renderMarkdownSections } from "./markdown.js";
 
 export interface ReviewView {
@@ -13,6 +15,7 @@ export interface ReviewView {
   readonly checkpointSet: CheckpointSet;
   readonly session: ReviewSession;
   readonly checkpoint: ReviewCheckpoint;
+  readonly step: LearningStep;
   readonly excerpt: string;
   readonly message: string | null;
 }
@@ -24,11 +27,12 @@ export function renderJourney(
   container.replaceChildren();
   view.checkpointSet.checkpoints.forEach((checkpoint, index) => {
     const answer = view.session.answers[checkpoint.checkpointId];
-    const state = index < view.session.currentCheckpointIndex ? "complete" :
-      index === view.session.currentCheckpointIndex ? "active" : "waiting";
+    const complete = view.session.phase === "complete" || index < view.session.currentCheckpointIndex;
+    const active = !complete && index === view.session.currentCheckpointIndex;
+    const state = complete ? "complete" : active ? "active" : "waiting";
     const item = element("li", `trail-stop trail-stop--${state}`);
     item.append(
-      element("span", "trail-stop__marker", state === "complete" ? "✓" : String(index + 1)),
+      element("span", "trail-stop__marker", complete ? "✓" : String(index + 1)),
       element("span", "trail-stop__title", checkpoint.title),
     );
     if (answer.decision) item.append(element("span", "trail-stop__decision", labelDecision(answer.decision)));
@@ -45,15 +49,12 @@ export function renderCheckpoint(container: HTMLElement, view: ReviewView, speec
     element("p", "checkpoint-count", `Checkpoint ${view.session.currentCheckpointIndex + 1} of ${view.checkpointSet.checkpoints.length}`),
   );
   container.append(header);
-
   if (speechSupported) container.append(speechActions("Read checkpoint aloud", "read-checkpoint"));
-
   if (view.message) container.append(element("p", "message message--warning", view.message));
   if (view.session.phase === "orient") renderOrient(container, view);
-  if (view.session.phase === "teach") renderTeach(container, view);
-  if (view.session.phase === "ask") renderExplain(container, view);
+  if (view.session.phase === "learn") renderLearn(container, view);
   if (view.session.phase === "explain_back") renderExplain(container, view);
-  if (view.session.phase === "confidence") renderConfidence(container, view);
+  if (view.session.phase === "confidence") renderConfidence(container);
   if (view.session.phase === "decide") renderDecision(container, view);
   if (view.session.phase !== "orient") container.append(actionButton("← Back", "back", "quiet"));
 }
@@ -62,10 +63,11 @@ export function renderSource(
   container: HTMLElement,
   source: SourceDocument,
   excerpt: string,
+  sourceQuote: string,
   speechSupported: boolean,
 ): void {
   const actions = element("div", "source-actions");
-  actions.append(actionButton("Copy", "copy-source", "secondary"));
+  actions.append(actionButton("Copy passage", "copy-source", "secondary"));
   if (speechSupported) {
     actions.append(actionButton("▶ Read", "read-source", "secondary"));
     actions.append(actionButton("■ Stop", "stop-reading", "quiet"));
@@ -73,71 +75,94 @@ export function renderSource(
   container.replaceChildren(
     element("p", "eyebrow", "Source document"),
     element("h2", "source-title", source.title),
+    element("p", "source-quote-label", `Exact passage: “${sourceQuote}”`),
     actions,
-    renderMarkdownSections(excerpt),
+    renderMarkdownSections(excerpt, sourceQuote),
   );
 }
 
 export function renderStats(container: HTMLElement, session: ReviewSession, total: number): void {
   const completed = Object.values(session.answers).filter((answer) => answer.decision).length;
-  const confident = Object.values(session.answers).filter((answer) => (answer.confidence ?? 0) >= 4).length;
+  const revealed = Object.values(session.answers).reduce((sum, answer) => sum + answer.revealedStepIds.length, 0);
   container.replaceChildren(
     stat("Trail", `${completed}/${total}`),
-    stat("Momentum", completed ? `${completed} day${completed === 1 ? "" : "s"}` : "Ready"),
-    stat("Clarity", `${confident} strong`),
+    stat("Reveals", String(revealed)),
+    stat("Clarity", `${Object.values(session.answers).filter((answer) => (answer.confidence ?? 0) >= 4).length} strong`),
   );
 }
 
-export function renderCompletion(container: HTMLElement, session: ReviewSession): void {
+export function renderCompletion(
+  container: HTMLElement,
+  changes: readonly RevisionPromptChange[],
+  confirmed: boolean,
+  message: string | null,
+): void {
   container.replaceChildren(
     element("p", "completion-burst", "✦ TRAIL COMPLETE ✦"),
-    element("h2", "completion-title", "You made it to the trailhead."),
-    element("p", "completion-copy", "You did not merely approve a document. You explained its decisions, recorded your confidence, and left a reusable learning artifact."),
+    element("h2", "completion-title", "Changes-only review"),
+    element("p", "completion-copy", changes.length
+      ? "Review the requested replacements in checkpoint order. Confirmation is educational/document approval only; it is not authority to implement, publish, merge, or release."
+      : "No replacement requests were recorded. The original document remains unchanged, and there is no revision packet to confirm or apply."),
   );
-  const list = element("ul", "completion-list");
-  Object.values(session.answers).forEach((answer) => {
-    const item = element("li", "", `${answer.checkpointId}: ${labelDecision(answer.decision ?? "question")}`);
-    if (answer.requestedChange) {
-      item.append(element("p", "completion-change", `Requested change: ${answer.requestedChange}`));
-    }
-    list.append(item);
-  });
-  container.append(list);
+  if (message) container.append(element("p", "message message--success", message));
+  if (changes.length) {
+    const list = element("ol", "completion-list");
+    changes.forEach((change) => {
+      const item = element("li", "completion-change-card");
+      item.append(
+        element("h3", "completion-change-title", `${change.checkpointTitle} · ${change.replacement.stepId}`),
+        element("p", "completion-original", `Original (locked): ${change.replacement.original}`),
+        element("p", "completion-replacement", `Desired replacement: ${change.replacement.replacement}`),
+      );
+      if (change.replacement.rationale) item.append(element("p", "completion-rationale", `Rationale: ${change.replacement.rationale}`));
+      list.append(item);
+    });
+    container.append(
+      list,
+      element("p", "fine-print", confirmed
+        ? "Confirmed as educational/document approval only. No implementation authority is created."
+        : "Read the packet above before confirming the educational/document approval."),
+    );
+  }
 }
 
 function renderOrient(container: HTMLElement, view: ReviewView): void {
   container.append(
-    card("Your destination", view.checkpoint.whyItMatters),
+    card("Why this checkpoint matters", view.step.whyItMatters),
     actionButton("Begin this checkpoint", "advance", "primary"),
   );
 }
 
-function renderTeach(container: HTMLElement, view: ReviewView): void {
+function renderLearn(container: HTMLElement, view: ReviewView): void {
+  const answer = view.session.answers[view.checkpoint.checkpointId];
+  const revealed = answer.revealedStepIds.includes(view.step.stepId);
   container.append(
-    guidedReveals([{ question: view.checkpoint.question, answer: view.checkpoint.teaching }]),
-    actionButton("Continue to explain it in your own words", "advance", "primary", "reveal-continue"),
+    element("p", "step-count", `Learning step ${view.session.currentStepIndex + 1} of ${view.checkpoint.learningSteps.length}`),
+    card("Purpose", view.step.purpose),
+    card("Question", view.step.question),
   );
+  if (revealed) {
+    container.append(card("Explanation", view.step.explanation), card("Why it matters", view.step.whyItMatters));
+    container.append(actionButton("Continue to the next step", "advance", "primary"));
+  } else {
+    container.append(actionButton("Reveal this learning step", "reveal-step", "primary"));
+  }
 }
 
 function renderExplain(container: HTMLElement, view: ReviewView): void {
-  container.append(guidedReveals([{ question: view.checkpoint.question, answer: view.checkpoint.teaching }]));
-  const label = element("label", "field-label", "Explain it in your own words");
+  container.append(card("Final question", view.step.question));
+  const label = element("label", "field-label", "Explain the checkpoint in your own words");
   label.htmlFor = "explanation";
   const textarea = document.createElement("textarea");
   textarea.id = "explanation";
   textarea.rows = 7;
   textarea.placeholder = "What does this mean, why does it matter, and what would you challenge?";
   textarea.value = view.session.answers[view.checkpoint.checkpointId].explanation ?? "";
-  container.append(
-    label,
-    textarea,
-    revisionNote(view, "Optional — saved with this checkpoint so you do not have to collect changes later."),
-    actionButton("Lock in my explanation", "save-explanation", "primary"),
-  );
+  container.append(label, textarea, actionButton("Lock in my explanation", "save-explanation", "primary"));
   textarea.focus();
 }
 
-function renderConfidence(container: HTMLElement, view: ReviewView): void {
+function renderConfidence(container: HTMLElement): void {
   container.append(element("p", "prompt", "How confidently could you explain this to someone else?"));
   const group = element("div", "confidence-grid");
   [1, 2, 3, 4, 5].forEach((level) => {
@@ -150,8 +175,45 @@ function renderConfidence(container: HTMLElement, view: ReviewView): void {
 }
 
 function renderDecision(container: HTMLElement, view: ReviewView): void {
-  container.append(element("p", "prompt", "What should happen with this checkpoint?"));
-  container.append(revisionNote(view, "Edit the note if needed. A specific note is required for Needs revision."));
+  container.append(element("p", "prompt", "What is your educational disposition on this checkpoint?"));
+  const replacement = view.session.answers[view.checkpoint.checkpointId].replacement;
+  const stepSelect = document.createElement("select");
+  stepSelect.id = "replacement-step";
+  view.checkpoint.learningSteps.forEach((step) => {
+    const option = document.createElement("option");
+    option.value = step.stepId;
+    option.textContent = step.stepId;
+    option.selected = step.stepId === replacement?.stepId;
+    stepSelect.append(option);
+  });
+  const stepLabel = element("label", "field-label", "Replacement step (only for Needs revision)");
+  stepLabel.htmlFor = stepSelect.id;
+  stepLabel.append(stepSelect);
+  const original = element("p", "replacement-original", `Original passage (locked): ${replacement?.original ?? view.checkpoint.learningSteps[0].sourceQuote}`);
+  original.id = "replacement-original";
+  const replacementLabel = element("label", "field-label", "Desired replacement");
+  replacementLabel.htmlFor = "replacement-text";
+  const replacementText = document.createElement("textarea");
+  replacementText.id = "replacement-text";
+  replacementText.rows = 4;
+  replacementText.placeholder = "Write the complete replacement text for the locked passage.";
+  replacementText.value = replacement?.replacement ?? "";
+  replacementLabel.append(replacementText);
+  const rationaleLabel = element("label", "field-label", "Optional rationale");
+  rationaleLabel.htmlFor = "replacement-rationale";
+  const rationale = document.createElement("textarea");
+  rationale.id = "replacement-rationale";
+  rationale.rows = 3;
+  rationale.placeholder = "Why would this replacement help?";
+  rationale.value = replacement?.rationale ?? "";
+  rationaleLabel.append(rationale);
+  container.append(
+    element("p", "hint", "Choose Needs revision only when the complete desired replacement is ready."),
+    stepLabel,
+    original,
+    replacementLabel,
+    rationaleLabel,
+  );
   const group = element("div", "decision-grid");
   const decisions: readonly [ReviewDecision, string][] = [
     ["understand", "I understand"],
@@ -164,53 +226,21 @@ function renderDecision(container: HTMLElement, view: ReviewView): void {
     button.dataset.value = value;
     group.append(button);
   });
-  container.append(group, element("p", "fine-print", "“Looks right” is an educational disposition only. It does not approve or merge anything."));
+  container.append(group, element("p", "fine-print", "“Looks right” is educational/document approval only. It does not authorize implementation, publication, merge, or release."));
 }
 
-function revisionNote(view: ReviewView, hint: string): HTMLElement {
-  const wrapper = element("div", "revision-note");
-  const changeLabel = element("label", "field-label", "Requested change to the document");
-  changeLabel.htmlFor = "requested-change";
-  const requestedChange = document.createElement("textarea");
-  requestedChange.id = "requested-change";
-  requestedChange.rows = 4;
-  requestedChange.placeholder = "Describe what the document should say or become. Leave blank when the design is right.";
-  requestedChange.value = view.session.answers[view.checkpoint.checkpointId].requestedChange ?? "";
-  wrapper.append(changeLabel, requestedChange, element("p", "hint", hint));
-  return wrapper;
-}
-
-function actionButton(label: string, action: string, style: string, extraClass = ""): HTMLButtonElement {
+function actionButton(label: string, action: string, style: string): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = `button button--${style}${extraClass ? ` ${extraClass}` : ""}`;
+  button.className = `button button--${style}`;
   button.dataset.action = action;
   button.textContent = label;
   return button;
 }
 
-function guidedReveals(items: readonly Readonly<{ question: string; answer: string }>[]): HTMLElement {
-  const group = element("section", "guided-reveals");
-  group.append(element("p", "eyebrow", "Explore the checkpoint"));
-  items.forEach(({ question, answer }, index) => {
-    const reveal = document.createElement("details");
-    reveal.className = "guided-reveal";
-    const prompt = document.createElement("summary");
-    prompt.append(
-      element("span", "guided-reveal__number", String(index + 1)),
-      element("span", "guided-reveal__question", question),
-      element("span", "guided-reveal__hint", "Click to reveal"),
-    );
-    reveal.append(prompt, element("p", "guided-reveal__answer", answer));
-    group.append(reveal);
-  });
-  return group;
-}
-
 function speechActions(label: string, action: string): HTMLElement {
   const actions = element("div", "speech-actions");
-  actions.append(actionButton(`▶ ${label}`, action, "secondary"));
-  actions.append(actionButton("■ Stop", "stop-reading", "quiet"));
+  actions.append(actionButton(`▶ ${label}`, action, "secondary"), actionButton("■ Stop", "stop-reading", "quiet"));
   return actions;
 }
 
@@ -234,9 +264,9 @@ function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", 
 }
 
 function phaseTitle(phase: ReviewSession["phase"]): string {
-  return ({ orient: "Scout the checkpoint", teach: "Learn the terrain", ask: "Prove it to yourself", explain_back: "Prove it to yourself", confidence: "Check your supplies", decide: "Choose the trail" } as Record<string, string>)[phase] ?? "Complete";
+  return ({ orient: "Scout the checkpoint", learn: "Learn one step", explain_back: "Prove it to yourself", confidence: "Check your supplies", decide: "Choose the trail" } as Record<string, string>)[phase] ?? "Complete";
 }
 
 function labelDecision(decision: ReviewDecision): string {
-  return ({ understand: "Understood", question: "Question", revise: "Revise", approve: "Looks right" })[decision];
+  return ({ understand: "Understood", question: "Question", revise: "Needs revision", approve: "Looks right" })[decision];
 }

@@ -1,8 +1,9 @@
 import { markdownToSafeHtml } from "./markdown-engine.mjs";
 
-export function renderMarkdownSections(source: string): HTMLElement {
+export function renderMarkdownSections(source: string, highlight = ""): HTMLElement {
   const staging = document.createElement("div");
   staging.innerHTML = markdownToSafeHtml(source);
+  if (highlight) highlightFirstExactText(staging, highlight);
 
   const article = document.createElement("article");
   article.className = "source-markdown";
@@ -22,6 +23,23 @@ export function renderMarkdownSections(source: string): HTMLElement {
   });
 
   return article;
+}
+
+function highlightFirstExactText(root: HTMLElement, phrase: string): void {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const text = node.nodeValue ?? "";
+    const index = text.indexOf(phrase);
+    if (index < 0 || !node.parentNode) continue;
+    const mark = document.createElement("mark");
+    mark.className = "source-highlight";
+    mark.textContent = phrase;
+    const remainder = (node as Text).splitText(index);
+    remainder.parentNode?.insertBefore(mark, remainder);
+    remainder.nodeValue = remainder.nodeValue?.slice(phrase.length) ?? "";
+    return;
+  }
 }
 
 function sourceSection(anchor: string): HTMLElement {

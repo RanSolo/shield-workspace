@@ -2,36 +2,51 @@ import type { CheckpointSet } from "./checkpoint.js";
 import { sha256Json } from "./canonical-json.js";
 import type { SourceDocument } from "./source-document.js";
 
-export type ReviewPhase = "orient" | "teach" | "ask" | "explain_back" | "confidence" | "decide" | "complete";
+export type ReviewPhase = "orient" | "learn" | "explain_back" | "confidence" | "decide" | "complete";
 export type ReviewDecision = "understand" | "question" | "revise" | "approve";
 export type ReviewerIdentity =
   | Readonly<{ kind: "unattributed"; name: null }>
   | Readonly<{ kind: "self_asserted"; name: string }>;
 
+export interface ReplacementRequest {
+  readonly stepId: string;
+  readonly original: string;
+  readonly replacement: string;
+  readonly rationale: string | null;
+}
+
+export interface ReplacementRequestInput {
+  readonly stepId: string;
+  readonly replacement: string;
+  readonly rationale?: string;
+}
+
 export interface CheckpointAnswer {
   readonly checkpointId: string;
+  readonly revealedStepIds: readonly string[];
   readonly explanation: string | null;
   readonly confidence: 1 | 2 | 3 | 4 | 5 | null;
   readonly decision: ReviewDecision | null;
-  readonly requestedChange: string | null;
+  readonly replacement: ReplacementRequest | null;
   readonly decidedAt: string | null;
 }
 
 export interface ReviewDispositionInput {
   readonly decision: ReviewDecision;
-  readonly requestedChange?: string;
+  readonly replacement?: ReplacementRequestInput;
 }
 
 export interface ReviewEvent {
   readonly eventId: string;
   readonly checkpointId: string;
+  readonly stepId: string | null;
   readonly phase: ReviewPhase;
   readonly revision: number;
   readonly recordedAt: string;
 }
 
 export interface ReviewSession {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly sessionId: string;
   readonly sourceId: string;
   readonly sourceDigest: string;
@@ -39,6 +54,7 @@ export interface ReviewSession {
   readonly checkpointSetDigest: string;
   readonly reviewer: ReviewerIdentity;
   readonly currentCheckpointIndex: number;
+  readonly currentStepIndex: number;
   readonly phase: ReviewPhase;
   readonly revision: number;
   readonly answers: Readonly<Record<string, CheckpointAnswer>>;
@@ -50,6 +66,7 @@ export interface ReviewSession {
 export interface ExpectedTransition {
   readonly eventId: string;
   readonly checkpointId: string;
+  readonly stepId?: string;
   readonly phase: ReviewPhase;
   readonly revision: number;
 }
@@ -68,7 +85,7 @@ export async function startReviewSession(
 ): Promise<ReviewSession> {
   const startedAt = validTime(clock());
   const sessionDigest = await sha256Json({
-    schemaVersion: 1,
+    schemaVersion: 2,
     sourceDigest: source.sourceDigest,
     checkpointSetDigest: checkpointSet.checkpointSetDigest,
     reviewer,
@@ -76,14 +93,15 @@ export async function startReviewSession(
   });
   const answers = Object.fromEntries(checkpointSet.checkpoints.map((checkpoint) => [checkpoint.checkpointId, {
     checkpointId: checkpoint.checkpointId,
+    revealedStepIds: [],
     explanation: null,
     confidence: null,
     decision: null,
-    requestedChange: null,
+    replacement: null,
     decidedAt: null,
   }]));
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sessionId: `session:${sessionDigest.slice(7, 23)}`,
     sourceId: source.sourceId,
     sourceDigest: source.sourceDigest,
@@ -91,6 +109,7 @@ export async function startReviewSession(
     checkpointSetDigest: checkpointSet.checkpointSetDigest,
     reviewer,
     currentCheckpointIndex: 0,
+    currentStepIndex: 0,
     phase: "orient",
     revision: 0,
     answers,
@@ -102,26 +121,66 @@ export async function startReviewSession(
 
 export function advancePhase(
   session: ReviewSession,
+  checkpointSet: CheckpointSet,
   expected: ExpectedTransition,
   clock: Clock,
 ): SessionResult {
   const check = checkTransition(session, expected);
   if (check) return check;
-  const next = nextPhase(session.phase);
-  if (!next) return invalid("phase_complete", "This checkpoint needs a decision before it can advance.");
-  return changed(session, expected, { phase: next }, clock);
+  if (session.phase === "orient") return changed(session, expected, { phase: "learn" }, clock);
+  if (session.phase !== "learn") return invalid("phase_complete", "This checkpoint needs a decision before it can advance.");
+  const step = activeStep(checkpointSet, session);
+  if (!step || expected.stepId !== step.stepId) return invalid("step_mismatch", "That learning step is not active.");
+  if (!session.answers[expected.checkpointId].revealedStepIds.includes(step.stepId)) {
+    return invalid("step_not_revealed", "Reveal the learning step before continuing.");
+  }
+  if (session.currentStepIndex < checkpointSet.checkpoints[session.currentCheckpointIndex].learningSteps.length - 1) {
+    return changed(session, expected, { currentStepIndex: session.currentStepIndex + 1 }, clock);
+  }
+  return changed(session, expected, { phase: "explain_back" }, clock);
+}
+
+export function recordStepReveal(
+  session: ReviewSession,
+  checkpointSet: CheckpointSet,
+  expected: ExpectedTransition,
+  clock: Clock,
+): SessionResult {
+  const check = checkTransition(session, expected, "learn");
+  if (check) return check;
+  const step = activeStep(checkpointSet, session);
+  if (!step || expected.stepId !== step.stepId) return invalid("step_mismatch", "That learning step is not active.");
+  const answer = session.answers[expected.checkpointId];
+  if (answer.revealedStepIds.includes(step.stepId)) return invalid("step_replayed", "That learning step is already revealed.");
+  return changed(session, expected, {
+    answers: updateAnswer(session, expected.checkpointId, {
+      revealedStepIds: [...answer.revealedStepIds, step.stepId],
+    }),
+  }, clock);
 }
 
 export function returnToPreviousPhase(
   session: ReviewSession,
+  checkpointSet: CheckpointSet,
   expected: ExpectedTransition,
   clock: Clock,
 ): SessionResult {
   const check = checkTransition(session, expected);
   if (check) return check;
-  const previous = previousPhase(session.phase);
-  if (!previous) return invalid("phase_at_start", "This checkpoint is already at its first step.");
-  return changed(session, expected, { phase: previous }, clock);
+  if (session.phase === "learn" && session.currentStepIndex > 0) {
+    return changed(session, expected, { currentStepIndex: session.currentStepIndex - 1 }, clock);
+  }
+  if (session.phase === "orient") return invalid("phase_at_start", "This checkpoint is already at its first step.");
+  if (session.phase === "learn") return changed(session, expected, { phase: "orient" }, clock);
+  if (session.phase === "explain_back") {
+    return changed(session, expected, {
+      phase: "learn",
+      currentStepIndex: checkpointSet.checkpoints[session.currentCheckpointIndex].learningSteps.length - 1,
+    }, clock);
+  }
+  if (session.phase === "confidence") return changed(session, expected, { phase: "explain_back" }, clock);
+  if (session.phase === "decide") return changed(session, expected, { phase: "confidence" }, clock);
+  return invalid("phase_at_start", "This checkpoint is already at its first step.");
 }
 
 export function recordExplanation(
@@ -129,20 +188,13 @@ export function recordExplanation(
   expected: ExpectedTransition,
   explanation: string,
   clock: Clock,
-  requestedChange = "",
 ): SessionResult {
-  const check = checkTransition(session, expected);
+  const check = checkTransition(session, expected, "explain_back");
   if (check) return check;
-  if (session.phase !== "explain_back" && session.phase !== "ask") {
-    return invalid("phase_mismatch", "That action is not valid at this step.");
-  }
   if (explanation.trim().length < 20) return invalid("explanation_short", "Explain the idea in at least 20 characters.");
   return changed(session, expected, {
     phase: "confidence",
-    answers: updateAnswer(session, expected.checkpointId, {
-      explanation: explanation.trim(),
-      requestedChange: requestedChange.trim() || null,
-    }),
+    answers: updateAnswer(session, expected.checkpointId, { explanation: explanation.trim() }),
   }, clock);
 }
 
@@ -169,27 +221,59 @@ export function recordDecision(
 ): SessionResult {
   const check = checkTransition(session, expected, "decide");
   if (check) return check;
-  const requestedChange = input.requestedChange?.trim() ||
-    session.answers[expected.checkpointId]?.requestedChange?.trim() || "";
-  if (input.decision === "revise" && requestedChange.length < 10) {
-    return invalid("change_request_required", "Describe the requested change before choosing Needs revision.");
+  const replacement = input.replacement ? createReplacement(checkpointSet, session, input.replacement) : null;
+  if (replacement && !replacement.ok) return replacement;
+  if (input.decision === "revise" && !replacement) {
+    return invalid("replacement_required", "Provide a desired replacement before choosing Needs revision.");
+  }
+  if (input.decision !== "revise" && input.replacement) {
+    return invalid("replacement_decision_mismatch", "A replacement request belongs with Needs revision.");
   }
   const decidedAt = validTime(clock());
   const finalCheckpoint = session.currentCheckpointIndex === checkpointSet.checkpoints.length - 1;
   return changed(session, expected, {
     phase: finalCheckpoint ? "complete" : "orient",
     currentCheckpointIndex: finalCheckpoint ? session.currentCheckpointIndex : session.currentCheckpointIndex + 1,
+    currentStepIndex: 0,
     answers: updateAnswer(session, expected.checkpointId, {
       decision: input.decision,
-      requestedChange: requestedChange || null,
+      replacement: replacement && replacement.ok ? replacement.value : null,
       decidedAt,
     }),
   }, () => decidedAt);
 }
 
 export function sessionMatches(session: ReviewSession, source: SourceDocument, set: CheckpointSet): boolean {
-  return session.schemaVersion === 1 && session.sourceDigest === source.sourceDigest &&
+  return session.schemaVersion === 2 && session.sourceDigest === source.sourceDigest &&
     session.checkpointSetDigest === set.checkpointSetDigest;
+}
+
+function createReplacement(
+  checkpointSet: CheckpointSet,
+  session: ReviewSession,
+  input: ReplacementRequestInput,
+): ReplacementResult {
+  const checkpoint = checkpointSet.checkpoints[session.currentCheckpointIndex];
+  const step = checkpoint.learningSteps.find((candidate) => candidate.stepId === input.stepId);
+  if (!step) return { ok: false, code: "step_mismatch", message: "Choose a learning step from this checkpoint." };
+  if (!input.replacement.trim()) return { ok: false, code: "replacement_required", message: "Describe the desired replacement text." };
+  return {
+    ok: true,
+    value: {
+      stepId: step.stepId,
+      original: step.sourceQuote,
+      replacement: input.replacement.trim(),
+      rationale: input.rationale?.trim() || null,
+    },
+  };
+}
+
+type ReplacementResult =
+  | Readonly<{ ok: true; value: ReplacementRequest }>
+  | Readonly<{ ok: false; code: string; message: string }>;
+
+function activeStep(checkpointSet: CheckpointSet, session: ReviewSession) {
+  return checkpointSet.checkpoints[session.currentCheckpointIndex]?.learningSteps[session.currentStepIndex];
 }
 
 function changed(
@@ -199,7 +283,7 @@ function changed(
   clock: Clock,
 ): SessionResult {
   const recordedAt = validTime(clock());
-  const event: ReviewEvent = { ...expected, recordedAt };
+  const event: ReviewEvent = { ...expected, stepId: expected.stepId ?? null, recordedAt };
   return { ok: true, session: {
     ...session,
     ...changes,
@@ -216,20 +300,6 @@ function checkTransition(session: ReviewSession, expected: ExpectedTransition, p
   const answer = session.answers[expected.checkpointId];
   if (!answer || answer.checkpointId !== expected.checkpointId) return invalid("checkpoint_mismatch", "That checkpoint is not active.");
   return null;
-}
-
-function nextPhase(phase: ReviewPhase): ReviewPhase | null {
-  return ({ orient: "teach", teach: "explain_back", ask: "explain_back" } as Partial<Record<ReviewPhase, ReviewPhase>>)[phase] ?? null;
-}
-
-function previousPhase(phase: ReviewPhase): ReviewPhase | null {
-  return ({
-    teach: "orient",
-    ask: "teach",
-    explain_back: "teach",
-    confidence: "explain_back",
-    decide: "confidence",
-  } as Partial<Record<ReviewPhase, ReviewPhase>>)[phase] ?? null;
 }
 
 function updateAnswer(session: ReviewSession, id: string, change: Partial<CheckpointAnswer>): Readonly<Record<string, CheckpointAnswer>> {

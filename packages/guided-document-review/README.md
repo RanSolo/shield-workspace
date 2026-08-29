@@ -5,22 +5,23 @@ This package contains the browser-safe rules behind Document Trail. It has no DO
 ## Read the code in this order
 
 1. `source-document.ts` gives the reviewed text a stable SHA-256 identity.
-2. `checkpoint.ts` validates the questions and teaching prompts as a closed shape.
-3. `review-session.ts` moves one immutable session through the learning phases.
-4. `review-artifact.ts` exports the completed answers as educational evidence.
-5. `canonical-json.ts` provides deterministic JSON and digest helpers.
+2. `checkpoint.ts` validates the V2 checkpoints, 1–3 learning steps, and exact unique source quotes as a closed shape.
+3. `review-session.ts` moves one immutable session through one-step-at-a-time learning and the final explain-back phases.
+4. `replacements.ts` applies confirmed, non-overlapping source replacements deterministically.
+5. `review-artifact.ts` exports V2 source/revised digests and structured replacements as educational evidence.
+6. `canonical-json.ts` provides deterministic JSON and digest helpers.
 
 The state machine is intentionally explicit:
 
 ```text
-orient → teach → ask → explain back → confidence → decide
-                                                     │
-                                  next checkpoint ◀──┘
+orient → learn step 1 → learn step 2 → explain back → confidence → decide
+                                                                  │
+                                               next checkpoint ◀──┘
 ```
 
 Every transition names the expected checkpoint, phase, revision, and event ID. A stale, out-of-order, or replayed action returns an error and leaves the original session unchanged.
 
-Choosing `revise` requires an actionable, source-bound change request. The request remains attached to that checkpoint in the exported review artifact.
+Choosing `revise` requires a structured replacement tied to a learning step. The original source quote is captured by the engine, while desired replacement text and optional rationale remain attached in the V2 artifact.
 
 The final artifact always says:
 
