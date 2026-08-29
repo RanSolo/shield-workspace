@@ -19,6 +19,7 @@
 - [ ] Verify the desktop review shell stays within the viewport and each long panel scrolls internally.
 - [ ] Hovering a checkpoint question highlights its source excerpt; clicking reveals the answer before explain-back.
 - [ ] On the reveal step, Read checkpoint aloud speaks both the question and its answer.
+- [ ] Prove it to yourself retains the hover/highlight/click-reveal question above the explanation field.
 - [ ] Verify the header wagon advances once per checkpoint and reaches the end when the trail is complete.
 - [ ] In curated review, show two or three source-grounded questions one at a time.
 - [ ] Give each question a bright source marker and highlight the exact passage that supports it.

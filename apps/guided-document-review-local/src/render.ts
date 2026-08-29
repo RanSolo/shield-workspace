@@ -120,7 +120,7 @@ function renderTeach(container: HTMLElement, view: ReviewView): void {
 }
 
 function renderExplain(container: HTMLElement, view: ReviewView): void {
-  container.append(card("Checkpoint question", view.checkpoint.question));
+  container.append(guidedReveals([{ question: view.checkpoint.question, answer: view.checkpoint.teaching }]));
   const label = element("label", "field-label", "Explain it in your own words");
   label.htmlFor = "explanation";
   const textarea = document.createElement("textarea");
