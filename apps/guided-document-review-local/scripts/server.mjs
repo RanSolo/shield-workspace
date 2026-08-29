@@ -19,7 +19,14 @@ const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; ch
 export const server = createServer(async (request, response) => {
   const path = resolvePublicPath(publicRoot, request.url ?? "/");
   if (!path) { response.writeHead(400); response.end("Bad path"); return; }
-  try { const body = await readFile(path); response.writeHead(200, { "content-type": types[extname(path)] ?? "application/octet-stream" }); response.end(body); }
+  try {
+    const body = await readFile(path);
+    response.writeHead(200, {
+      "cache-control": "no-store",
+      "content-type": types[extname(path)] ?? "application/octet-stream",
+    });
+    response.end(body);
+  }
   catch { response.writeHead(404); response.end("Not found"); }
 });
 

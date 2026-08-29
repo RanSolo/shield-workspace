@@ -31,17 +31,9 @@ export function findSourceExcerpt(document: SourceDocument, searchText: string):
   const previousHeading = index > 0 && isHeading(blocks[index - 1]);
   const start = previousHeading ? index - 1 : index;
   const end = matchedHeading ? Math.min(blocks.length, index + 2) : index + 1;
-  return completeThought(blocks.slice(start, end).join("\n\n"));
+  return blocks.slice(start, end).join("\n\n").trim();
 }
 
 function isHeading(block: string): boolean {
   return /^#{1,6}\s+/u.test(block.trim());
-}
-
-function completeThought(text: string): string {
-  const clean = text.trim();
-  if (clean.length <= 1600) return clean;
-  const candidate = clean.slice(0, 1600);
-  const sentenceEnd = Math.max(candidate.lastIndexOf(". "), candidate.lastIndexOf("! "), candidate.lastIndexOf("? "));
-  return sentenceEnd >= 600 ? candidate.slice(0, sentenceEnd + 1) : `${candidate.trimEnd()}…`;
 }

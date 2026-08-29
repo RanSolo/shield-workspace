@@ -23,3 +23,10 @@ test("a heading search includes the paragraph that follows it", async () => {
 
   assert.equal(findSourceExcerpt(source, "Mission Rail"), "# Mission Rail\n\nThe complete opening thought.");
 });
+
+test("a long source paragraph is never truncated", async () => {
+  const paragraph = `The whole paragraph stays available. ${"More source context. ".repeat(150)}`;
+  const source = await createSourceDocument("Rail", `## Evidence\n\n${paragraph}\n\n## Next\n\nLater.`);
+
+  assert.equal(findSourceExcerpt(source, "whole paragraph"), `## Evidence\n\n${paragraph.trim()}`);
+});
