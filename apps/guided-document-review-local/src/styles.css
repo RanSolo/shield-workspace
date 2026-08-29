@@ -97,7 +97,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .source-title { margin-top: 0; font-family: Georgia, serif; }
 .source-actions {
   position: sticky;
-  top: -1px;
+  top: 0;
   z-index: 2;
   display: flex;
   flex-wrap: wrap;
