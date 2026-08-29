@@ -2,7 +2,7 @@
 
 Document Trail turns a Markdown or text document into a small learning journey. It shows one checkpoint at a time, asks the reviewer to explain the idea back, and exports an educational evidence artifact. It never grants authority or approves repository effects.
 
-The review screen also offers browser-native **Read aloud** controls for the checkpoint and source excerpt. No text leaves the browser for an application API.
+The review screen also offers browser-native **Read aloud** controls. The checkpoint button reads only the currently visible learning step; the source button reads the complete source paragraph. No text leaves the browser for an application API.
 
 For smarter checkpoints without an API integration, choose **Copy prompt for any AI**. The generated prompt includes the exact closed JSON contract and the current document. Paste the AI's JSON response back into the app; Document Trail validates it before beginning the review.
 

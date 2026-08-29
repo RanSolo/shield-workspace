@@ -13,7 +13,9 @@ import {
   startReviewSession,
   type CheckpointSet,
   type ExpectedTransition,
+  type ReviewCheckpoint,
   type ReviewDecision,
+  type ReviewPhase,
   type ReviewSession,
   type SourceDocument,
 } from "@shield/guided-document-review";
@@ -97,12 +99,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
 
   const checkpoint = activeCheckpoint();
   if (button.dataset.action === "read-checkpoint") {
-    return speech.read([
-      checkpoint.title,
-      checkpoint.whyItMatters,
-      checkpoint.teaching,
-      checkpoint.question,
-    ].join(". "), showSpeechStatus);
+    return speech.read(visibleCheckpointText(checkpoint, state.session.phase), showSpeechStatus);
   }
   if (button.dataset.action === "read-source") {
     return speech.read(findSourceExcerpt(state.source, checkpoint.sourceSearch), showSpeechStatus);
@@ -248,3 +245,15 @@ function showSetupMessage(message: string): void { required("setup-message").tex
 function showSpeechStatus(message: string): void { speechStatus.textContent = message; }
 function clock(): string { return new Date().toISOString(); }
 function slug(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, ""); }
+
+function visibleCheckpointText(checkpoint: ReviewCheckpoint, phase: ReviewPhase): string {
+  const visibleText: Partial<Record<ReviewPhase, string>> = {
+    orient: checkpoint.whyItMatters,
+    teach: checkpoint.teaching,
+    ask: checkpoint.question,
+    explain_back: "Explain this checkpoint in your own words.",
+    confidence: "How confidently could you explain this to someone else?",
+    decide: "Choose your disposition for this checkpoint.",
+  };
+  return `${checkpoint.title}. ${visibleText[phase] ?? ""}`.trim();
+}
