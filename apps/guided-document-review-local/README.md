@@ -19,6 +19,7 @@ Code map:
 - `packages/guided-document-review/src/` contains the pure, browser-safe review engine and artifact contract.
 - `src/main.ts` owns setup, draft persistence, transitions, and artifact download.
 - `src/render.ts` owns the visible journey, source panel, and one-checkpoint-at-a-time card.
+- `src/markdown.ts` safely projects Markdown into anchored semantic HTML sections; raw HTML remains disabled.
 - `src/sample-review.ts` is the ready-to-review Mission Rail example.
 - `scripts/build.mjs` pins the esbuild browser bundle; `scripts/server.mjs` is the local server.
 

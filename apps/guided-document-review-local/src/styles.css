@@ -97,7 +97,22 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .source-panel > .button { margin: 10px 10px 20px 0; }
 .source-panel .speech-actions { margin-top: 12px; }
 .source-title { margin-top: 0; font-family: Georgia, serif; }
-.source-excerpt { white-space: pre-wrap; overflow-wrap: anywhere; color: #d3dcda; font: .9rem/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.source-markdown { color: #d3dcda; overflow-wrap: anywhere; }
+.source-section + .source-section { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
+.source-section > :is(h1, h2, h3, h4, h5, h6) {
+  margin: 0 0 14px;
+  color: var(--gold);
+  font-family: Georgia, serif;
+  line-height: 1.2;
+}
+.source-section p { margin: 0 0 14px; }
+.source-section :is(ol, ul) { margin: 12px 0 18px; padding-left: 1.6rem; }
+.source-section li { margin: 0 0 10px; padding-left: 4px; }
+.source-section code { padding: 2px 5px; border-radius: 5px; background: #070a0c; color: #b8f1e5; }
+.source-section pre { overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: #070a0c; }
+.source-section pre code { padding: 0; background: transparent; }
+.source-section blockquote { margin-left: 0; padding-left: 16px; border-left: 3px solid var(--orange); color: var(--muted); }
+.source-section a { color: var(--teal); }
 .completion-panel { grid-column: 2 / 4; text-align: center; padding: clamp(36px, 7vw, 90px); }
 .completion-burst { color: var(--gold); font-weight: 900; letter-spacing: .18em; }
 .completion-title { font: 800 clamp(2.4rem, 5vw, 5rem)/1 Georgia, serif; }

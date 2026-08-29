@@ -30,6 +30,7 @@
     "typescript": "5.4.5"
   },
   "dependencies": {
-    "@shield/guided-document-review": "0.1.0"
+    "@shield/guided-document-review": "0.1.0",
+    "markdown-it": "15.0.1"
   }
 }

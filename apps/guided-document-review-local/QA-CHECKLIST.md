@@ -12,7 +12,8 @@
 
 - [ ] Verify the source panel shows the complete matching section without truncation.
 - [ ] Verify long lists scroll inside a source panel matching the current checkpoint card's height.
-- [ ] Render the source as friendly Markdown rather than raw preformatted text.
+- [ ] Verify Markdown renders as safe semantic HTML with one stable DOM section per heading.
+- [ ] Verify raw source HTML is displayed as text and cannot execute scripts or event handlers.
 - [ ] Verify the complete source excerpt can be copied with one visible action.
 - [ ] In curated review, show two or three source-grounded questions one at a time.
 - [ ] Give each question a bright source marker and highlight the exact passage that supports it.
