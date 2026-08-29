@@ -112,6 +112,18 @@ export function advancePhase(
   return changed(session, expected, { phase: next }, clock);
 }
 
+export function returnToPreviousPhase(
+  session: ReviewSession,
+  expected: ExpectedTransition,
+  clock: Clock,
+): SessionResult {
+  const check = checkTransition(session, expected);
+  if (check) return check;
+  const previous = previousPhase(session.phase);
+  if (!previous) return invalid("phase_at_start", "This checkpoint is already at its first step.");
+  return changed(session, expected, { phase: previous }, clock);
+}
+
 export function recordExplanation(
   session: ReviewSession,
   expected: ExpectedTransition,
@@ -200,6 +212,16 @@ function checkTransition(session: ReviewSession, expected: ExpectedTransition, p
 
 function nextPhase(phase: ReviewPhase): ReviewPhase | null {
   return ({ orient: "teach", teach: "ask", ask: "explain_back" } as Partial<Record<ReviewPhase, ReviewPhase>>)[phase] ?? null;
+}
+
+function previousPhase(phase: ReviewPhase): ReviewPhase | null {
+  return ({
+    teach: "orient",
+    ask: "teach",
+    explain_back: "ask",
+    confidence: "explain_back",
+    decide: "confidence",
+  } as Partial<Record<ReviewPhase, ReviewPhase>>)[phase] ?? null;
 }
 
 function updateAnswer(session: ReviewSession, id: string, change: Partial<CheckpointAnswer>): Readonly<Record<string, CheckpointAnswer>> {

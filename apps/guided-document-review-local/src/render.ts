@@ -53,6 +53,7 @@ export function renderCheckpoint(container: HTMLElement, view: ReviewView, speec
   if (view.session.phase === "explain_back") renderExplain(container, view);
   if (view.session.phase === "confidence") renderConfidence(container, view);
   if (view.session.phase === "decide") renderDecision(container, view);
+  if (view.session.phase !== "orient") container.append(actionButton("← Back", "back", "quiet"));
 }
 
 export function renderSource(
@@ -118,6 +119,7 @@ function renderAsk(container: HTMLElement, view: ReviewView): void {
 }
 
 function renderExplain(container: HTMLElement, view: ReviewView): void {
+  container.append(card("Checkpoint question", view.checkpoint.question));
   const label = element("label", "field-label", "Explain it in your own words");
   label.htmlFor = "explanation";
   const textarea = document.createElement("textarea");

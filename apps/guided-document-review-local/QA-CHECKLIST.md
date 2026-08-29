@@ -14,6 +14,8 @@
 - [ ] Verify **Read checkpoint** reads only the visible review step.
 - [ ] Verify **Read source** reads the complete visible source section.
 - [ ] Record an explanation and confirm an empty explanation cannot advance.
+- [ ] Verify the checkpoint question remains directly above the explanation field.
+- [ ] Use **Back** through the checkpoint steps and verify saved answers are retained.
 - [ ] Record a confidence level.
 - [ ] Choose each disposition at least once during the review.
 - [ ] Verify **Needs revision** requires a specific requested change.

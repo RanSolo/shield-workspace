@@ -9,6 +9,7 @@ import {
   recordConfidence,
   recordDecision,
   recordExplanation,
+  returnToPreviousPhase,
   startReviewSession,
 } from "../dist/index.js";
 
@@ -45,6 +46,26 @@ test("a complete explain-back journey produces educational evidence", async () =
   assert.equal(artifact.authority, "none");
   assert.equal(artifact.effect, "educational_review_only");
   assert.deepEqual(artifact.summary, { understand: 1, question: 0, revise: 0, approve: 0 });
+});
+
+test("a reviewer can revisit earlier checkpoint steps without losing an answer", async () => {
+  const source = await createSourceDocument("Rail", "# Purpose\nBuild a clear path.");
+  const set = await createCheckpointSet("Rail review", checkpoints);
+  let session = await startReviewSession(source, set, { kind: "unattributed", name: null }, fixedClock);
+
+  session = success(advancePhase(session, expected(session, "purpose", "back-one"), fixedClock));
+  session = success(advancePhase(session, expected(session, "purpose", "back-two"), fixedClock));
+  session = success(advancePhase(session, expected(session, "purpose", "back-three"), fixedClock));
+  session = success(recordExplanation(
+    session,
+    expected(session, "purpose", "back-four"),
+    "The rail gives every participant one clear next action.",
+    fixedClock,
+  ));
+  session = success(returnToPreviousPhase(session, expected(session, "purpose", "back-five"), fixedClock));
+
+  assert.equal(session.phase, "explain_back");
+  assert.equal(session.answers.purpose.explanation, "The rail gives every participant one clear next action.");
 });
 
 test("Needs revision requires an actionable change request", async () => {

@@ -9,6 +9,7 @@ import {
   recordConfidence,
   recordDecision,
   recordExplanation,
+  returnToPreviousPhase,
   sessionMatches,
   startReviewSession,
   type CheckpointSet,
@@ -109,6 +110,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
   const action = button.dataset.action;
   let result;
   if (action === "advance") result = advancePhase(state.session, expected, clock);
+  if (action === "back") result = returnToPreviousPhase(state.session, expected, clock);
   if (action === "save-explanation") {
     result = recordExplanation(state.session, expected, valueOf("explanation"), clock);
   }
