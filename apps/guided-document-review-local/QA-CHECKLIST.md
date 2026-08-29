@@ -11,6 +11,11 @@
 ## Review each checkpoint
 
 - [ ] Verify the source panel shows the complete matching section without truncation.
+- [ ] Render the source as friendly Markdown rather than raw preformatted text.
+- [ ] In curated review, show two or three source-grounded questions one at a time.
+- [ ] Give each question a bright source marker and highlight the exact passage that supports it.
+- [ ] After an answer is submitted, advance to the next question and move the source highlight with it.
+- [ ] Keep the final explain-back step after the multiple-choice sequence.
 - [ ] Verify **Read checkpoint** reads only the visible review step.
 - [ ] Verify **Read source** reads the complete visible source section.
 - [ ] Record an explanation and confirm an empty explanation cannot advance.
