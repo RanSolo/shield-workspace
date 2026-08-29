@@ -73,6 +73,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .trail-stop--complete { color: var(--teal); }
 
 .checkpoint-panel { min-height: 560px; }
+.checkpoint-panel > .button { margin: 10px 10px 10px 0; }
 .checkpoint-header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
 .checkpoint-title { margin: 0; font: 800 clamp(2rem, 4vw, 3.6rem)/1 Georgia, serif; letter-spacing: -.04em; }
 .checkpoint-count { color: var(--muted); }
