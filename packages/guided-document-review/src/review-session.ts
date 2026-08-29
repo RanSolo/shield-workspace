@@ -77,6 +77,22 @@ export type SessionResult =
 
 export type Clock = () => string;
 
+export async function deriveReviewSessionId(
+  sourceDigest: string,
+  checkpointSetDigest: string,
+  reviewer: ReviewerIdentity,
+  startedAt: string,
+): Promise<string> {
+  const sessionDigest = await sha256Json({
+    schemaVersion: 2,
+    sourceDigest,
+    checkpointSetDigest,
+    reviewer,
+    startedAt,
+  });
+  return `session:${sessionDigest.slice(7, 23)}`;
+}
+
 export async function startReviewSession(
   source: SourceDocument,
   checkpointSet: CheckpointSet,
@@ -84,13 +100,12 @@ export async function startReviewSession(
   clock: Clock,
 ): Promise<ReviewSession> {
   const startedAt = validTime(clock());
-  const sessionDigest = await sha256Json({
-    schemaVersion: 2,
-    sourceDigest: source.sourceDigest,
-    checkpointSetDigest: checkpointSet.checkpointSetDigest,
+  const sessionId = await deriveReviewSessionId(
+    source.sourceDigest,
+    checkpointSet.checkpointSetDigest,
     reviewer,
     startedAt,
-  });
+  );
   const answers = Object.fromEntries(checkpointSet.checkpoints.map((checkpoint) => [checkpoint.checkpointId, {
     checkpointId: checkpoint.checkpointId,
     revealedStepIds: [],
@@ -102,7 +117,7 @@ export async function startReviewSession(
   }]));
   return {
     schemaVersion: 2,
-    sessionId: `session:${sessionDigest.slice(7, 23)}`,
+    sessionId,
     sourceId: source.sourceId,
     sourceDigest: source.sourceDigest,
     checkpointSetId: checkpointSet.checkpointSetId,

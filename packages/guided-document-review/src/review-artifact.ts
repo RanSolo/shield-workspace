@@ -28,7 +28,7 @@ export async function createReviewArtifact(
   checkpointSet: CheckpointSet,
   session: ReviewSession,
 ): Promise<ReviewArtifactV2> {
-  const decoded = decodeReviewSession(session, source, checkpointSet);
+  const decoded = await decodeReviewSession(session, source, checkpointSet);
   if (!decoded.ok) throw new TypeError(`Invalid review session: ${decoded.errors.join(" ")}`);
   if (decoded.session.phase !== "complete") throw new TypeError("Finish every checkpoint before exporting the artifact.");
   const verifiedSession = decoded.session;

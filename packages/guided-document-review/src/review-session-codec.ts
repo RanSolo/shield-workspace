@@ -1,11 +1,12 @@
 import type { CheckpointSet, ReviewCheckpoint } from "./checkpoint.js";
-import type {
-  CheckpointAnswer,
-  ReplacementRequest,
-  ReviewerIdentity,
-  ReviewEvent,
-  ReviewPhase,
-  ReviewSession,
+import {
+  deriveReviewSessionId,
+  type CheckpointAnswer,
+  type ReplacementRequest,
+  type ReviewerIdentity,
+  type ReviewEvent,
+  type ReviewPhase,
+  type ReviewSession,
 } from "./review-session.js";
 import type { SourceDocument } from "./source-document.js";
 
@@ -27,11 +28,11 @@ const eventFields = ["eventId", "checkpointId", "stepId", "phase", "revision", "
 const phases = new Set<ReviewPhase>(["orient", "learn", "explain_back", "confidence", "decide", "complete"]);
 const decisions = new Set(["understand", "question", "revise", "approve"]);
 
-export function decodeReviewSession(
+export async function decodeReviewSession(
   input: unknown,
   source: SourceDocument,
   checkpointSet: CheckpointSet,
-): ReviewSessionDecodeResult {
+): Promise<ReviewSessionDecodeResult> {
   const errors: string[] = [];
   if (!isRecord(input)) return { ok: false, errors: ["Review session must be a plain object."] };
   checkExactKeys(input, sessionFields, "Review session", errors);
@@ -42,6 +43,15 @@ export function decodeReviewSession(
   checkIdentity(input.checkpointSetId, checkpointSet.checkpointSetId, "checkpoint-set ID", errors);
   checkIdentity(input.checkpointSetDigest, checkpointSet.checkpointSetDigest, "checkpoint-set digest", errors);
   const reviewer = decodeReviewer(input.reviewer, errors);
+  if (reviewer && validTimestamp(input.startedAt)) {
+    const expectedSessionId = await deriveReviewSessionId(
+      source.sourceDigest,
+      checkpointSet.checkpointSetDigest,
+      reviewer,
+      input.startedAt,
+    );
+    if (input.sessionId !== expectedSessionId) errors.push("Review session ID does not match its identity material.");
+  }
   const phase = phases.has(input.phase as ReviewPhase) ? input.phase as ReviewPhase : null;
   if (!phase) errors.push("Review session phase is invalid.");
   const checkpointIndex = integerAtLeast(input.currentCheckpointIndex, 0) ? input.currentCheckpointIndex : null;

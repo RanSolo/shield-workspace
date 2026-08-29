@@ -93,7 +93,7 @@ async function beginReview(title: string, text: string, checkpoints: unknown, na
   const source = await createSourceDocument(title, text);
   const checkpointSet = await createCheckpointSet(`${title} learning trail`, checkpoints, text);
   const reviewer = name ? { kind: "self_asserted" as const, name } : { kind: "unattributed" as const, name: null };
-  const saved = readDraft(source, checkpointSet);
+  const saved = await readDraft(source, checkpointSet);
   const session = saved ?? await startReviewSession(source, checkpointSet, reviewer, clock);
   state = { source, checkpointSet, session, message: saved ? "Your saved V2 trail was restored." : null };
   revisionPacketConfirmed = false;
@@ -253,11 +253,11 @@ function restart(): void {
   showSetupMessage("");
 }
 
-function readDraft(source: SourceDocument, set: CheckpointSet): ReviewSession | null {
+async function readDraft(source: SourceDocument, set: CheckpointSet): Promise<ReviewSession | null> {
   const raw = localStorage.getItem(storageKey(source, set));
   if (!raw) return null;
   try {
-    const decoded = decodeReviewSession(JSON.parse(raw), source, set);
+    const decoded = await decodeReviewSession(JSON.parse(raw), source, set);
     return decoded.ok ? decoded.session : null;
   } catch {
     return null;

@@ -140,25 +140,50 @@ test("the closed decoder rejects forged and cross-bound persisted sessions", asy
   const set = await createCheckpointSet("Rail review", checkpoints, source.text);
   const session = await completeToDecision(source, set);
   const persisted = JSON.parse(JSON.stringify(session));
-  assert.equal(decodeReviewSession(persisted, source, set).ok, true);
+  assert.equal((await decodeReviewSession(persisted, source, set)).ok, true);
 
   const crossSource = await createSourceDocument("Other rail", `${sourceText}\n`);
   const crossSet = await createCheckpointSet("Other review", checkpoints, crossSource.text);
-  assert.equal(decodeReviewSession(persisted, crossSource, set).ok, false);
-  assert.equal(decodeReviewSession(persisted, source, crossSet).ok, false);
+  assert.equal((await decodeReviewSession(persisted, crossSource, set)).ok, false);
+  assert.equal((await decodeReviewSession(persisted, source, crossSet)).ok, false);
 
   const forgedShape = { ...persisted, injected: true };
-  assert.equal(decodeReviewSession(forgedShape, source, set).ok, false);
+  assert.equal((await decodeReviewSession(forgedShape, source, set)).ok, false);
   const forgedAnswers = structuredClone(persisted);
   forgedAnswers.answers.purpose.revealedStepIds.reverse();
-  assert.equal(decodeReviewSession(forgedAnswers, source, set).ok, false);
+  assert.equal((await decodeReviewSession(forgedAnswers, source, set)).ok, false);
   const forgedEvents = structuredClone(persisted);
   forgedEvents.events[1].eventId = forgedEvents.events[0].eventId;
-  assert.equal(decodeReviewSession(forgedEvents, source, set).ok, false);
+  assert.equal((await decodeReviewSession(forgedEvents, source, set)).ok, false);
   const forgedRevision = { ...persisted, revision: persisted.revision + 1 };
-  assert.equal(decodeReviewSession(forgedRevision, source, set).ok, false);
+  assert.equal((await decodeReviewSession(forgedRevision, source, set)).ok, false);
   const forgedPhase = { ...persisted, phase: "complete" };
-  assert.equal(decodeReviewSession(forgedPhase, source, set).ok, false);
+  assert.equal((await decodeReviewSession(forgedPhase, source, set)).ok, false);
+});
+
+test("decoder and artifact reject ID, reviewer, and start-time tampering without mutation", async () => {
+  const source = await createSourceDocument("Rail", sourceText);
+  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
+  const atDecision = await completeToDecision(source, set);
+  const session = success(recordDecision(atDecision, set, expected(atDecision, "purpose"), {
+    decision: "approve",
+  }, fixedClock));
+  const original = structuredClone(session);
+  const candidates = [
+    { ...structuredClone(session), sessionId: "session:tampered" },
+    { ...structuredClone(session), reviewer: { kind: "self_asserted", name: "Someone else" } },
+    { ...structuredClone(session), startedAt: "2026-08-28T20:00:01.000Z" },
+  ];
+
+  for (const candidate of candidates) {
+    const snapshot = structuredClone(candidate);
+    const decoded = await decodeReviewSession(candidate, source, set);
+    assert.equal(decoded.ok, false);
+    assert.equal(decoded.errors.some((error) => error.includes("session ID")), true);
+    await assert.rejects(createReviewArtifact(source, set, candidate), /session ID/u);
+    assert.deepEqual(candidate, snapshot);
+  }
+  assert.deepEqual(session, original);
 });
 
 test("artifact records source and revised digests plus ordered replacements", async () => {
