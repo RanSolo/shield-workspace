@@ -79,6 +79,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .checkpoint-count { color: var(--muted); }
 .learning-card { margin: 28px 0; padding: 22px; border-left: 4px solid var(--orange); background: var(--panel-raised); border-radius: 0 12px 12px 0; }
 .learning-card__copy, .prompt { font-size: 1.12rem; }
+.revision-note { margin: 22px 0; padding-top: 4px; border-top: 1px dashed var(--line); }
 .confidence-grid, .decision-grid, .completion-actions, .speech-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
 .speech-actions { margin-top: 0; }
 .confidence-grid .button { min-width: 50px; }

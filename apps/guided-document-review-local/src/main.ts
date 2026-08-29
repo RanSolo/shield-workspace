@@ -112,7 +112,13 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (action === "advance") result = advancePhase(state.session, expected, clock);
   if (action === "back") result = returnToPreviousPhase(state.session, expected, clock);
   if (action === "save-explanation") {
-    result = recordExplanation(state.session, expected, valueOf("explanation"), clock);
+    result = recordExplanation(
+      state.session,
+      expected,
+      valueOf("explanation"),
+      clock,
+      valueOf("requested-change"),
+    );
   }
   if (action === "confidence") {
     result = recordConfidence(state.session, expected, Number(button.dataset.value) as 1 | 2 | 3 | 4 | 5, clock);

@@ -129,6 +129,7 @@ export function recordExplanation(
   expected: ExpectedTransition,
   explanation: string,
   clock: Clock,
+  requestedChange = "",
 ): SessionResult {
   const check = checkTransition(session, expected);
   if (check) return check;
@@ -138,7 +139,10 @@ export function recordExplanation(
   if (explanation.trim().length < 20) return invalid("explanation_short", "Explain the idea in at least 20 characters.");
   return changed(session, expected, {
     phase: "confidence",
-    answers: updateAnswer(session, expected.checkpointId, { explanation: explanation.trim() }),
+    answers: updateAnswer(session, expected.checkpointId, {
+      explanation: explanation.trim(),
+      requestedChange: requestedChange.trim() || null,
+    }),
   }, clock);
 }
 
@@ -165,7 +169,8 @@ export function recordDecision(
 ): SessionResult {
   const check = checkTransition(session, expected, "decide");
   if (check) return check;
-  const requestedChange = input.requestedChange?.trim() ?? "";
+  const requestedChange = input.requestedChange?.trim() ||
+    session.answers[expected.checkpointId]?.requestedChange?.trim() || "";
   if (input.decision === "revise" && requestedChange.length < 10) {
     return invalid("change_request_required", "Describe the requested change before choosing Needs revision.");
   }
@@ -176,7 +181,7 @@ export function recordDecision(
     currentCheckpointIndex: finalCheckpoint ? session.currentCheckpointIndex : session.currentCheckpointIndex + 1,
     answers: updateAnswer(session, expected.checkpointId, {
       decision: input.decision,
-      requestedChange: input.decision === "revise" ? requestedChange : null,
+      requestedChange: requestedChange || null,
       decidedAt,
     }),
   }, () => decidedAt);

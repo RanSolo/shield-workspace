@@ -36,6 +36,7 @@ test("a complete explain-back journey produces educational evidence", async () =
     expected(session, "purpose", "three"),
     "The rail gives agents one clear next action while keeping humans informed.",
     fixedClock,
+    "Define what qualifies as a meaningful human decision.",
   ));
   session = success(recordConfidence(session, expected(session, "purpose", "four"), 5, fixedClock));
   session = success(recordDecision(session, set, expected(session, "purpose", "five"), { decision: "understand" }, fixedClock));
@@ -44,6 +45,7 @@ test("a complete explain-back journey produces educational evidence", async () =
   assert.equal(session.phase, "complete");
   assert.equal(artifact.authority, "none");
   assert.equal(artifact.effect, "educational_review_only");
+  assert.equal(session.answers.purpose.requestedChange, "Define what qualifies as a meaningful human decision.");
   assert.deepEqual(artifact.summary, { understand: 1, question: 0, revise: 0, approve: 0 });
 });
 

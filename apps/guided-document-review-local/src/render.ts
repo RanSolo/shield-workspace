@@ -120,7 +120,12 @@ function renderExplain(container: HTMLElement, view: ReviewView): void {
   textarea.rows = 7;
   textarea.placeholder = "What does this mean, why does it matter, and what would you challenge?";
   textarea.value = view.session.answers[view.checkpoint.checkpointId].explanation ?? "";
-  container.append(label, textarea, actionButton("Lock in my explanation", "save-explanation", "primary"));
+  container.append(
+    label,
+    textarea,
+    revisionNote(view, "Optional — saved with this checkpoint so you do not have to collect changes later."),
+    actionButton("Lock in my explanation", "save-explanation", "primary"),
+  );
   textarea.focus();
 }
 
@@ -138,14 +143,7 @@ function renderConfidence(container: HTMLElement, view: ReviewView): void {
 
 function renderDecision(container: HTMLElement, view: ReviewView): void {
   container.append(element("p", "prompt", "What is your disposition on this checkpoint?"));
-  const changeLabel = element("label", "field-label", "Requested change");
-  changeLabel.htmlFor = "requested-change";
-  const requestedChange = document.createElement("textarea");
-  requestedChange.id = "requested-change";
-  requestedChange.rows = 4;
-  requestedChange.placeholder = "Required for Needs revision: describe exactly what should change and why.";
-  requestedChange.value = view.session.answers[view.checkpoint.checkpointId].requestedChange ?? "";
-  container.append(changeLabel, requestedChange);
+  container.append(revisionNote(view, "Edit the note if needed. A specific note is required for Needs revision."));
   const group = element("div", "decision-grid");
   const decisions: readonly [ReviewDecision, string][] = [
     ["understand", "I understand"],
@@ -159,6 +157,19 @@ function renderDecision(container: HTMLElement, view: ReviewView): void {
     group.append(button);
   });
   container.append(group, element("p", "fine-print", "“Looks right” is an educational disposition only. It does not approve or merge anything."));
+}
+
+function revisionNote(view: ReviewView, hint: string): HTMLElement {
+  const wrapper = element("div", "revision-note");
+  const changeLabel = element("label", "field-label", "Requested change");
+  changeLabel.htmlFor = "requested-change";
+  const requestedChange = document.createElement("textarea");
+  requestedChange.id = "requested-change";
+  requestedChange.rows = 4;
+  requestedChange.placeholder = "Capture a question, correction, missing detail, or exact change while it is fresh.";
+  requestedChange.value = view.session.answers[view.checkpoint.checkpointId].requestedChange ?? "";
+  wrapper.append(changeLabel, requestedChange, element("p", "hint", hint));
+  return wrapper;
 }
 
 function actionButton(label: string, action: string, style: string): HTMLButtonElement {
