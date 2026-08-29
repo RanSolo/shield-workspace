@@ -291,9 +291,6 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
   .journey { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .trail-stop { padding: 0; }
   .trail-stop::after { display: none; }
-  .guided-reveal summary { grid-template-columns: 34px 1fr; }
-  .guided-reveal__hint { grid-column: 2; }
-  .guided-reveal__answer { padding-left: 20px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .button, .trail-progress__caravan { transition: none; }
