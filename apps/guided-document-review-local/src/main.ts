@@ -87,6 +87,7 @@ async function beginReview(title: string, text: string, checkpoints: unknown, na
   setupPanel.hidden = true;
   reviewPanel.hidden = false;
   render();
+  window.scrollTo({ top: 0, left: 0, behavior: "auto" });
 }
 
 async function handleClick(event: MouseEvent): Promise<void> {
