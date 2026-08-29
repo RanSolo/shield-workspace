@@ -49,7 +49,7 @@ export function renderCheckpoint(container: HTMLElement, view: ReviewView, speec
   if (view.message) container.append(element("p", "message message--warning", view.message));
   if (view.session.phase === "orient") renderOrient(container, view);
   if (view.session.phase === "teach") renderTeach(container, view);
-  if (view.session.phase === "ask") renderAsk(container, view);
+  if (view.session.phase === "ask") renderExplain(container, view);
   if (view.session.phase === "explain_back") renderExplain(container, view);
   if (view.session.phase === "confidence") renderConfidence(container, view);
   if (view.session.phase === "decide") renderDecision(container, view);
@@ -108,13 +108,6 @@ function renderTeach(container: HTMLElement, view: ReviewView): void {
   container.append(
     card("Trail guide", view.checkpoint.teaching),
     actionButton("Show me what to look for", "advance", "primary"),
-  );
-}
-
-function renderAsk(container: HTMLElement, view: ReviewView): void {
-  container.append(
-    card("Checkpoint question", view.checkpoint.question),
-    actionButton("I’m ready to explain it", "advance", "primary"),
   );
 }
 
@@ -204,7 +197,7 @@ function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", 
 }
 
 function phaseTitle(phase: ReviewSession["phase"]): string {
-  return ({ orient: "Scout the checkpoint", teach: "Learn the terrain", ask: "Read the signpost", explain_back: "Prove it to yourself", confidence: "Check your supplies", decide: "Choose the trail" } as Record<string, string>)[phase] ?? "Complete";
+  return ({ orient: "Scout the checkpoint", teach: "Learn the terrain", ask: "Prove it to yourself", explain_back: "Prove it to yourself", confidence: "Check your supplies", decide: "Choose the trail" } as Record<string, string>)[phase] ?? "Complete";
 }
 
 function labelDecision(decision: ReviewDecision): string {

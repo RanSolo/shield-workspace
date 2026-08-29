@@ -130,8 +130,11 @@ export function recordExplanation(
   explanation: string,
   clock: Clock,
 ): SessionResult {
-  const check = checkTransition(session, expected, "explain_back");
+  const check = checkTransition(session, expected);
   if (check) return check;
+  if (session.phase !== "explain_back" && session.phase !== "ask") {
+    return invalid("phase_mismatch", "That action is not valid at this step.");
+  }
   if (explanation.trim().length < 20) return invalid("explanation_short", "Explain the idea in at least 20 characters.");
   return changed(session, expected, {
     phase: "confidence",
@@ -211,14 +214,14 @@ function checkTransition(session: ReviewSession, expected: ExpectedTransition, p
 }
 
 function nextPhase(phase: ReviewPhase): ReviewPhase | null {
-  return ({ orient: "teach", teach: "ask", ask: "explain_back" } as Partial<Record<ReviewPhase, ReviewPhase>>)[phase] ?? null;
+  return ({ orient: "teach", teach: "explain_back", ask: "explain_back" } as Partial<Record<ReviewPhase, ReviewPhase>>)[phase] ?? null;
 }
 
 function previousPhase(phase: ReviewPhase): ReviewPhase | null {
   return ({
     teach: "orient",
     ask: "teach",
-    explain_back: "ask",
+    explain_back: "teach",
     confidence: "explain_back",
     decide: "confidence",
   } as Partial<Record<ReviewPhase, ReviewPhase>>)[phase] ?? null;
