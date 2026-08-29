@@ -51,61 +51,105 @@ button { cursor: pointer; }
   position: absolute;
   left: calc(var(--trail-progress) * 1%);
   bottom: 5px;
-  width: 116px;
-  height: 44px;
+  width: 136px;
+  height: 48px;
   transform: translateX(calc(var(--trail-progress) * -1%));
   transition: left 650ms cubic-bezier(.22, .8, .3, 1), transform 650ms cubic-bezier(.22, .8, .3, 1);
+}
+.trail-progress__caravan::before {
+  content: "";
+  position: absolute;
+  left: 61px;
+  bottom: 18px;
+  width: 35px;
+  height: 3px;
+  border-radius: 999px;
+  background: #9b6939;
+  rotate: -4deg;
+  transform-origin: left center;
 }
 .trail-progress__wagon {
   position: absolute;
   left: 0;
   bottom: 10px;
-  width: 62px;
-  height: 30px;
-  border: 2px solid #ffd275;
-  border-radius: 5px 5px 3px 3px;
-  background: linear-gradient(#ef6f38 0 65%, #a63e22 65%);
+  z-index: 2;
+  width: 66px;
+  height: 18px;
+  border: 2px solid #6f351f;
+  border-radius: 3px;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 13px, #8b4325 13px 15px),
+    linear-gradient(#ef6f38, #a63e22);
   box-shadow: 0 3px 12px #000a;
 }
 .trail-progress__wagon::before,
 .trail-progress__wagon::after {
   content: "";
   position: absolute;
-  bottom: -10px;
-  width: 16px;
-  height: 16px;
+  z-index: 3;
+  bottom: -11px;
+  width: 18px;
+  height: 18px;
   border: 3px solid #d7e0df;
   border-radius: 50%;
   background: repeating-conic-gradient(#d7e0df 0 14deg, #1a2529 14deg 45deg);
   box-shadow: inset 0 0 0 3px #1a2529;
   animation: wagon-wheel-turn 1.2s linear infinite;
 }
-.trail-progress__wagon::before { left: 7px; }
-.trail-progress__wagon::after { right: 7px; }
+.trail-progress__wagon::before { left: 6px; }
+.trail-progress__wagon::after { right: 6px; }
 .trail-progress__wagon span {
   position: absolute;
-  top: 6px;
-  left: 10px;
-  width: 12px;
-  height: 9px;
-  border-radius: 2px;
-  background: #ffe9a9;
-  box-shadow: 20px 0 #ffe9a9;
+  left: 5px;
+  bottom: 14px;
+  width: 52px;
+  height: 27px;
+  overflow: hidden;
+  border: 2px solid #d7c18d;
+  border-bottom: 0;
+  border-radius: 28px 28px 3px 3px;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 14px, #d4bd884d 14px 16px),
+    linear-gradient(135deg, #fff2c9, #d8c08e);
+  box-shadow: inset -8px 0 10px #8c6d3d33;
+}
+.trail-progress__wagon span::after {
+  content: "";
+  position: absolute;
+  right: -2px;
+  bottom: 0;
+  width: 10px;
+  height: 20px;
+  border-left: 2px solid #a88451;
+  border-radius: 9px 0 0;
+  background: #80613b;
 }
 .trail-progress__team {
   position: absolute;
   right: 0;
-  bottom: 10px;
+  bottom: 9px;
   display: flex;
-  gap: 5px;
-  width: 46px;
+  gap: 4px;
+  width: 52px;
+}
+.trail-progress__team::before {
+  content: "";
+  position: absolute;
+  z-index: 3;
+  top: -3px;
+  left: 17px;
+  width: 3px;
+  height: 19px;
+  border-radius: 3px;
+  background: #6f4528;
+  box-shadow: 25px 0 #6f4528;
 }
 .trail-progress__team i {
   position: relative;
   display: block;
-  width: 19px;
-  height: 12px;
-  border-radius: 8px 7px 5px 5px;
+  width: 23px;
+  height: 14px;
+  border-radius: 10px 8px 6px 6px;
   background: #c99b61;
   box-shadow: inset 0 -3px #855d36;
   animation: ox-team-bob .8s ease-in-out infinite alternate;
@@ -114,21 +158,22 @@ button { cursor: pointer; }
 .trail-progress__team i::before {
   content: "";
   position: absolute;
-  top: 2px;
-  right: -5px;
-  width: 8px;
-  height: 8px;
+  top: 1px;
+  right: -7px;
+  width: 10px;
+  height: 10px;
   border-radius: 50% 55% 45% 50%;
   background: #d9ad72;
-  box-shadow: 1px -3px 0 -1px #f1d39a;
+  border-top: 2px solid #f1d39a;
+  box-shadow: 3px -4px 0 -2px #f1d39a, -1px 4px 0 -3px #1a2529;
 }
 .trail-progress__team i::after {
   content: "";
   position: absolute;
-  bottom: -6px;
+  bottom: -7px;
   left: 4px;
   width: 3px;
-  height: 8px;
+  height: 9px;
   border-radius: 0 0 2px 2px;
   background: #855d36;
   box-shadow: 9px 0 #855d36;
