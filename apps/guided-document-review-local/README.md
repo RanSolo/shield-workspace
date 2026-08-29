@@ -4,6 +4,8 @@ Document Trail turns a Markdown or text document into a small learning journey. 
 
 The review screen also offers browser-native **Read aloud** controls for the checkpoint and source excerpt. No text leaves the browser for an application API.
 
+For smarter checkpoints without an API integration, choose **Copy prompt for any AI**. The generated prompt includes the exact closed JSON contract and the current document. Paste the AI's JSON response back into the app; Document Trail validates it before beginning the review.
+
 Start it locally with one copy-safe command from the repository root:
 
 ```sh

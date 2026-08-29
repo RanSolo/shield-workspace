@@ -2,6 +2,7 @@ import {
   advancePhase,
   checkpointsFromHeadings,
   createCheckpointSet,
+  createCheckpointPrompt,
   createReviewArtifact,
   createSourceDocument,
   findSourceExcerpt,
@@ -44,6 +45,7 @@ const speech = createSpeechControls();
 document.addEventListener("click", (event) => void handleClick(event));
 required("start-sample").addEventListener("click", () => void startSample());
 required("start-custom").addEventListener("click", () => void startCustom());
+required("copy-ai-prompt").addEventListener("click", () => void copyAiPrompt());
 required("document-file").addEventListener("change", (event) => void loadTextFile(event, "document-text"));
 required("checkpoint-file").addEventListener("change", (event) => void loadTextFile(event, "checkpoint-json"));
 
@@ -60,6 +62,16 @@ async function startCustom(): Promise<void> {
     await beginReview(title, text, checkpoints, reviewerName());
   } catch (error) {
     showSetupMessage(error instanceof Error ? error.message : "Unable to start this review.");
+  }
+}
+
+async function copyAiPrompt(): Promise<void> {
+  try {
+    const prompt = createCheckpointPrompt(valueOf("document-title"), valueOf("document-text"));
+    await navigator.clipboard.writeText(prompt);
+    showSetupMessage("Prompt copied. Give it to any AI, then paste the returned JSON below.");
+  } catch (error) {
+    showSetupMessage(error instanceof Error ? error.message : "Unable to copy the AI prompt.");
   }
 }
 

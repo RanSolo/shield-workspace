@@ -34,8 +34,9 @@
           <label>Document file <input id="document-file" type="file" accept=".md,.txt,text/plain,text/markdown" /></label>
           <label>Or paste the document <textarea id="document-text" rows="10" placeholder="# Purpose&#10;Paste Markdown or text here..."></textarea></label>
           <details>
-            <summary>Optional agent-authored checkpoints</summary>
-            <p class="hint">Load a JSON array using the documented checkpoint shape. Leave blank to generate checkpoints from headings.</p>
+            <summary>Optional AI-authored checkpoints</summary>
+            <p class="hint">Works with Gemini, ChatGPT, Claude, Copilot, or a local model. Copy the tailored prompt, give it to your AI, then paste the returned JSON below.</p>
+            <button id="copy-ai-prompt" class="button button--secondary" type="button">Copy prompt for any AI</button>
             <input id="checkpoint-file" type="file" accept=".json,application/json" />
             <textarea id="checkpoint-json" rows="7" placeholder='[{"checkpointId":"purpose", ...}]'></textarea>
           </details>
