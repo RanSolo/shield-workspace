@@ -8,13 +8,13 @@ import {
   createRevisionPrompt,
   createReviewArtifact,
   createSourceDocument,
+  decodeReviewSession,
   findSourceExcerpt,
   recordConfidence,
   recordDecision,
   recordExplanation,
   recordStepReveal,
   returnToPreviousPhase,
-  sessionMatches,
   startReviewSession,
   type CheckpointSet,
   type ExpectedTransition,
@@ -143,10 +143,10 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (action === "back") result = returnToPreviousPhase(state.session, state.checkpointSet, expected, clock);
   if (action === "reveal-step") result = recordStepReveal(state.session, state.checkpointSet, expected, clock);
   if (action === "save-explanation") {
-    result = recordExplanation(state.session, expected, valueOf("explanation"), clock);
+    result = recordExplanation(state.session, state.checkpointSet, expected, valueOf("explanation"), clock);
   }
   if (action === "confidence") {
-    result = recordConfidence(state.session, expected, Number(button.dataset.value) as 1 | 2 | 3 | 4 | 5, clock);
+    result = recordConfidence(state.session, state.checkpointSet, expected, Number(button.dataset.value) as 1 | 2 | 3 | 4 | 5, clock);
   }
   if (action === "decision") {
     result = recordDecision(state.session, state.checkpointSet, expected, {
@@ -257,8 +257,8 @@ function readDraft(source: SourceDocument, set: CheckpointSet): ReviewSession | 
   const raw = localStorage.getItem(storageKey(source, set));
   if (!raw) return null;
   try {
-    const candidate = JSON.parse(raw) as ReviewSession;
-    return isSessionShape(candidate) && sessionMatches(candidate, source, set) ? candidate : null;
+    const decoded = decodeReviewSession(JSON.parse(raw), source, set);
+    return decoded.ok ? decoded.session : null;
   } catch {
     return null;
   }
@@ -302,15 +302,6 @@ function updateReplacementOriginal(event: Event): void {
   const step = activeCheckpoint().learningSteps.find((candidate) => candidate.stepId === select.value);
   const original = document.getElementById("replacement-original");
   if (step && original) original.textContent = `Original passage (locked): ${step.sourceQuote}`;
-}
-
-function isSessionShape(value: unknown): value is ReviewSession {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<ReviewSession>;
-  return candidate.schemaVersion === 2 && typeof candidate.sessionId === "string" &&
-    typeof candidate.sourceDigest === "string" && typeof candidate.checkpointSetDigest === "string" &&
-    typeof candidate.currentStepIndex === "number" && typeof candidate.revision === "number" &&
-    Array.isArray(candidate.events) && candidate.answers !== null && typeof candidate.answers === "object";
 }
 
 async function loadTextFile(event: Event, targetId: string): Promise<void> {

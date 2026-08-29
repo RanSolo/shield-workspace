@@ -7,6 +7,7 @@ import {
   createCheckpointSet,
   createReviewArtifact,
   createSourceDocument,
+  decodeReviewSession,
   recordConfidence,
   recordDecision,
   recordExplanation,
@@ -37,8 +38,8 @@ test("V2 persists one-step-at-a-time reveals and records an immutable replacemen
   session = success(advancePhase(session, set, expected(session, "purpose", "purpose-why"), fixedClock));
   session = success(recordStepReveal(session, set, expected(session, "purpose", "purpose-finish"), fixedClock));
   session = success(advancePhase(session, set, expected(session, "purpose", "purpose-finish"), fixedClock));
-  session = success(recordExplanation(session, expected(session, "purpose"), "The rail makes the next move clear and keeps the lane reusable.", fixedClock));
-  session = success(recordConfidence(session, expected(session, "purpose"), 5, fixedClock));
+  session = success(recordExplanation(session, set, expected(session, "purpose"), "The rail makes the next move clear and keeps the lane reusable.", fixedClock));
+  session = success(recordConfidence(session, set, expected(session, "purpose"), 5, fixedClock));
   session = success(recordDecision(session, set, expected(session, "purpose"), {
     decision: "revise",
     replacement: { stepId: "purpose-finish", replacement: "The lane stays ready for reuse.", rationale: "Make the finish condition explicit." },
@@ -88,9 +89,76 @@ test("stale and replayed actions do not mutate a V2 session", async () => {
   const session = await startReviewSession(source, set, { kind: "unattributed", name: null }, fixedClock);
   const stale = advancePhase(session, set, { ...expected(session, "purpose"), revision: 4 }, fixedClock);
   assert.deepEqual(stale, { ok: false, code: "revision_stale", message: "The review changed. Reload before continuing." });
-  const first = success(advancePhase(session, set, expected(session, "purpose", "same"), fixedClock));
-  const replay = advancePhase(first, set, { ...expected(first, "purpose"), eventId: "unused" }, fixedClock);
-  assert.equal(replay.ok, false);
+  const firstExpected = expected(session, "purpose");
+  const first = success(advancePhase(session, set, firstExpected, fixedClock));
+  const replay = recordStepReveal(first, set, { ...expected(first, "purpose", "purpose-why"), eventId: firstExpected.eventId }, fixedClock);
+  assert.deepEqual(replay, { ok: false, code: "event_replayed", message: "That action was already applied." });
+});
+
+test("every transition rejects a checkpoint set from another session without changing state", async () => {
+  const source = await createSourceDocument("Rail", sourceText);
+  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
+  const foreignSet = await createCheckpointSet("Different review", checkpoints, source.text);
+  const session = await startReviewSession(source, set, { kind: "unattributed", name: null }, fixedClock);
+  const snapshot = structuredClone(session);
+  const checkpointExpected = expected(session, "purpose");
+  const stepExpected = expected(session, "purpose", "purpose-why");
+  const attempts = [
+    advancePhase(session, foreignSet, checkpointExpected, fixedClock),
+    recordStepReveal(session, foreignSet, stepExpected, fixedClock),
+    returnToPreviousPhase(session, foreignSet, checkpointExpected, fixedClock),
+    recordExplanation(session, foreignSet, checkpointExpected, "A sufficiently long forged explanation.", fixedClock),
+    recordConfidence(session, foreignSet, checkpointExpected, 3, fixedClock),
+    recordDecision(session, foreignSet, checkpointExpected, { decision: "approve" }, fixedClock),
+  ];
+
+  for (const attempt of attempts) {
+    assert.equal(attempt.ok, false);
+    assert.equal(attempt.code, "checkpoint_set_mismatch");
+  }
+  assert.deepEqual(session, snapshot);
+});
+
+test("transitions require the active checkpoint and active learning step without changing state", async () => {
+  const source = await createSourceDocument("Rail", sourceText);
+  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
+  const session = await startReviewSession(source, set, { kind: "unattributed", name: null }, fixedClock);
+  const snapshot = structuredClone(session);
+
+  const wrongCheckpoint = advancePhase(session, set, expected(session, "not-active"), fixedClock);
+  const wrongStep = advancePhase(session, set, expected(session, "purpose", "purpose-finish"), fixedClock);
+
+  assert.equal(wrongCheckpoint.ok, false);
+  assert.equal(wrongCheckpoint.code, "checkpoint_mismatch");
+  assert.equal(wrongStep.ok, false);
+  assert.equal(wrongStep.code, "step_mismatch");
+  assert.deepEqual(session, snapshot);
+});
+
+test("the closed decoder rejects forged and cross-bound persisted sessions", async () => {
+  const source = await createSourceDocument("Rail", sourceText);
+  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
+  const session = await completeToDecision(source, set);
+  const persisted = JSON.parse(JSON.stringify(session));
+  assert.equal(decodeReviewSession(persisted, source, set).ok, true);
+
+  const crossSource = await createSourceDocument("Other rail", `${sourceText}\n`);
+  const crossSet = await createCheckpointSet("Other review", checkpoints, crossSource.text);
+  assert.equal(decodeReviewSession(persisted, crossSource, set).ok, false);
+  assert.equal(decodeReviewSession(persisted, source, crossSet).ok, false);
+
+  const forgedShape = { ...persisted, injected: true };
+  assert.equal(decodeReviewSession(forgedShape, source, set).ok, false);
+  const forgedAnswers = structuredClone(persisted);
+  forgedAnswers.answers.purpose.revealedStepIds.reverse();
+  assert.equal(decodeReviewSession(forgedAnswers, source, set).ok, false);
+  const forgedEvents = structuredClone(persisted);
+  forgedEvents.events[1].eventId = forgedEvents.events[0].eventId;
+  assert.equal(decodeReviewSession(forgedEvents, source, set).ok, false);
+  const forgedRevision = { ...persisted, revision: persisted.revision + 1 };
+  assert.equal(decodeReviewSession(forgedRevision, source, set).ok, false);
+  const forgedPhase = { ...persisted, phase: "complete" };
+  assert.equal(decodeReviewSession(forgedPhase, source, set).ok, false);
 });
 
 test("artifact records source and revised digests plus ordered replacements", async () => {
@@ -110,6 +178,25 @@ test("artifact records source and revised digests plus ordered replacements", as
   assert.equal(artifact.effect, "educational_review_only");
 });
 
+test("artifact creation rejects cross-bound and malformed completed sessions", async () => {
+  const source = await createSourceDocument("Rail", sourceText);
+  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
+  const atDecision = await completeToDecision(source, set);
+  const complete = success(recordDecision(atDecision, set, expected(atDecision, "purpose"), {
+    decision: "approve",
+  }, fixedClock));
+  const crossSource = await createSourceDocument("Other rail", `${sourceText}\n`);
+  const crossSet = await createCheckpointSet("Other review", checkpoints, source.text);
+
+  await assert.rejects(createReviewArtifact(crossSource, set, complete), /source (ID|digest) does not match/u);
+  await assert.rejects(createReviewArtifact(source, crossSet, complete), /checkpoint-set (ID|digest) does not match/u);
+
+  const malformed = structuredClone(complete);
+  malformed.answers.purpose.decision = null;
+  malformed.answers.purpose.decidedAt = null;
+  await assert.rejects(createReviewArtifact(source, set, malformed), /Invalid review session/u);
+});
+
 async function completeToDecision(source, set) {
   let session = await startReviewSession(source, set, { kind: "unattributed", name: null }, fixedClock);
   session = success(advancePhase(session, set, expected(session, "purpose"), fixedClock));
@@ -117,8 +204,8 @@ async function completeToDecision(source, set) {
   session = success(advancePhase(session, set, expected(session, "purpose", "purpose-why"), fixedClock));
   session = success(recordStepReveal(session, set, expected(session, "purpose", "purpose-finish"), fixedClock));
   session = success(advancePhase(session, set, expected(session, "purpose", "purpose-finish"), fixedClock));
-  session = success(recordExplanation(session, expected(session, "purpose"), "The rail makes the next move clear and keeps the lane reusable.", fixedClock));
-  return success(recordConfidence(session, expected(session, "purpose"), 4, fixedClock));
+  session = success(recordExplanation(session, set, expected(session, "purpose"), "The rail makes the next move clear and keeps the lane reusable.", fixedClock));
+  return success(recordConfidence(session, set, expected(session, "purpose"), 4, fixedClock));
 }
 
 function step(stepId, sourceQuote) {

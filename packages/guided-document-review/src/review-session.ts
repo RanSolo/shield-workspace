@@ -125,7 +125,7 @@ export function advancePhase(
   expected: ExpectedTransition,
   clock: Clock,
 ): SessionResult {
-  const check = checkTransition(session, expected);
+  const check = checkTransition(session, checkpointSet, expected, undefined, session.phase === "learn");
   if (check) return check;
   if (session.phase === "orient") return changed(session, expected, { phase: "learn" }, clock);
   if (session.phase !== "learn") return invalid("phase_complete", "This checkpoint needs a decision before it can advance.");
@@ -146,7 +146,7 @@ export function recordStepReveal(
   expected: ExpectedTransition,
   clock: Clock,
 ): SessionResult {
-  const check = checkTransition(session, expected, "learn");
+  const check = checkTransition(session, checkpointSet, expected, "learn", true);
   if (check) return check;
   const step = activeStep(checkpointSet, session);
   if (!step || expected.stepId !== step.stepId) return invalid("step_mismatch", "That learning step is not active.");
@@ -165,7 +165,7 @@ export function returnToPreviousPhase(
   expected: ExpectedTransition,
   clock: Clock,
 ): SessionResult {
-  const check = checkTransition(session, expected);
+  const check = checkTransition(session, checkpointSet, expected, undefined, session.phase === "learn");
   if (check) return check;
   if (session.phase === "learn" && session.currentStepIndex > 0) {
     return changed(session, expected, { currentStepIndex: session.currentStepIndex - 1 }, clock);
@@ -185,11 +185,12 @@ export function returnToPreviousPhase(
 
 export function recordExplanation(
   session: ReviewSession,
+  checkpointSet: CheckpointSet,
   expected: ExpectedTransition,
   explanation: string,
   clock: Clock,
 ): SessionResult {
-  const check = checkTransition(session, expected, "explain_back");
+  const check = checkTransition(session, checkpointSet, expected, "explain_back");
   if (check) return check;
   if (explanation.trim().length < 20) return invalid("explanation_short", "Explain the idea in at least 20 characters.");
   return changed(session, expected, {
@@ -200,11 +201,12 @@ export function recordExplanation(
 
 export function recordConfidence(
   session: ReviewSession,
+  checkpointSet: CheckpointSet,
   expected: ExpectedTransition,
   confidence: 1 | 2 | 3 | 4 | 5,
   clock: Clock,
 ): SessionResult {
-  const check = checkTransition(session, expected, "confidence");
+  const check = checkTransition(session, checkpointSet, expected, "confidence");
   if (check) return check;
   return changed(session, expected, {
     phase: "decide",
@@ -219,7 +221,7 @@ export function recordDecision(
   input: ReviewDispositionInput,
   clock: Clock,
 ): SessionResult {
-  const check = checkTransition(session, expected, "decide");
+  const check = checkTransition(session, checkpointSet, expected, "decide");
   if (check) return check;
   const replacement = input.replacement ? createReplacement(checkpointSet, session, input.replacement) : null;
   if (replacement && !replacement.ok) return replacement;
@@ -296,12 +298,30 @@ function changed(
   }};
 }
 
-function checkTransition(session: ReviewSession, expected: ExpectedTransition, phase?: ReviewPhase): SessionResult | null {
+function checkTransition(
+  session: ReviewSession,
+  checkpointSet: CheckpointSet,
+  expected: ExpectedTransition,
+  phase?: ReviewPhase,
+  requireStep = false,
+): SessionResult | null {
+  if (session.checkpointSetId !== checkpointSet.checkpointSetId ||
+      session.checkpointSetDigest !== checkpointSet.checkpointSetDigest) {
+    return invalid("checkpoint_set_mismatch", "That checkpoint set does not belong to this review session.");
+  }
+  const checkpoint = checkpointSet.checkpoints[session.currentCheckpointIndex];
+  if (!checkpoint || expected.checkpointId !== checkpoint.checkpointId) {
+    return invalid("checkpoint_mismatch", "That checkpoint is not active.");
+  }
+  const step = checkpoint.learningSteps[session.currentStepIndex];
+  if ((requireStep || expected.stepId !== undefined) && (!step || expected.stepId !== step.stepId)) {
+    return invalid("step_mismatch", "That learning step is not active.");
+  }
   if (session.events.some((event) => event.eventId === expected.eventId)) return invalid("event_replayed", "That action was already applied.");
   if (expected.revision !== session.revision) return invalid("revision_stale", "The review changed. Reload before continuing.");
   if (expected.phase !== session.phase || (phase && session.phase !== phase)) return invalid("phase_mismatch", "That action is not valid at this step.");
-  const answer = session.answers[expected.checkpointId];
-  if (!answer || answer.checkpointId !== expected.checkpointId) return invalid("checkpoint_mismatch", "That checkpoint is not active.");
+  const answer = session.answers[checkpoint.checkpointId];
+  if (!answer || answer.checkpointId !== checkpoint.checkpointId) return invalid("checkpoint_mismatch", "That checkpoint is not active.");
   return null;
 }
 

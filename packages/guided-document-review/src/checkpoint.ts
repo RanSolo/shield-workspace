@@ -68,13 +68,14 @@ export async function createCheckpointSet(
   if (!cleanTitle) throw new TypeError("A checkpoint-set title is required.");
   const validation = validateCheckpoints(input, sourceText);
   if (!validation.ok) throw new TypeError(validation.errors.join(" "));
-  const material = { schemaVersion: 2 as const, title: cleanTitle, checkpoints: validation.value };
+  const checkpoints = copyAndFreezeCheckpoints(validation.value);
+  const material = { schemaVersion: 2 as const, title: cleanTitle, checkpoints };
   const checkpointSetDigest = await sha256Json(material);
-  return {
+  return Object.freeze({
     ...material,
     checkpointSetId: `checkpoints:${checkpointSetDigest.slice(7, 23)}`,
     checkpointSetDigest,
-  };
+  });
 }
 
 export function checkpointsFromHeadings(text: string): readonly ReviewCheckpoint[] {
@@ -117,6 +118,22 @@ function isExactLearningStep(value: unknown): value is LearningStep {
 
 function exactKeys(value: Record<string, unknown>, fields: readonly string[]): boolean {
   return Object.keys(value).sort().join("|") === [...fields].sort().join("|");
+}
+
+function copyAndFreezeCheckpoints(checkpoints: readonly ReviewCheckpoint[]): readonly ReviewCheckpoint[] {
+  const copy = checkpoints.map((checkpoint) => Object.freeze({
+    checkpointId: checkpoint.checkpointId,
+    title: checkpoint.title,
+    learningSteps: Object.freeze(checkpoint.learningSteps.map((step) => Object.freeze({
+      stepId: step.stepId,
+      sourceQuote: step.sourceQuote,
+      purpose: step.purpose,
+      question: step.question,
+      explanation: step.explanation,
+      whyItMatters: step.whyItMatters,
+    }))),
+  }));
+  return Object.freeze(copy);
 }
 
 function uniqueQuote(text: string, candidate: string, start: number): string {

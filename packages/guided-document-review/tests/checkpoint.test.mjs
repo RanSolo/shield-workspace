@@ -32,3 +32,25 @@ test("V2 validation enforces closed shapes, 1–3 steps, unique IDs, and exact u
   const set = await createCheckpointSet("Review", [checkpoint], source);
   assert.equal(set.schemaVersion, 2);
 });
+
+test("checkpoint sets own and recursively freeze their digest-bound checkpoint data", async () => {
+  const input = [{ checkpointId: "one", title: "One", learningSteps: [step("one-step", "First body.")] }];
+  const set = await createCheckpointSet("Review", input, source);
+  const digest = set.checkpointSetDigest;
+
+  input[0].title = "Caller mutation";
+  input[0].learningSteps[0].question = "Caller changed the question.";
+  input[0].learningSteps.push(step("late-step", "Second body."));
+
+  assert.equal(set.checkpoints[0].title, "One");
+  assert.equal(set.checkpoints[0].learningSteps[0].question, "What does this idea change?");
+  assert.equal(set.checkpoints[0].learningSteps.length, 1);
+  assert.equal(set.checkpointSetDigest, digest);
+  assert.equal(Object.isFrozen(set), true);
+  assert.equal(Object.isFrozen(set.checkpoints), true);
+  assert.equal(Object.isFrozen(set.checkpoints[0]), true);
+  assert.equal(Object.isFrozen(set.checkpoints[0].learningSteps), true);
+  assert.equal(Object.isFrozen(set.checkpoints[0].learningSteps[0]), true);
+  assert.throws(() => { set.checkpoints[0].learningSteps[0].question = "Returned mutation"; }, TypeError);
+  assert.throws(() => { set.checkpoints[0].learningSteps.push(step("other", "Second body.")); }, TypeError);
+});
