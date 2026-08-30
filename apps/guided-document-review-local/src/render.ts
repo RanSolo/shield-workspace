@@ -32,6 +32,9 @@ export function renderJourney(
 ): void {
   container.replaceChildren();
   const renderedGroups = new Set<string>();
+  const trailCompleted =
+    view.session.phase === "complete" || view.session.events.some((event) => event.phase === "complete");
+  const canReopenCheckpoint = view.session.phase === "complete";
   view.checkpointSet.checkpoints.forEach((checkpoint, index) => {
     if (checkpoint.journeyGroup) {
       if (renderedGroups.has(checkpoint.journeyGroup.groupId)) return;
@@ -43,11 +46,11 @@ export function renderJourney(
       const activeMemberIndex = members.findIndex(
         (member) => member.checkpointId === view.checkpointSet.checkpoints[view.session.currentCheckpointIndex]?.checkpointId,
       );
-      const complete = reviewed === members.length;
+      const complete = trailCompleted || reviewed === members.length;
       const active = !complete && activeMemberIndex >= 0;
       const state = complete ? "complete" : active ? "active" : "waiting";
       const item = element("li", `trail-stop trail-stop--${state} trail-stop--group`);
-      const content = journeyStopButton(checkpoint.checkpointId, complete, [
+      const content = journeyStopButton(checkpoint.checkpointId, complete && canReopenCheckpoint, [
         element("span", "trail-stop__marker", complete ? "✓" : active ? "•" : "○"),
         element("span", "trail-stop__title", checkpoint.journeyGroup.title),
         element("span", "trail-stop__decision", active
@@ -59,11 +62,11 @@ export function renderJourney(
       return;
     }
     const answer = view.session.answers[checkpoint.checkpointId];
-    const complete = view.session.phase === "complete" || index < view.session.currentCheckpointIndex;
+    const complete = trailCompleted || index < view.session.currentCheckpointIndex;
     const active = !complete && index === view.session.currentCheckpointIndex;
     const state = complete ? "complete" : active ? "active" : "waiting";
     const item = element("li", `trail-stop trail-stop--${state}`);
-    const content = journeyStopButton(checkpoint.checkpointId, complete, [
+    const content = journeyStopButton(checkpoint.checkpointId, complete && canReopenCheckpoint, [
       element("span", "trail-stop__marker", complete ? "✓" : active ? "•" : "○"),
       element("span", "trail-stop__title", checkpoint.title),
     ]);
