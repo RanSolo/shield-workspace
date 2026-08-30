@@ -74,6 +74,7 @@ required("start-custom").addEventListener("click", () => void startCustom());
 required("copy-ai-prompt").addEventListener("click", () => void copyAiPrompt());
 required("document-file").addEventListener("change", (event) => void loadTextFile(event, "document-text"));
 required("checkpoint-file").addEventListener("change", (event) => void loadTextFile(event, "checkpoint-json"));
+setTrailTimeOfDay();
 animateTrail();
 void loadPreparedTrailFromLocation();
 
@@ -329,6 +330,12 @@ function renderTrailProgress(): void {
   trailProgress.style.setProperty("--trail-progress", String(percent));
   trailProgress.setAttribute("aria-valuenow", String(percent));
   trailProgress.setAttribute("aria-valuetext", `Checkpoint ${Math.min(state.session.currentCheckpointIndex + 1, total)} of ${total}`);
+}
+
+function setTrailTimeOfDay(now = new Date()): void {
+  const isDaytime = now.getHours() >= 6 && now.getHours() < 18;
+  trailProgress.classList.toggle("time-day", isDaytime);
+  trailProgress.classList.toggle("time-night", !isDaytime);
 }
 
 function animateTrail(): void {

@@ -60,12 +60,10 @@ button { cursor: pointer; }
   border-radius: 50%;
   background: #11191c;
 }
-.trail-progress.scene-a .sky--sun,
-.trail-progress.scene-b .sky--moon { opacity: .9; }
-.trail-progress.travel-to-b .sky--sun,
-.trail-progress.travel-to-a .sky--moon { animation: trail-sky-out 3.1s linear forwards; }
-.trail-progress.travel-to-b .sky--moon,
-.trail-progress.travel-to-a .sky--sun { animation: trail-sky-in 3.1s linear forwards; }
+.trail-progress.time-day .sky--sun,
+.trail-progress.time-night .sky--moon { opacity: .9; }
+.trail-progress.is-traveling.time-day .sky--sun,
+.trail-progress.is-traveling.time-night .sky--moon { animation: trail-sky-cross 3.1s linear forwards; }
 .trail-progress__scenery {
   position: absolute;
   z-index: 0;
@@ -76,13 +74,25 @@ button { cursor: pointer; }
   opacity: 0;
   translate: 125px 0;
 }
+.trail-progress__scenery::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  right: -15px;
+  bottom: -7px;
+  width: 195px;
+  height: 25px;
+  border-radius: 55% 65% 0 0;
+  background: #274c3a;
+  box-shadow: -145px 5px 0 5px #315844, -285px 2px 0 2px #234536;
+}
 .trail-progress.scene-a .scenery--a,
 .trail-progress.scene-b .scenery--b { opacity: .58; translate: 0; }
 .trail-progress.travel-to-b .scenery--a,
 .trail-progress.travel-to-a .scenery--b { animation: trail-scenery-out 5s linear forwards; }
 .trail-progress.travel-to-b .scenery--b,
 .trail-progress.travel-to-a .scenery--a { animation: trail-scenery-in 5s linear forwards; }
-.trail-progress__scenery i { position: absolute; display: block; }
+.trail-progress__scenery i { position: absolute; z-index: 1; display: block; }
 .trail-progress__scenery .tree {
   right: 62px;
   bottom: 0;
@@ -350,13 +360,12 @@ button { cursor: pointer; }
   from { opacity: 0; translate: 125px 0; }
   to { opacity: .58; translate: 0; }
 }
-@keyframes trail-sky-out {
-  from { opacity: .9; translate: 0 0; }
-  to { opacity: 0; translate: -135px 8px; }
-}
-@keyframes trail-sky-in {
-  from { opacity: 0; translate: 135px 8px; }
-  to { opacity: .9; translate: 0 0; }
+@keyframes trail-sky-cross {
+  0% { opacity: 0; translate: 135px 12px; }
+  18% { opacity: .9; }
+  50% { opacity: 1; translate: 0 -5px; }
+  82% { opacity: .9; }
+  100% { opacity: 0; translate: -135px 12px; }
 }
 .brand-kicker, .eyebrow { margin: 0 0 8px; color: var(--gold); font-size: .72rem; font-weight: 900; letter-spacing: .16em; text-transform: uppercase; }
 .topbar__promise { margin: 0; color: var(--teal); font-weight: 800; }
