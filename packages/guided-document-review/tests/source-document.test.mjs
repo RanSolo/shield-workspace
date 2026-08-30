@@ -55,3 +55,28 @@ test("a long source paragraph is never truncated", async () => {
 
   assert.equal(findSourceExcerpt(source, "whole paragraph"), `## Evidence\n\n${paragraph.trim()}`);
 });
+
+test("a passage spanning a paragraph and list resolves to its owning section", async () => {
+  const source = await createSourceDocument("Seats", [
+    "## Seat model",
+    "",
+    "The seat contracts remain useful independently of the runtime:",
+    "",
+    "- Hill sequences work.",
+    "- Daisy gathers evidence.",
+    "- Fury reviews.",
+    "",
+    "## Next section",
+    "",
+    "Other material.",
+  ].join("\n"));
+  const passage = [
+    "The seat contracts remain useful independently of the runtime:",
+    "",
+    "- Hill sequences work.",
+    "- Daisy gathers evidence.",
+    "- Fury reviews.",
+  ].join("\n");
+
+  assert.equal(findSourceExcerpt(source, passage), `## Seat model\n\n${passage}`);
+});

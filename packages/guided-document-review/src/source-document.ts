@@ -23,9 +23,17 @@ export async function createSourceDocument(title: string, text: string): Promise
 export function findSourceExcerpt(document: SourceDocument, searchText: string): string {
   const needle = searchText.trim().toLowerCase();
   const blocks = document.text.split(/\r?\n\s*\r?\n/u).filter((block) => block.trim());
-  const matchIndex = needle
+  let matchIndex = needle
     ? blocks.findIndex((block) => block.toLowerCase().includes(needle))
     : 0;
+  if (matchIndex < 0 && needle) {
+    const firstPassageBlock = searchText.split(/\r?\n\s*\r?\n/u)
+      .map((block) => block.trim().toLowerCase())
+      .find(Boolean);
+    if (firstPassageBlock) {
+      matchIndex = blocks.findIndex((block) => block.toLowerCase().includes(firstPassageBlock));
+    }
+  }
   const index = matchIndex < 0 ? 0 : matchIndex;
   const headingIndex = findOwningHeading(blocks, index);
   if (headingIndex < 0) return blocks[index].trim();
