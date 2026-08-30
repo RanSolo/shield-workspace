@@ -13,7 +13,7 @@
       },
       {
         "stepId": "problem-composition",
-        "sourceQuote": "The failure is primarily lifecycle composition, not a lack",
+        "sourceQuote": "The failure is primarily lifecycle composition, not a lack of individual\nguards. Adding more guards to the existing composition does not establish a\nsmall, auditable happy path.",
         "purpose": "Separate lifecycle design from isolated safeguards.",
         "question": "Why would adding another guard fail to fix the main problem?",
         "explanation": "A guard can catch one mistake, but it cannot make a tangled sequence easy to audit. The rail needs a small path that composes the right steps.",

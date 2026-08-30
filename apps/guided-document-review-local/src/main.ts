@@ -44,6 +44,7 @@ let lastTrailPercent: number | null = null;
 let trailMotionTimer: number | null = null;
 let sceneryScene: "a" | "b" = "a";
 let trailWasComplete = false;
+let replacementPreviewStepId: string | null = null;
 
 const setupPanel = required("setup-panel");
 const reviewPanel = required("review-panel");
@@ -152,7 +153,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (action === "stop-reading") return speech.stop(showSpeechStatus);
   if (action === "copy-source" && state && state.session.phase !== "complete") {
     try {
-      await navigator.clipboard.writeText(activeStep().sourceQuote);
+      await navigator.clipboard.writeText(visibleStep().sourceQuote);
       button.textContent = "✓ Passage copied";
     } catch {
       button.textContent = "Copy failed — select the text";
@@ -162,7 +163,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (!state || state.session.phase === "complete") return;
 
   const checkpoint = activeCheckpoint();
-  const step = activeStep();
+  const step = visibleStep();
   if (action === "read-checkpoint") {
     return speech.read(visibleCheckpointText(checkpoint, step, state.session.phase), showSpeechStatus);
   }
@@ -191,6 +192,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
     state = { ...state, message: result.message };
   } else {
     state = { ...state, session: result.session, message: null };
+    if (result.session.phase !== "decide") replacementPreviewStepId = null;
     saveDraft();
   }
   render();
@@ -211,7 +213,7 @@ function render(): void {
     return;
   }
   const checkpoint = activeCheckpoint();
-  const step = activeStep();
+  const step = visibleStep();
   const excerpt = findSourceExcerpt(state.source, step.sourceQuote);
   checkpointPanel.hidden = false;
   sourcePanel.hidden = false;
@@ -339,6 +341,14 @@ function activeStep(): LearningStep {
   return activeCheckpoint().learningSteps[state.session.currentStepIndex];
 }
 
+function visibleStep(): LearningStep {
+  const checkpoint = activeCheckpoint();
+  if (state?.session.phase !== "decide") return activeStep();
+  const replacementStepId = state.session.answers[checkpoint.checkpointId].replacement?.stepId;
+  return checkpoint.learningSteps.find((step) => step.stepId === (replacementPreviewStepId ?? replacementStepId))
+    ?? checkpoint.learningSteps[0];
+}
+
 function expectation(checkpointId: string, stepId?: string): ExpectedTransition {
   if (!state) throw new Error("No review is active.");
   return { eventId: crypto.randomUUID(), checkpointId, ...(stepId ? { stepId } : {}), phase: state.session.phase, revision: state.session.revision };
@@ -357,7 +367,11 @@ function updateReplacementOriginal(event: Event): void {
   if (select.id !== "replacement-step" || !state) return;
   const step = activeCheckpoint().learningSteps.find((candidate) => candidate.stepId === select.value);
   const original = document.getElementById("replacement-original");
-  if (step && original) original.textContent = `Original passage (locked): ${step.sourceQuote}`;
+  if (!step) return;
+  replacementPreviewStepId = step.stepId;
+  if (original) original.textContent = `Original passage (locked): ${step.sourceQuote}`;
+  const excerpt = findSourceExcerpt(state.source, step.sourceQuote);
+  renderSource(sourcePanel, state.source, excerpt, activeCheckpoint().checkpointId, step.stepId, step.sourceQuote, speech.supported);
 }
 
 async function loadTextFile(event: Event, targetId: string): Promise<void> {

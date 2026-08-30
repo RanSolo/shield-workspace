@@ -214,14 +214,14 @@ function renderDecision(container: HTMLElement, view: ReviewView): void {
   view.checkpoint.learningSteps.forEach((step) => {
     const option = document.createElement("option");
     option.value = step.stepId;
-    option.textContent = step.stepId;
-    option.selected = step.stepId === replacement?.stepId;
+    option.textContent = `${view.checkpoint.learningSteps.indexOf(step) + 1}. ${step.purpose}`;
+    option.selected = step.stepId === (replacement?.stepId ?? view.step.stepId);
     stepSelect.append(option);
   });
   const stepLabel = element("label", "field-label", "Replacement step (only for Needs revision)");
   stepLabel.htmlFor = stepSelect.id;
   stepLabel.append(stepSelect);
-  const original = element("p", "replacement-original", `Original passage (locked): ${replacement?.original ?? view.checkpoint.learningSteps[0].sourceQuote}`);
+  const original = element("p", "replacement-original", `Original passage (locked): ${replacement?.original ?? view.step.sourceQuote}`);
   original.id = "replacement-original";
   const replacementLabel = element("label", "field-label", "Desired replacement");
   replacementLabel.htmlFor = "replacement-text";
