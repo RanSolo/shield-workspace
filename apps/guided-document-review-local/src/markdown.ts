@@ -176,26 +176,59 @@ function highlightRenderedBlocks(
     if (block && root.contains(block)) blocks.add(block);
   });
 
-  blocks.forEach((block) => {
+  const scopedBlocks = expandHeadingScopes([...blocks]);
+
+  scopedBlocks.forEach((block, index) => {
     block.classList.add(className);
+    if (scopedBlocks.length > 1) {
+      block.classList.add("source-scope");
+      if (index === 0) block.classList.add("source-scope--first");
+      if (index === scopedBlocks.length - 1) block.classList.add("source-scope--last");
+    }
     block.dataset.checkpointId = checkpointId;
     block.dataset.stepId = stepId;
   });
-  return [...blocks];
+  return scopedBlocks;
 }
 
 function renderRevisionDiff(blocks: readonly HTMLElement[], replacement: string): void {
-  blocks.forEach((block) => {
+  blocks.forEach((block, index) => {
     const removed = document.createElement("div");
     removed.className = "source-diff__removed";
     while (block.firstChild) removed.append(block.firstChild);
 
-    const added = document.createElement("div");
-    added.className = "source-diff__added";
-    added.textContent = replacement;
     block.classList.add("source-diff");
-    block.append(removed, added);
+    block.append(removed);
+    if (index === blocks.length - 1) {
+      const added = document.createElement("div");
+      added.className = "source-diff__added";
+      added.textContent = replacement;
+      block.append(added);
+    }
   });
+}
+
+function expandHeadingScopes(blocks: readonly HTMLElement[]): HTMLElement[] {
+  const expanded = new Set<HTMLElement>(blocks);
+  blocks.forEach((block) => {
+    const level = headingLevel(block);
+    if (level === null) return;
+    let sibling = block.nextElementSibling;
+    while (sibling) {
+      const siblingLevel = headingLevel(sibling);
+      if (siblingLevel !== null && siblingLevel <= level) break;
+      if (sibling.nodeType === Node.ELEMENT_NODE) expanded.add(sibling as HTMLElement);
+      sibling = sibling.nextElementSibling;
+    }
+  });
+  return [...expanded].sort((left, right) => {
+    if (left === right) return 0;
+    return left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+  });
+}
+
+function headingLevel(element: Element): number | null {
+  return /^H[1-6]$/u.test(element.tagName) ? Number(element.tagName.slice(1)) : null;
 }
 
 function markerStatus(message: string): HTMLElement {

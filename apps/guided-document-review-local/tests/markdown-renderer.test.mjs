@@ -42,6 +42,31 @@ test("highlights a rendered heading block and keeps its stable source identity",
   assert.equal(marker.dataset.stepId, "step-1");
 });
 
+test("curates a heading anchor as its complete semantic section", () => {
+  const article = render(
+    "## Mission Host\n\nThe host performs effects.\n\n### Retry\n\nRetry observes first.\n\n## Projection\n\nProjection explains state.",
+    "## Mission Host",
+  );
+
+  const scoped = [...article.querySelectorAll(".source-highlight")];
+  assert.deepEqual(scoped.map((element) => element.tagName), ["H2", "P", "H3", "P"]);
+  assert.match(scoped.map((element) => element.textContent).join(" "), /Retry observes first/u);
+  assert.equal(article.querySelector("[data-source-anchor='projection']")?.querySelector(".source-highlight"), null);
+});
+
+test("renders one replacement for a curated section revision", () => {
+  const article = render(
+    "## Mission Host\n\nThe host performs effects.\n\n## Projection\n\nProjection explains state.",
+    "## Mission Host",
+    [],
+    { replacement: "## Mission Host\n\nThe host safely performs effects." },
+  );
+
+  assert.equal(article.querySelectorAll(".source-diff__removed").length, 2);
+  assert.equal(article.querySelectorAll(".source-diff__added").length, 1);
+  assert.match(article.querySelector(".source-diff__added")?.textContent ?? "", /safely performs/u);
+});
+
 test("renders an active numbered revision as a red removal and green addition", () => {
   const article = render(
     "1. **Stable lanes are first-class.** The path remains stable.",

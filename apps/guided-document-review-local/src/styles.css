@@ -627,6 +627,21 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
   background: #e8793426;
   color: var(--ink);
 }
+.source-scope {
+  margin-block: 0 !important;
+  border-top-width: 0;
+  border-bottom-width: 0;
+  border-radius: 0;
+}
+.source-scope--first {
+  border-top-width: 1px;
+  border-radius: 8px 8px 0 0;
+}
+.source-scope--last {
+  margin-bottom: 14px !important;
+  border-bottom-width: 1px;
+  border-radius: 0 0 8px 8px;
+}
 :is(li).source-highlight,
 :is(li).source-passed,
 :is(li).source-revised {
