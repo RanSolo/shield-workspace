@@ -236,7 +236,7 @@ button { cursor: pointer; }
   left: calc(var(--trail-progress) * 1%);
   bottom: 5px;
   width: 136px;
-  height: 58px;
+  height: 48px;
   transform: translateX(calc(var(--trail-progress) * -1%));
   transition: left 650ms cubic-bezier(.22, .8, .3, 1), transform 650ms cubic-bezier(.22, .8, .3, 1);
 }
@@ -257,7 +257,7 @@ button { cursor: pointer; }
   left: 0;
   bottom: 10px;
   z-index: 2;
-  width: 70px;
+  width: 66px;
   height: 18px;
   border: 2px solid #6f351f;
   border-radius: 3px;
@@ -271,9 +271,9 @@ button { cursor: pointer; }
   content: "";
   position: absolute;
   z-index: 3;
-  bottom: -15px;
-  width: 24px;
-  height: 24px;
+  bottom: -11px;
+  width: 18px;
+  height: 18px;
   border: 3px solid #d7e0df;
   border-radius: 50%;
   background: repeating-conic-gradient(#d7e0df 0 14deg, #1a2529 14deg 45deg);
@@ -281,18 +281,18 @@ button { cursor: pointer; }
 }
 .trail-progress.is-traveling .trail-progress__wagon::before,
 .trail-progress.is-traveling .trail-progress__wagon::after { animation: wagon-wheel-turn 1.2s linear infinite; }
-.trail-progress__wagon::before { left: 4px; }
-.trail-progress__wagon::after { right: 4px; }
+.trail-progress__wagon::before { left: 6px; }
+.trail-progress__wagon::after { right: 6px; }
 .trail-progress__wagon span {
   position: absolute;
-  left: 4px;
+  left: 5px;
   bottom: 14px;
-  width: 58px;
-  height: 35px;
+  width: 52px;
+  height: 27px;
   overflow: hidden;
   border: 2px solid #d7c18d;
   border-bottom: 0;
-  border-radius: 34px 34px 3px 3px;
+  border-radius: 28px 28px 3px 3px;
   background:
     repeating-linear-gradient(90deg, transparent 0 14px, #d4bd884d 14px 16px),
     linear-gradient(135deg, #fff2c9, #d8c08e);
