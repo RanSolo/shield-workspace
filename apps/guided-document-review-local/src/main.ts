@@ -66,6 +66,30 @@ required("copy-ai-prompt").addEventListener("click", () => void copyAiPrompt());
 required("document-file").addEventListener("change", (event) => void loadTextFile(event, "document-text"));
 required("checkpoint-file").addEventListener("change", (event) => void loadTextFile(event, "checkpoint-json"));
 animateTrail();
+void loadPreparedTrailFromLocation();
+
+interface PreparedTrailPacket {
+  readonly schemaVersion: 1;
+  readonly slug: string;
+  readonly title: string;
+  readonly reviewerName: string;
+  readonly documentText: string;
+  readonly checkpoints: unknown;
+}
+
+async function loadPreparedTrailFromLocation(): Promise<void> {
+  const match = window.location.pathname.match(/^\/trails\/([a-z0-9-]+)$/u);
+  if (!match) return;
+  try {
+    const response = await fetch(`/api/trails/${match[1]}`, { headers: { accept: "application/json" } });
+    if (!response.ok) throw new Error("Prepared trail not found.");
+    const packet = await response.json() as PreparedTrailPacket;
+    if (packet.schemaVersion !== 1 || packet.slug !== match[1]) throw new Error("Prepared trail response is malformed.");
+    await beginReview(packet.title, packet.documentText, packet.checkpoints, packet.reviewerName);
+  } catch (error) {
+    showSetupMessage(error instanceof Error ? error.message : "Unable to load this prepared trail.");
+  }
+}
 
 async function startSample(): Promise<void> {
   await beginReview("Mission Rail V2", sampleDocument, sampleCheckpoints, reviewerName());

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "slug": "mission-rail-v1",
+  "title": "Mission Rail V1 Architecture",
+  "reviewerName": "Randy Russell",
+  "documentPath": "/private/tmp/shield-rail-rebuild-architecture/docs/architecture/mission-rail-v1.md",
+  "checkpointPath": "mission-rail-v2-checkpoints.json"
+}
