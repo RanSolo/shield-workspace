@@ -42,6 +42,7 @@ let state: AppState | null = null;
 let revisionPacketConfirmed = false;
 let lastTrailPercent: number | null = null;
 let trailMotionTimer: number | null = null;
+let sceneryScene: "a" | "b" = "a";
 
 const setupPanel = required("setup-panel");
 const reviewPanel = required("review-panel");
@@ -207,14 +208,22 @@ function renderTrailProgress(): void {
 }
 
 function animateTrail(): void {
-  if (trailMotionTimer !== null) window.clearTimeout(trailMotionTimer);
-  trailProgress.classList.remove("is-traveling");
+  if (trailMotionTimer !== null) finishTrailAnimation();
+  const nextScene = sceneryScene === "a" ? "b" : "a";
   void trailProgress.offsetWidth;
-  trailProgress.classList.add("is-traveling");
+  trailProgress.classList.add("is-traveling", `travel-to-${nextScene}`);
   trailMotionTimer = window.setTimeout(() => {
-    trailProgress.classList.remove("is-traveling");
-    trailMotionTimer = null;
+    finishTrailAnimation();
   }, 5_000);
+}
+
+function finishTrailAnimation(): void {
+  if (trailMotionTimer !== null) window.clearTimeout(trailMotionTimer);
+  const nextScene = trailProgress.classList.contains("travel-to-b") ? "b" : "a";
+  trailProgress.classList.remove("is-traveling", "travel-to-a", "travel-to-b", "scene-a", "scene-b");
+  trailProgress.classList.add(`scene-${nextScene}`);
+  sceneryScene = nextScene;
+  trailMotionTimer = null;
 }
 
 function completionActions(hasChanges: boolean): HTMLElement {

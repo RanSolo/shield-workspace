@@ -39,9 +39,15 @@ button { cursor: pointer; }
   bottom: 12px;
   width: 460px;
   height: 34px;
-  opacity: .58;
+  opacity: 0;
+  translate: 125px 0;
 }
-.trail-progress.is-traveling .trail-progress__scenery { animation: trail-scenery-roll 5.5s linear; }
+.trail-progress.scene-a .scenery--a,
+.trail-progress.scene-b .scenery--b { opacity: .58; translate: 0; }
+.trail-progress.travel-to-b .scenery--a,
+.trail-progress.travel-to-a .scenery--b { animation: trail-scenery-out 5s linear forwards; }
+.trail-progress.travel-to-b .scenery--b,
+.trail-progress.travel-to-a .scenery--a { animation: trail-scenery-in 5s linear forwards; }
 .trail-progress__scenery i { position: absolute; display: block; }
 .trail-progress__scenery .tree {
   right: 62px;
@@ -51,6 +57,7 @@ button { cursor: pointer; }
   border-radius: 2px;
   background: #6f5135;
 }
+.trail-progress__scenery.scenery--b .tree { right: 212px; }
 .trail-progress__scenery .tree::before {
   content: "";
   position: absolute;
@@ -72,6 +79,7 @@ button { cursor: pointer; }
   background: #93472f;
   box-shadow: inset 0 -3px #62301f;
 }
+.trail-progress__scenery.scenery--b .barn { right: 62px; }
 .trail-progress__scenery .barn::before {
   content: "";
   position: absolute;
@@ -100,6 +108,7 @@ button { cursor: pointer; }
   border-bottom: 2px solid #725c46;
   background: repeating-linear-gradient(90deg, #725c46 0 3px, transparent 3px 18px);
 }
+.trail-progress__scenery.scenery--b .fence { right: 305px; }
 .trail-progress__track {
   position: absolute;
   right: 0;
@@ -271,7 +280,14 @@ button { cursor: pointer; }
 @keyframes wagon-wheel-turn { to { rotate: 1turn; } }
 @keyframes ox-team-bob { to { translate: 0 -2px; } }
 @keyframes trail-ties-roll { to { background-position-x: -25px; } }
-@keyframes trail-scenery-roll { to { translate: -125px 0; } }
+@keyframes trail-scenery-out {
+  from { opacity: .58; translate: 0; }
+  to { opacity: 0; translate: -125px 0; }
+}
+@keyframes trail-scenery-in {
+  from { opacity: 0; translate: 125px 0; }
+  to { opacity: .58; translate: 0; }
+}
 .brand-kicker, .eyebrow { margin: 0 0 8px; color: var(--gold); font-size: .72rem; font-weight: 900; letter-spacing: .16em; text-transform: uppercase; }
 .topbar__promise { margin: 0; color: var(--teal); font-weight: 800; }
 
