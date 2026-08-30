@@ -2,19 +2,42 @@ import { markdownToSafeHtml } from "./markdown-engine.mjs";
 
 type SourceMarkerState = "resolved" | "unresolved" | "ambiguous";
 
+export interface CompletedSourceMarker {
+  readonly checkpointId: string;
+  readonly stepId: string;
+  readonly sourceQuote: string;
+  readonly status: "passed" | "revised";
+}
+
 export function renderMarkdownSections(
   source: string,
   checkpointId: string,
   stepId: string,
   sourceQuote: string,
+  completedMarkers: readonly CompletedSourceMarker[] = [],
 ): HTMLElement {
   const staging = document.createElement("div");
   staging.innerHTML = markdownToSafeHtml(source);
 
+  completedMarkers.forEach((completed) => {
+    const completedPassage = renderedMarkdownText(completed.sourceQuote);
+    const completedMarker = locateRenderedPassage(staging, completedPassage);
+    if (completedMarker.state === "resolved") {
+      highlightRenderedBlocks(
+        staging,
+        completedMarker.start,
+        completedMarker.end,
+        completed.checkpointId,
+        completed.stepId,
+        completed.status === "passed" ? "source-passed" : "source-revised",
+      );
+    }
+  });
+
   const renderedPassage = renderedMarkdownText(sourceQuote);
   const marker = locateRenderedPassage(staging, renderedPassage);
   if (marker.state === "resolved") {
-    highlightRenderedBlocks(staging, marker.start, marker.end, checkpointId, stepId);
+    highlightRenderedBlocks(staging, marker.start, marker.end, checkpointId, stepId, "source-highlight");
   }
 
   const article = document.createElement("article");
@@ -116,7 +139,14 @@ function findOccurrences(text: string, phrase: string): number[] {
   return occurrences;
 }
 
-function highlightRenderedBlocks(root: HTMLElement, start: number, end: number, checkpointId: string, stepId: string): void {
+function highlightRenderedBlocks(
+  root: HTMLElement,
+  start: number,
+  end: number,
+  checkpointId: string,
+  stepId: string,
+  className: "source-highlight" | "source-passed" | "source-revised",
+): void {
   const projection = projectTextNodes(root);
   const blocks = new Set<HTMLElement>();
 
@@ -130,7 +160,7 @@ function highlightRenderedBlocks(root: HTMLElement, start: number, end: number, 
   });
 
   blocks.forEach((block) => {
-    block.classList.add("source-highlight");
+    block.classList.add(className);
     block.dataset.checkpointId = checkpointId;
     block.dataset.stepId = stepId;
   });

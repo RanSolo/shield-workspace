@@ -67,6 +67,28 @@ test("an already-visible learning step advances without a separate reveal action
   assert.deepEqual(session.answers.purpose.revealedStepIds, ["purpose-why"]);
 });
 
+test("a disposition checkpoint routes directly from its revealed principle to PASS or revision", async () => {
+  const source = await createSourceDocument("Rail", sourceText);
+  const set = await createCheckpointSet("Principle review", [{
+    checkpointId: "principle-one",
+    title: "Principle 1",
+    reviewMode: "disposition",
+    learningSteps: [step("principle-one-step", "one clear next action")],
+  }], source.text);
+  let session = await startReviewSession(source, set, { kind: "self_asserted", name: "Randy" }, fixedClock);
+
+  session = success(advancePhase(session, set, expected(session, "principle-one"), fixedClock));
+  session = success(advancePhase(session, set, expected(session, "principle-one", "principle-one-step"), fixedClock));
+  assert.equal(session.phase, "decide");
+  assert.equal(session.answers["principle-one"].explanation, null);
+  assert.equal(session.answers["principle-one"].confidence, null);
+
+  session = success(recordDecision(session, set, expected(session, "principle-one"), { decision: "approve" }, fixedClock));
+  assert.equal(session.phase, "complete");
+  const decoded = await decodeReviewSession(session, source, set);
+  assert.equal(decoded.ok, true, decoded.ok ? "" : decoded.errors.join(" "));
+});
+
 test("a replacement cannot be recorded without a desired replacement", async () => {
   const source = await createSourceDocument("Rail", sourceText);
   const set = await createCheckpointSet("Rail review", checkpoints, source.text);

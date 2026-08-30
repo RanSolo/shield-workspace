@@ -244,7 +244,16 @@ function render(): void {
   completionPanel.hidden = true;
   renderCheckpoint(checkpointPanel, { ...state, checkpoint, step, excerpt, revisionEditorOpen }, speech.supported);
   restoreTextDraft(checkpoint);
-  renderSource(sourcePanel, state.source, excerpt, checkpoint.checkpointId, step.stepId, step.sourceQuote, speech.supported);
+  renderSource(
+    sourcePanel,
+    state.source,
+    excerpt,
+    checkpoint.checkpointId,
+    step.stepId,
+    step.sourceQuote,
+    speech.supported,
+    completedSourceMarkers(),
+  );
   scrollSourceToHighlight();
   syncReviewViewport();
 }
@@ -422,8 +431,8 @@ async function replayCompletedPrefix(
     const stepIds = checkpoint.learningSteps.map(({ stepId }) => stepId);
     if (!answer || !Array.isArray(answer.revealedStepIds) ||
         answer.revealedStepIds.join("|") !== stepIds.join("|") ||
-        typeof answer.explanation !== "string" ||
-        ![1, 2, 3, 4, 5].includes(answer.confidence as number) ||
+        (checkpoint.reviewMode !== "disposition" && typeof answer.explanation !== "string") ||
+        (checkpoint.reviewMode !== "disposition" && ![1, 2, 3, 4, 5].includes(answer.confidence as number)) ||
         !["understand", "question", "revise", "approve"].includes(answer.decision as string)) break;
 
     let result = advancePhase(session, set, replayExpectation(session, checkpoint.checkpointId), clock);
@@ -434,18 +443,26 @@ async function replayCompletedPrefix(
       if (!result.ok) return session;
       session = result.session;
     }
-    result = recordExplanation(session, set, replayExpectation(session, checkpoint.checkpointId), answer.explanation, clock);
-    if (!result.ok) break;
-    session = result.session;
-    result = recordConfidence(
-      session,
-      set,
-      replayExpectation(session, checkpoint.checkpointId),
-      answer.confidence as 1 | 2 | 3 | 4 | 5,
-      clock,
-    );
-    if (!result.ok) break;
-    session = result.session;
+    if (checkpoint.reviewMode !== "disposition") {
+      result = recordExplanation(
+        session,
+        set,
+        replayExpectation(session, checkpoint.checkpointId),
+        answer.explanation as string,
+        clock,
+      );
+      if (!result.ok) break;
+      session = result.session;
+      result = recordConfidence(
+        session,
+        set,
+        replayExpectation(session, checkpoint.checkpointId),
+        answer.confidence as 1 | 2 | 3 | 4 | 5,
+        clock,
+      );
+      if (!result.ok) break;
+      session = result.session;
+    }
     result = recordDecision(session, set, replayExpectation(session, checkpoint.checkpointId), {
       decision: answer.decision as ReviewDecision,
       ...(answer.decision === "revise" && isReplacementInput(answer.replacement)
@@ -622,8 +639,37 @@ function updateReplacementOriginal(event: Event): void {
   });
   if (original) original.textContent = `Original passage (locked): ${step.sourceQuote}`;
   const excerpt = findSourceExcerpt(state.source, step.sourceQuote);
-  renderSource(sourcePanel, state.source, excerpt, activeCheckpoint().checkpointId, step.stepId, step.sourceQuote, speech.supported);
+  renderSource(
+    sourcePanel,
+    state.source,
+    excerpt,
+    activeCheckpoint().checkpointId,
+    step.stepId,
+    step.sourceQuote,
+    speech.supported,
+    completedSourceMarkers(),
+  );
   scrollSourceToHighlight();
+}
+
+function completedSourceMarkers(): readonly {
+  checkpointId: string;
+  stepId: string;
+  sourceQuote: string;
+  status: "passed" | "revised";
+}[] {
+  if (!state) return [];
+  return state.checkpointSet.checkpoints.flatMap((checkpoint) => {
+    const decision = state?.session.answers[checkpoint.checkpointId]?.decision;
+    return decision === "approve" || decision === "revise"
+      ? checkpoint.learningSteps.map((step) => ({
+          checkpointId: checkpoint.checkpointId,
+          stepId: step.stepId,
+          sourceQuote: step.sourceQuote,
+          status: decision === "approve" ? "passed" as const : "revised" as const,
+        }))
+      : [];
+  });
 }
 
 async function loadTextFile(event: Event, targetId: string): Promise<void> {

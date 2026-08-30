@@ -155,7 +155,11 @@ export function advancePhase(
   if (session.currentStepIndex < checkpointSet.checkpoints[session.currentCheckpointIndex].learningSteps.length - 1) {
     return changed(session, expected, { ...reveal, currentStepIndex: session.currentStepIndex + 1 }, clock);
   }
-  return changed(session, expected, { ...reveal, phase: "explain_back" }, clock);
+  const checkpoint = checkpointSet.checkpoints[session.currentCheckpointIndex];
+  return changed(session, expected, {
+    ...reveal,
+    phase: checkpoint.reviewMode === "disposition" ? "decide" : "explain_back",
+  }, clock);
 }
 
 export function recordStepReveal(

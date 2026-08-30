@@ -443,6 +443,29 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
   background: #f1b84b2b;
   color: var(--ink);
 }
+.source-passed {
+  margin-inline: -10px;
+  padding: 10px;
+  border: 1px solid #58c99a;
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: #3bbf7a24;
+  color: var(--ink);
+}
+.source-revised {
+  margin-inline: -10px;
+  padding: 10px;
+  border: 1px solid var(--orange);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: #e8793426;
+  color: var(--ink);
+}
+.source-highlight:is(li),
+.source-passed:is(li),
+.source-revised:is(li) {
+  list-style-position: inside;
+}
 .source-section + .source-section { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
 .source-section > :is(h1, h2, h3, h4, h5, h6) {
   margin: 0 0 14px;

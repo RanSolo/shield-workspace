@@ -167,7 +167,9 @@ function decodeAnswer(input: unknown, checkpoint: ReviewCheckpoint, errors: stri
   if (decision !== null && decision !== undefined && decidedAt === null) errors.push(`${label} decision time is required.`);
   if (decision === "revise" && !replacement) errors.push(`${label} Needs revision requires a replacement.`);
   if (decision !== "revise" && replacement) errors.push(`${label} replacement requires Needs revision.`);
-  if (decision && (explanation === null || confidence === null || revealed?.length !== stepIds.length)) {
+  const missingRequiredReflection = checkpoint.reviewMode !== "disposition" &&
+    (explanation === null || confidence === null);
+  if (decision && (missingRequiredReflection || revealed?.length !== stepIds.length)) {
     errors.push(`${label} is decided before its learning and reflection are complete.`);
   }
   if (errors.length !== startErrors || !revealed || explanation === undefined || confidence === undefined ||
@@ -286,10 +288,13 @@ function checkSessionPosition(
       (stepIndex !== checkpoint.learningSteps.length - 1 || answer.revealedStepIds.length !== checkpoint.learningSteps.length)) {
     errors.push(`${phase} phase requires every learning step to be revealed.`);
   }
-  if (["confidence", "decide"].includes(phase) && answer.explanation === null) {
+  const requiresTeachingEvidence = checkpoint.reviewMode !== "disposition";
+  if (["confidence", "decide"].includes(phase) && requiresTeachingEvidence && answer.explanation === null) {
     errors.push(`${phase} phase requires an explanation.`);
   }
-  if (phase === "decide" && answer.confidence === null) errors.push("Decide phase requires confidence.");
+  if (phase === "decide" && requiresTeachingEvidence && answer.confidence === null) {
+    errors.push("Decide phase requires confidence.");
+  }
 }
 
 function checkEventConsistency(

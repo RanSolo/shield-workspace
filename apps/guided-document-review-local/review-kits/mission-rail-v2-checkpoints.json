@@ -5,9 +5,9 @@
     "learningSteps": [
       {
         "stepId": "problem-failure",
-      "sourceQuote": "The current repository contains valuable behavior, but delivery mechanics and\ngovernance evolved together inside `@shield/team-system`. This produced three\noperational failures:",
+        "sourceQuote": "The current repository contains valuable behavior, but delivery mechanics and\ngovernance evolved together inside `@shield/team-system`. This produced three\noperational failures:",
         "purpose": "Name the delivery problem before choosing a solution.",
-      "question": "What underlying condition produced the current delivery failures?",
+        "question": "What underlying condition produced the current delivery failures?",
         "explanation": "This section describes a useful system trapped inside delivery and governance mechanics that grew together. The problem is the way work is composed and recovered, not a lack of individual safety checks.",
         "whyItMatters": "A precise problem keeps the replacement from recreating the same friction."
       },
@@ -22,8 +22,8 @@
     ]
   },
   {
-    "checkpointId": "principles-direction",
-    "title": "Principles 1–3 · Direction and gates",
+    "checkpointId": "principle-1-next-operation",
+    "title": "Principle 1 · One deterministic next operation",
     "learningSteps": [
       {
         "stepId": "principle-1-next-operation",
@@ -32,7 +32,14 @@
         "question": "Where should deterministic progression end and recorded judgment begin?",
         "explanation": "The Rail should choose one next operation whenever the facts determine it. When novelty leaves no safe deterministic answer, it should gather evidence and route a bounded judgment rather than invent certainty.",
         "whyItMatters": "Predictable defaults create speed; an explicit judgment seam keeps novelty from becoming either improvisation or permanent blockage."
-      },
+      }
+    ],
+    "reviewMode": "disposition"
+  },
+  {
+    "checkpointId": "principle-2-derived-authority",
+    "title": "Principle 2 · No caller-authored authority packets",
+    "learningSteps": [
       {
         "stepId": "principle-2-derived-authority",
         "sourceQuote": "**No caller-authored authority packets.**",
@@ -40,7 +47,14 @@
         "question": "Why should an agent or human never hand-compose an authority packet?",
         "explanation": "Software can derive the exact machine payload from accepted decisions and observed state. Humans choose; agents reason; deterministic code serializes the authority contract.",
         "whyItMatters": "This removes repeated formatting failures and prevents a typo from changing the meaning of approval."
-      },
+      }
+    ],
+    "reviewMode": "disposition"
+  },
+  {
+    "checkpointId": "principle-3-readable-gates",
+    "title": "Principle 3 · Human-readable gates",
+    "learningSteps": [
       {
         "stepId": "principle-3-readable-gates",
         "sourceQuote": "**Human-readable gates.**",
@@ -49,11 +63,12 @@
         "explanation": "A gate explains the real decision, its consequences, and one copy-safe action. Protocol JSON and multiline shell fragments remain machine projections, not the human experience.",
         "whyItMatters": "A meaningful gate lets the operator decide quickly without becoming a protocol specialist."
       }
-    ]
+    ],
+    "reviewMode": "disposition"
   },
   {
-    "checkpointId": "principles-delivery-lanes",
-    "title": "Principles 4–6 · Delivery and reusable lanes",
+    "checkpointId": "principle-4-delivery",
+    "title": "Principle 4 · Completion includes delivery",
     "learningSteps": [
       {
         "stepId": "principle-4-delivery",
@@ -62,7 +77,14 @@
         "question": "When is a mission actually complete?",
         "explanation": "Implementation alone is not completion. Unique work must be merged, published, or explicitly archived so it cannot remain silently stranded in a lane.",
         "whyItMatters": "Delivery is the destination; evidence and implementation are how the team gets there."
-      },
+      }
+    ],
+    "reviewMode": "disposition"
+  },
+  {
+    "checkpointId": "principle-5-stable-lanes",
+    "title": "Principle 5 · Stable lanes are first-class",
+    "learningSteps": [
       {
         "stepId": "principle-5-stable-lanes",
         "sourceQuote": "**Stable lanes are first-class.**",
@@ -70,7 +92,14 @@
         "question": "What remains stable when assignments rotate?",
         "explanation": "Alpha, Bravo, and Charlie keep stable filesystem identities while their assigned missions change. Lane lifecycle reconciles each workspace before reuse.",
         "whyItMatters": "Stable paths reduce setup, permissions, stale context, and operator confusion."
-      },
+      }
+    ],
+    "reviewMode": "disposition"
+  },
+  {
+    "checkpointId": "principle-6-followups",
+    "title": "Principle 6 · Follow-ups do not occupy delivery lanes",
+    "learningSteps": [
       {
         "stepId": "principle-6-followups",
         "sourceQuote": "**Follow-ups do not occupy delivery lanes.**",
@@ -79,11 +108,12 @@
         "explanation": "Review corrections use a follow-up checkout after draft publication while the stable lane reconciles and becomes available for its next mission.",
         "whyItMatters": "A delivered draft should not keep an entire team lane parked until every review comment is resolved."
       }
-    ]
+    ],
+    "reviewMode": "disposition"
   },
   {
-    "checkpointId": "principles-trust-execution",
-    "title": "Principles 7–9 · Trust, execution, and portability",
+    "checkpointId": "principle-7-trusted-host",
+    "title": "Principle 7 · Trusted-host threat model",
     "learningSteps": [
       {
         "stepId": "principle-7-trusted-host",
@@ -92,7 +122,14 @@
         "question": "Which failures does the Rail handle, and which threat is intentionally outside its promise?",
         "explanation": "The Rail handles ordinary drift, stale evidence, bad input, unsafe links, identity conflicts, and agent misuse. It does not complicate delivery to fight malware already running as the same trusted user.",
         "whyItMatters": "Clear limits make safety claims testable and prevent out-of-scope hardening from overwhelming the happy path."
-      },
+      }
+    ],
+    "reviewMode": "disposition"
+  },
+  {
+    "checkpointId": "principle-8-nx",
+    "title": "Principle 8 · Nx is the execution graph",
+    "learningSteps": [
       {
         "stepId": "principle-8-nx",
         "sourceQuote": "**Nx is the execution graph.**",
@@ -100,7 +137,14 @@
         "question": "What should be the default validation path?",
         "explanation": "Focused and affected Nx targets run with normal cache behavior. Direct test-runner commands remain diagnostic exceptions.",
         "whyItMatters": "The graph makes validation faster while preserving explicit project boundaries and reproducible targets."
-      },
+      }
+    ],
+    "reviewMode": "disposition"
+  },
+  {
+    "checkpointId": "principle-9-adapters",
+    "title": "Principle 9 · Adapters preserve identity",
+    "learningSteps": [
       {
         "stepId": "principle-9-adapters",
         "sourceQuote": "**Adapters preserve identity.**",
@@ -109,11 +153,12 @@
         "explanation": "Codex, Copilot, Factory, local models, and future hosts consume the same seat and task contracts while recording the executor and model that actually performed the work.",
         "whyItMatters": "The workflow belongs to SHIELD rather than being trapped inside one vendor or model."
       }
-    ]
+    ],
+    "reviewMode": "disposition"
   },
   {
-    "checkpointId": "principles-boundaries-quality",
-    "title": "Principles 10–12 · Boundaries and maintainability",
+    "checkpointId": "principle-10-compatibility",
+    "title": "Principle 10 · Compatibility stays outside the kernel",
     "learningSteps": [
       {
         "stepId": "principle-10-compatibility",
@@ -122,7 +167,14 @@
         "question": "How should legacy behavior influence the new Rail?",
         "explanation": "Legacy behavior is evidence, not automatically a requirement. Keep genuine invariants, rebuild useful outcomes behind clean contracts, and drop recovery machinery for failures the new architecture eliminates.",
         "whyItMatters": "The vertical happy path—not old recovery vocabulary—must design the new kernel."
-      },
+      }
+    ],
+    "reviewMode": "disposition"
+  },
+  {
+    "checkpointId": "principle-11-maintainability",
+    "title": "Principle 11 · Maintainability is executable",
+    "learningSteps": [
       {
         "stepId": "principle-11-maintainability",
         "sourceQuote": "**Maintainability is executable.**",
@@ -130,7 +182,14 @@
         "question": "How should maintainability be proven without coupling the kernel to one vendor?",
         "explanation": "Every package owns focused build, test, typecheck, lint, boundary, and code-quality targets. SonarQube can be one adapter over that evidence rather than a kernel dependency.",
         "whyItMatters": "Quality becomes an executable property of each library instead of a subjective promise."
-      },
+      }
+    ],
+    "reviewMode": "disposition"
+  },
+  {
+    "checkpointId": "principle-12-small",
+    "title": "Principle 12 · Small is the default",
+    "learningSteps": [
       {
         "stepId": "principle-12-small",
         "sourceQuote": "**Small is the default.**",
@@ -139,11 +198,12 @@
         "explanation": "Components own one capability, modules expose narrow interfaces, and functions perform one named transformation. Size and complexity thresholds trigger a split review rather than automatic ceremony.",
         "whyItMatters": "Small cohesive parts are easier to find, test, explain, replace, and safely parallelize."
       }
-    ]
+    ],
+    "reviewMode": "disposition"
   },
   {
-    "checkpointId": "principles-velocity-human",
-    "title": "Principles 13–15 · Velocity, proof, and human steering",
+    "checkpointId": "principle-13-velocity",
+    "title": "Principle 13 · Governance enables velocity",
     "learningSteps": [
       {
         "stepId": "principle-13-velocity",
@@ -152,7 +212,14 @@
         "question": "What should happen after a correctable failure?",
         "explanation": "Fail closed on the unsafe action, then classify, repair, validate, and rejoin. Discovery may expand work inside the accepted outcome and risk envelope; material changes require direction.",
         "whyItMatters": "Governance should help the team finish the song, not stop the performance after every recoverable mistake."
-      },
+      }
+    ],
+    "reviewMode": "disposition"
+  },
+  {
+    "checkpointId": "principle-14-reference-quality",
+    "title": "Principle 14 · The rail is reference-quality software",
+    "learningSteps": [
       {
         "stepId": "principle-14-reference-quality",
         "sourceQuote": "**The rail is reference-quality software.**",
@@ -160,7 +227,14 @@
         "question": "What evidence should support a reference-quality claim?",
         "explanation": "Architecture, source, tests, static analysis, documentation, and a proving trace must meet measurable V1 criteria. A working prototype with hidden coupling is not enough.",
         "whyItMatters": "The Rail should demonstrate the engineering standard it asks other teams to trust."
-      },
+      }
+    ],
+    "reviewMode": "disposition"
+  },
+  {
+    "checkpointId": "principle-15-human-steering",
+    "title": "Principle 15 · Humans can keep up",
+    "learningSteps": [
       {
         "stepId": "principle-15-human-steering",
         "sourceQuote": "**Humans can keep up.**",
@@ -169,7 +243,8 @@
         "explanation": "The reviewer can understand, question, revise, approve, or record observed QA outcomes in small source-backed sections. The view projects canonical state rather than becoming another workflow engine.",
         "whyItMatters": "Fast agents only help when the accountable human can understand and steer their work."
       }
-    ]
+    ],
+    "reviewMode": "disposition"
   },
   {
     "checkpointId": "canonical-and-rail",

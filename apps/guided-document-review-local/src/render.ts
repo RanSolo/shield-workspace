@@ -8,7 +8,7 @@ import type {
 } from "@shield/guided-document-review";
 
 import type { RevisionPromptChange } from "@shield/guided-document-review";
-import { renderMarkdownSections, renderedMarkdownText } from "./markdown.js";
+import { renderMarkdownSections, renderedMarkdownText, type CompletedSourceMarker } from "./markdown.js";
 
 export interface ReviewView {
   readonly source: SourceDocument;
@@ -68,6 +68,7 @@ export function renderSource(
   stepId: string,
   sourceQuote: string,
   speechSupported: boolean,
+  completedMarkers: readonly CompletedSourceMarker[] = [],
 ): void {
   const renderedPassage = renderedMarkdownText(sourceQuote);
   const actions = element("div", "source-actions");
@@ -81,7 +82,7 @@ export function renderSource(
     element("h2", "source-title", source.title),
     element("p", "source-quote-label", renderedPassage ? `Exact passage: “${renderedPassage}”` : "Exact passage: unresolved"),
     actions,
-    renderMarkdownSections(excerpt, checkpointId, stepId, sourceQuote),
+    renderMarkdownSections(excerpt, checkpointId, stepId, sourceQuote, completedMarkers),
   );
 }
 
@@ -145,7 +146,7 @@ function renderLearn(container: HTMLElement, view: ReviewView): void {
     element("p", "eyebrow", "Question"),
     element("p", "learning-question learning-question--static", view.step.question),
     learningReveal(view.step.explanation, view.step.whyItMatters),
-    actionButton("Continue to the next step", "advance", "primary"),
+    actionButton(view.checkpoint.reviewMode === "disposition" ? "Review this principle" : "Continue to the next step", "advance", "primary"),
   );
 }
 
@@ -201,13 +202,15 @@ function renderConfidence(container: HTMLElement): void {
 }
 
 function renderDecision(container: HTMLElement, view: ReviewView): void {
-  container.append(element("p", "prompt", "What should happen with this checkpoint?"));
+  container.append(element("p", "prompt", view.checkpoint.reviewMode === "disposition"
+    ? "Does this principle pass, or does the document need a revision?"
+    : "What should happen with this checkpoint?"));
   const toolbar = element("div", "decision-toolbar");
-  const approve = actionButton("✓ Looks right", "decision", "success");
+  const approve = actionButton(view.checkpoint.reviewMode === "disposition" ? "✓ PASS" : "✓ Looks right", "decision", "success");
   approve.dataset.value = "approve";
   toolbar.append(
     approve,
-    actionButton(view.revisionEditorOpen ? "Close revision" : "✎ Revise document", view.revisionEditorOpen ? "hide-revision" : "show-revision", "secondary"),
+    actionButton(view.revisionEditorOpen ? "Close revision" : "✎ Revise", view.revisionEditorOpen ? "hide-revision" : "show-revision", "secondary"),
   );
   container.append(toolbar);
   if (!view.revisionEditorOpen) {
@@ -225,7 +228,7 @@ function renderDecision(container: HTMLElement, view: ReviewView): void {
     option.selected = step.stepId === (replacement?.stepId ?? view.step.stepId);
     stepSelect.append(option);
   });
-  const stepLabel = element("label", "field-label", "Replacement step (only for Needs revision)");
+  const stepLabel = element("label", "field-label", "Replacement step (only for revision)");
   stepLabel.htmlFor = stepSelect.id;
   stepLabel.append(stepSelect);
   const original = element("p", "replacement-original", `Original passage (locked): ${replacement?.original ?? view.step.sourceQuote}`);
@@ -247,16 +250,24 @@ function renderDecision(container: HTMLElement, view: ReviewView): void {
   rationale.value = replacement?.rationale ?? "";
   rationaleLabel.append(rationale);
   container.append(
-    element("p", "hint", "Choose Needs revision only when the complete desired replacement is ready."),
-    stepLabel,
+    element("p", "hint", "Choose Revise only when the complete desired replacement is ready."),
+    ...(view.checkpoint.learningSteps.length > 1 ? [stepLabel] : [hiddenStepInput(view.step.stepId)]),
     original,
     replacementLabel,
     rationaleLabel,
     draftStatus(),
   );
-  const save = actionButton("Save requested change", "decision", "primary");
+  const save = actionButton("Save revision", "decision", "primary");
   save.dataset.value = "revise";
   container.append(save, element("p", "fine-print", "The requested change is recorded for the changes-only review at the end of the trail."));
+}
+
+function hiddenStepInput(stepId: string): HTMLInputElement {
+  const input = document.createElement("input");
+  input.type = "hidden";
+  input.id = "replacement-step";
+  input.value = stepId;
+  return input;
 }
 
 function actionButton(label: string, action: string, style: string): HTMLButtonElement {

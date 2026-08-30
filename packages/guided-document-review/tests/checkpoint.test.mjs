@@ -26,11 +26,14 @@ test("headings become ordered V2 learning checkpoints", () => {
 test("V2 validation enforces closed shapes, 1–3 steps, unique IDs, and exact unique source quotes", async () => {
   const checkpoint = { checkpointId: "one", title: "One", learningSteps: [step("one-step", "First body.")] };
   assert.equal(validateCheckpoints([{ ...checkpoint, surprise: true }], source).ok, false);
+  assert.equal(validateCheckpoints([{ ...checkpoint, reviewMode: "unknown" }], source).ok, false);
+  assert.equal(validateCheckpoints([{ ...checkpoint, reviewMode: "disposition" }], source).ok, true);
   assert.equal(validateCheckpoints([{ ...checkpoint, learningSteps: [] }], source).ok, false);
   assert.equal(validateCheckpoints([checkpoint, { ...checkpoint, checkpointId: "two" }], source).ok, false);
   assert.equal(validateCheckpoints([{ ...checkpoint, learningSteps: [step("two-step", "missing")] }], source).ok, false);
   const set = await createCheckpointSet("Review", [checkpoint], source);
   assert.equal(set.schemaVersion, 2);
+  assert.equal(set.checkpoints[0].reviewMode, "teach");
 });
 
 test("checkpoint sets own and recursively freeze their digest-bound checkpoint data", async () => {

@@ -22,12 +22,12 @@ test.after(async () => {
   await rm(testDirectory, { recursive: true, force: true });
 });
 
-function render(source, sourceQuote) {
+function render(source, sourceQuote, completedMarkers = []) {
   const dom = new JSDOM("<!doctype html><html><body></body></html>");
   globalThis.document = dom.window.document;
   globalThis.Node = dom.window.Node;
   globalThis.NodeFilter = dom.window.NodeFilter;
-  return renderMarkdownSections(source, "checkpoint-1", "step-1", sourceQuote);
+  return renderMarkdownSections(source, "checkpoint-1", "step-1", sourceQuote, completedMarkers);
 }
 
 test("highlights a rendered heading block and keeps its stable source identity", () => {
@@ -40,6 +40,18 @@ test("highlights a rendered heading block and keeps its stable source identity",
   assert.equal(marker.textContent, "Heading");
   assert.equal(marker.dataset.checkpointId, "checkpoint-1");
   assert.equal(marker.dataset.stepId, "step-1");
+});
+
+test("shows passed, revised, and active numbered principles as distinct block highlights", () => {
+  const source = "1. **First principle.** Detail one.\n2. **Second principle.** Detail two.\n3. **Third principle.** Detail three.";
+  const article = render(source, "**Third principle.**", [
+    { checkpointId: "principle-1", stepId: "step-1", sourceQuote: "**First principle.**", status: "passed" },
+    { checkpointId: "principle-2", stepId: "step-2", sourceQuote: "**Second principle.**", status: "revised" },
+  ]);
+
+  assert.match(article.querySelector("li.source-passed")?.textContent ?? "", /First principle/u);
+  assert.match(article.querySelector("li.source-revised")?.textContent ?? "", /Second principle/u);
+  assert.match(article.querySelector("li.source-highlight")?.textContent ?? "", /Third principle/u);
 });
 
 test("highlights one paragraph across inline text nodes without flattening semantics", () => {

@@ -12,6 +12,7 @@ export interface LearningStep {
 export interface ReviewCheckpoint {
   readonly checkpointId: string;
   readonly title: string;
+  readonly reviewMode?: "teach" | "disposition";
   readonly learningSteps: readonly LearningStep[];
 }
 
@@ -87,6 +88,7 @@ export function checkpointsFromHeadings(text: string): readonly ReviewCheckpoint
     return {
       checkpointId: `section-${index + 1}`,
       title,
+      reviewMode: "teach" as const,
       learningSteps: [{
         stepId: `section-${index + 1}-step-1`,
         sourceQuote,
@@ -101,8 +103,11 @@ export function checkpointsFromHeadings(text: string): readonly ReviewCheckpoint
 
 function isExactCheckpoint(value: unknown): value is ReviewCheckpoint {
   if (!isRecord(value)) return false;
-  const fields = ["checkpointId", "title", "learningSteps"];
-  return exactKeys(value, fields) && Array.isArray(value.learningSteps) &&
+  const requiredFields = ["checkpointId", "title", "learningSteps"];
+  const fields = value.reviewMode === undefined ? requiredFields : [...requiredFields, "reviewMode"];
+  return exactKeys(value, fields) &&
+    (value.reviewMode === undefined || value.reviewMode === "teach" || value.reviewMode === "disposition") &&
+    Array.isArray(value.learningSteps) &&
     value.learningSteps.length >= 1 && value.learningSteps.length <= 3 &&
     value.learningSteps.every(isExactLearningStep);
 }
@@ -124,6 +129,7 @@ function copyAndFreezeCheckpoints(checkpoints: readonly ReviewCheckpoint[]): rea
   const copy = checkpoints.map((checkpoint) => Object.freeze({
     checkpointId: checkpoint.checkpointId,
     title: checkpoint.title,
+    reviewMode: checkpoint.reviewMode ?? "teach",
     learningSteps: Object.freeze(checkpoint.learningSteps.map((step) => Object.freeze({
       stepId: step.stepId,
       sourceQuote: step.sourceQuote,
