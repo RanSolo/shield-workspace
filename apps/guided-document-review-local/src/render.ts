@@ -93,7 +93,6 @@ export function renderCheckpoint(container: HTMLElement, view: ReviewView, speec
   if (view.session.phase === "orient" && !quickReview) renderOrient(container, view);
   if (view.session.phase === "learn") renderLearn(container, view);
   if (view.session.phase === "explain_back") renderExplain(container, view);
-  if (view.session.phase === "confidence") renderConfidence(container);
   if (view.session.phase === "decide") renderDecision(container, view);
 }
 
@@ -157,7 +156,7 @@ export function renderStats(container: HTMLElement, session: ReviewSession, chec
   container.replaceChildren(
     stat("Trail", `${completed}/${stops.size}`),
     stat("Reveals", String(revealed)),
-    stat("Clarity", `${Object.values(session.answers).filter((answer) => (answer.confidence ?? 0) >= 4).length} strong`),
+    stat("Explained", `${Object.values(session.answers).filter((answer) => answer.explanation !== null).length}`),
   );
 }
 
@@ -253,9 +252,7 @@ function renderExplain(container: HTMLElement, view: ReviewView): void {
     label,
     textarea,
     draftStatus(),
-    element("p", "prompt", "How confidently could you explain this to someone else?"),
-    confidenceButtons("save-explanation-confidence"),
-    element("p", "hint", "1 = I need another pass · 5 = I could teach it"),
+    actionButton("Continue to Looks right / Revise", "save-explanation", "primary"),
   );
   textarea.focus();
 }
@@ -272,22 +269,6 @@ function learningRecap(checkpoint: ReviewCheckpoint): HTMLElement {
     recap.append(item);
   });
   return recap;
-}
-
-function renderConfidence(container: HTMLElement): void {
-  container.append(element("p", "prompt", "How confidently could you explain this to someone else?"));
-  container.append(confidenceButtons("confidence"), element("p", "hint", "1 = I need another pass · 5 = I could teach it"));
-}
-
-function confidenceButtons(action: string): HTMLElement {
-  const group = element("div", "confidence-grid");
-  [1, 2, 3, 4, 5].forEach((level) => {
-    const button = actionButton(String(level), action, level >= 4 ? "success" : "secondary");
-    button.dataset.value = String(level);
-    button.setAttribute("aria-label", `Confidence ${level} of 5`);
-    group.append(button);
-  });
-  return group;
 }
 
 function renderDecision(container: HTMLElement, view: ReviewView): void {
@@ -410,7 +391,7 @@ function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", 
 }
 
 function phaseTitle(phase: ReviewSession["phase"]): string {
-  return ({ orient: "Scout the checkpoint", learn: "Learn one step", explain_back: "Prove it to yourself", confidence: "Check your supplies", decide: "Choose the trail" } as Record<string, string>)[phase] ?? "Complete";
+  return ({ orient: "Scout the checkpoint", learn: "Learn one step", explain_back: "Prove it to yourself", decide: "Choose the trail" } as Record<string, string>)[phase] ?? "Complete";
 }
 
 function labelDecision(decision: ReviewDecision): string {

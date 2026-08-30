@@ -10,7 +10,6 @@ import {
   createSourceDocument,
   decodeReviewSession,
   findSourceExcerpt,
-  recordConfidence,
   recordDecision,
   recordExplanation,
   returnToPreviousPhase,
@@ -215,27 +214,6 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (action === "save-explanation") {
     result = recordExplanation(state.session, state.checkpointSet, expected, valueOf("explanation"), clock);
   }
-  if (action === "save-explanation-confidence") {
-    const explanationResult = recordExplanation(
-      state.session,
-      state.checkpointSet,
-      expected,
-      valueOf("explanation"),
-      clock,
-    );
-    result = explanationResult.ok
-      ? recordConfidence(
-          explanationResult.session,
-          state.checkpointSet,
-          replayExpectation(explanationResult.session, checkpoint.checkpointId),
-          Number(button.dataset.value) as 1 | 2 | 3 | 4 | 5,
-          clock,
-        )
-      : explanationResult;
-  }
-  if (action === "confidence") {
-    result = recordConfidence(state.session, state.checkpointSet, expected, Number(button.dataset.value) as 1 | 2 | 3 | 4 | 5, clock);
-  }
   if (action === "decision") {
     result = recordDecision(state.session, state.checkpointSet, expected, {
       decision: button.dataset.value as ReviewDecision,
@@ -246,7 +224,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (!result.ok) {
     state = { ...state, message: result.message };
   } else {
-    if (action === "save-explanation" || action === "save-explanation-confidence") {
+    if (action === "save-explanation") {
       clearExplanationDraft(checkpoint.checkpointId);
     }
     if (action === "decision") clearReplacementDraft(checkpoint.checkpointId);
@@ -262,7 +240,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (action === "advance") {
     requestAnimationFrame(() => scrollCheckpointToToolbar());
   }
-  if (action === "quick-pass" || action === "decision") {
+  if (action === "quick-pass" || action === "decision" || action === "save-explanation") {
     requestAnimationFrame(() => checkpointPanel.scrollTo({ top: 0, behavior: "smooth" }));
   }
   if (action === "quick-revise") {
@@ -448,7 +426,7 @@ async function readDraft(
   if (raw) {
     try {
       const decoded = await decodeReviewSession(JSON.parse(raw), source, set);
-      exact = decoded.ok ? decoded.session : null;
+      exact = decoded.ok ? withoutConfidenceStop(decoded.session) : null;
     } catch {
       exact = null;
     }
@@ -498,7 +476,6 @@ async function replayCompletedPrefix(
     const answer = priorAnswers[checkpoint.checkpointId] as {
       revealedStepIds?: unknown;
       explanation?: unknown;
-      confidence?: unknown;
       decision?: unknown;
       replacement?: unknown;
     } | undefined;
@@ -506,7 +483,6 @@ async function replayCompletedPrefix(
     if (!answer || !Array.isArray(answer.revealedStepIds) ||
         answer.revealedStepIds.join("|") !== stepIds.join("|") ||
         (checkpoint.reviewMode !== "disposition" && typeof answer.explanation !== "string") ||
-        (checkpoint.reviewMode !== "disposition" && ![1, 2, 3, 4, 5].includes(answer.confidence as number)) ||
         !["understand", "question", "revise", "approve"].includes(answer.decision as string)) break;
 
     let result = advancePhase(session, set, replayExpectation(session, checkpoint.checkpointId), clock);
@@ -523,15 +499,6 @@ async function replayCompletedPrefix(
         set,
         replayExpectation(session, checkpoint.checkpointId),
         answer.explanation as string,
-        clock,
-      );
-      if (!result.ok) break;
-      session = result.session;
-      result = recordConfidence(
-        session,
-        set,
-        replayExpectation(session, checkpoint.checkpointId),
-        answer.confidence as 1 | 2 | 3 | 4 | 5,
         clock,
       );
       if (!result.ok) break;
@@ -570,6 +537,10 @@ function reviewProgress(session: ReviewSession | null): number {
   if (!session) return -1;
   const phase = ["orient", "learn", "explain_back", "confidence", "decide", "complete"].indexOf(session.phase);
   return session.currentCheckpointIndex * 100 + session.currentStepIndex * 10 + phase;
+}
+
+function withoutConfidenceStop(session: ReviewSession): ReviewSession {
+  return session.phase === "confidence" ? { ...session, phase: "decide" } : session;
 }
 
 function saveDraft(): void {
@@ -819,7 +790,6 @@ function visibleCheckpointText(checkpoint: ReviewCheckpoint, step: LearningStep,
     orient: checkpoint.title,
     learn: `${step.purpose}. ${step.question}. ${step.explanation}`,
     explain_back: "Explain this checkpoint in your own words.",
-    confidence: "How confidently could you explain this to someone else?",
     decide: "Choose your educational disposition for this checkpoint.",
   };
   return `${checkpoint.title}. ${visibleText[phase] ?? ""}`.trim();

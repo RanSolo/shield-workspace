@@ -204,7 +204,7 @@ export function returnToPreviousPhase(
   if (session.phase === "decide") {
     const checkpoint = checkpointSet.checkpoints[session.currentCheckpointIndex];
     return changed(session, expected, {
-      phase: checkpoint.reviewMode === "disposition" ? "learn" : "confidence",
+      phase: checkpoint.reviewMode === "disposition" ? "learn" : "explain_back",
     }, clock);
   }
   return invalid("phase_at_start", "This checkpoint is already at its first step.");
@@ -221,7 +221,7 @@ export function recordExplanation(
   if (check) return check;
   if (explanation.trim().length < 20) return invalid("explanation_short", "Explain the idea in at least 20 characters.");
   return changed(session, expected, {
-    phase: "confidence",
+    phase: "decide",
     answers: updateAnswer(session, expected.checkpointId, { explanation: explanation.trim() }),
   }, clock);
 }

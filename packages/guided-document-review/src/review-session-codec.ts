@@ -167,8 +167,7 @@ function decodeAnswer(input: unknown, checkpoint: ReviewCheckpoint, errors: stri
   if (decision !== null && decision !== undefined && decidedAt === null) errors.push(`${label} decision time is required.`);
   if (decision === "revise" && !replacement) errors.push(`${label} Needs revision requires a replacement.`);
   if (decision !== "revise" && replacement) errors.push(`${label} replacement requires Needs revision.`);
-  const missingRequiredReflection = checkpoint.reviewMode !== "disposition" &&
-    (explanation === null || confidence === null);
+  const missingRequiredReflection = checkpoint.reviewMode !== "disposition" && explanation === null;
   if (decision && (missingRequiredReflection || revealed?.length !== stepIds.length)) {
     errors.push(`${label} is decided before its learning and reflection are complete.`);
   }
@@ -291,9 +290,6 @@ function checkSessionPosition(
   const requiresTeachingEvidence = checkpoint.reviewMode !== "disposition";
   if (["confidence", "decide"].includes(phase) && requiresTeachingEvidence && answer.explanation === null) {
     errors.push(`${phase} phase requires an explanation.`);
-  }
-  if (phase === "decide" && requiresTeachingEvidence && answer.confidence === null) {
-    errors.push("Decide phase requires confidence.");
   }
 }
 

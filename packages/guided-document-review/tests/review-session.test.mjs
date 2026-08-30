@@ -39,7 +39,6 @@ test("V2 persists one-step-at-a-time reveals and records an immutable replacemen
   session = success(recordStepReveal(session, set, expected(session, "purpose", "purpose-finish"), fixedClock));
   session = success(advancePhase(session, set, expected(session, "purpose", "purpose-finish"), fixedClock));
   session = success(recordExplanation(session, set, expected(session, "purpose"), "The rail makes the next move clear and keeps the lane reusable.", fixedClock));
-  session = success(recordConfidence(session, set, expected(session, "purpose"), 5, fixedClock));
   session = success(recordDecision(session, set, expected(session, "purpose"), {
     decision: "revise",
     replacement: { stepId: "purpose-finish", replacement: "The lane stays ready for reuse.", rationale: "Make the finish condition explicit." },
@@ -103,7 +102,7 @@ test("a replacement cannot be recorded without a desired replacement", async () 
     replacement: { stepId: "purpose-why", replacement: "", rationale: "No text." },
   }, fixedClock);
   assert.deepEqual(missing, { ok: false, code: "replacement_required", message: "Describe the desired replacement text." });
-  assert.equal(session.revision, 7);
+  assert.equal(session.revision, 6);
 });
 
 test("a replacement cannot repeat the immutable original", async () => {
@@ -119,7 +118,7 @@ test("a replacement cannot repeat the immutable original", async () => {
     code: "replacement_unchanged",
     message: "The desired replacement must differ from the immutable original.",
   });
-  assert.equal(session.revision, 7);
+  assert.equal(session.revision, 6);
 });
 
 test("stale and replayed actions do not mutate a V2 session", async () => {
@@ -268,8 +267,7 @@ async function completeToDecision(source, set) {
   session = success(advancePhase(session, set, expected(session, "purpose", "purpose-why"), fixedClock));
   session = success(recordStepReveal(session, set, expected(session, "purpose", "purpose-finish"), fixedClock));
   session = success(advancePhase(session, set, expected(session, "purpose", "purpose-finish"), fixedClock));
-  session = success(recordExplanation(session, set, expected(session, "purpose"), "The rail makes the next move clear and keeps the lane reusable.", fixedClock));
-  return success(recordConfidence(session, set, expected(session, "purpose"), 4, fixedClock));
+  return success(recordExplanation(session, set, expected(session, "purpose"), "The rail makes the next move clear and keeps the lane reusable.", fixedClock));
 }
 
 function step(stepId, sourceQuote) {
