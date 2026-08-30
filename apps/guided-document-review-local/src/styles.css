@@ -611,6 +611,18 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .trail-stop { position: relative; display: grid; grid-template-columns: 32px 1fr; gap: 10px; padding: 0 0 24px; color: #77868a; }
 .trail-stop:not(:last-child)::after { content: ""; position: absolute; left: 15px; top: 32px; bottom: 4px; width: 2px; background: #324147; }
 .trail-stop__marker { display: grid; place-items: center; width: 32px; height: 32px; border: 2px solid currentColor; border-radius: 50%; font-weight: 900; }
+.trail-stop__content, .trail-stop__link {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  gap: 10px;
+  width: 100%;
+  color: inherit;
+  text-align: left;
+}
+.trail-stop__link { padding: 0; border: 0; background: transparent; }
+.trail-stop__link:hover .trail-stop__title,
+.trail-stop__link:focus-visible .trail-stop__title { color: var(--gold); text-decoration: underline; text-underline-offset: 3px; }
 .trail-stop__title { padding-top: 5px; font-weight: 800; }
 .trail-stop__decision { grid-column: 2; color: var(--muted); font-size: .75rem; }
 .trail-stop--active { color: var(--gold); }

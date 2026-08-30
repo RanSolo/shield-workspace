@@ -10,6 +10,7 @@ import {
   decodeReviewSession,
   recordExplanation,
   recordStepDisposition,
+  reopenCheckpoint,
   startReviewSession,
 } from "../dist/index.js";
 
@@ -156,6 +157,34 @@ test("replacement application rejects duplicate and overlapping originals", () =
   const first = { stepId: "one", original: "abc", replacement: "ABC", rationale: null };
   assert.throws(() => applyConfirmedReplacements("abc def", [first, first]), /repeat an original/u);
   assert.throws(() => applyConfirmedReplacements("abc def", [first, { stepId: "two", original: "abc def", replacement: "changed", rationale: null }]), /must not overlap/u);
+});
+
+test("a completed breadcrumb can reopen one checkpoint without losing later answers", async () => {
+  const source = await createSourceDocument("Rail", "First passage.\n\nSecond passage.");
+  const set = await createCheckpointSet("Trail", [
+    { checkpointId: "first", title: "First", learningSteps: [step("first-step", "First passage.")] },
+    { checkpointId: "second", title: "Second", learningSteps: [step("second-step", "Second passage.")] },
+  ], source.text);
+  let session = await startReviewSession(source, set, { kind: "self_asserted", name: "Randy" }, fixedClock);
+  session = begin(session, set, "first");
+  session = passStep(session, set, "first-step", "first");
+  session = success(recordExplanation(session, set, expected(session, "first"), "First explanation remains available when this checkpoint is reopened.", fixedClock));
+  session = begin(session, set, "second");
+  session = passStep(session, set, "second-step", "second");
+  session = success(recordExplanation(session, set, expected(session, "second"), "Second explanation and decision must remain durable and complete.", fixedClock));
+  assert.equal(session.phase, "complete");
+
+  session = success(reopenCheckpoint(session, set, expected(session, "first"), "first", fixedClock));
+  assert.equal(session.currentCheckpointIndex, 0);
+  assert.equal(session.answers.first.decision, null);
+  assert.match(session.answers.first.explanation, /remains available/u);
+  assert.equal(session.answers.second.decision, "approve");
+
+  session = begin(session, set, "first");
+  session = passStep(session, set, "first-step", "first");
+  session = success(recordExplanation(session, set, expected(session, "first"), session.answers.first.explanation, fixedClock));
+  assert.equal(session.phase, "complete");
+  assert.equal(session.answers.second.decision, "approve");
 });
 
 async function fixture() {

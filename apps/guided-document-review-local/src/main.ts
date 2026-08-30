@@ -13,9 +13,11 @@ import {
   recordDecision,
   recordExplanation,
   recordStepDisposition,
+  reopenCheckpoint,
   returnToPreviousPhase,
   startReviewSession,
   type CheckpointSet,
+  type CheckpointAnswer,
   type ExpectedTransition,
   type LearningStep,
   type ReviewCheckpoint,
@@ -52,6 +54,7 @@ let sceneryScene: "a" | "b" = "a";
 let trailWasComplete = false;
 let replacementPreviewStepId: string | null = null;
 let revisionEditorOpen = false;
+const reopenedCheckpointAnswers = new Map<string, CheckpointAnswer>();
 
 const setupPanel = required("setup-panel");
 const reviewPanel = required("review-panel");
@@ -139,6 +142,7 @@ async function beginReview(title: string, text: string, checkpoints: unknown, na
   trailWasComplete = false;
   revisionPacketConfirmed = false;
   revisionEditorOpen = false;
+  reopenedCheckpointAnswers.clear();
   setupPanel.hidden = true;
   reviewPanel.hidden = false;
   render();
@@ -162,6 +166,26 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (action === "copy-revision-prompt") return void copyRevisionPrompt();
   if (action === "download-revised") return void downloadRevisedMarkdown();
   if (action === "stop-reading") return speech.stop(showSpeechStatus);
+  if (action === "jump-checkpoint" && state?.session.phase === "complete") {
+    const checkpointId = button.dataset.checkpointId ?? "";
+    const priorAnswer = state.session.answers[checkpointId];
+    if (priorAnswer) reopenedCheckpointAnswers.set(checkpointId, priorAnswer);
+    const result = reopenCheckpoint(
+      state.session,
+      state.checkpointSet,
+      expectation(checkpointId),
+      checkpointId,
+      clock,
+    );
+    if (!result.ok) state = { ...state, message: result.message };
+    else {
+      state = { ...state, session: result.session, message: null };
+      revisionPacketConfirmed = false;
+      saveDraft();
+    }
+    render();
+    return;
+  }
   if (action === "copy-source" && state && state.session.phase !== "complete") {
     try {
       await navigator.clipboard.writeText(visibleStep().sourceQuote);
@@ -211,6 +235,10 @@ async function handleClick(event: MouseEvent): Promise<void> {
     }
     if (action === "decision" || action === "step-disposition") clearReplacementDraft(checkpoint.checkpointId);
     state = { ...state, session: result.session, message: null };
+    if ((action === "decision" || action === "step-disposition") &&
+        result.session.answers[checkpoint.checkpointId]?.decision !== null) {
+      reopenedCheckpointAnswers.delete(checkpoint.checkpointId);
+    }
     if (action === "step-disposition" || result.session.phase !== "decide") {
       replacementPreviewStepId = null;
       revisionEditorOpen = false;
@@ -655,7 +683,13 @@ function restoreTextDraft(checkpoint: ReviewCheckpoint): void {
   if (explanation && !answer.explanation && drafts.explanations[checkpoint.checkpointId]) {
     explanation.value = drafts.explanations[checkpoint.checkpointId];
   }
-  const replacement = drafts.replacements[checkpoint.checkpointId];
+  const priorReplacement = reopenedCheckpointAnswers.get(checkpoint.checkpointId)?.stepDispositions
+    .find(({ stepId }) => stepId === activeStep().stepId)?.replacement;
+  const replacement = drafts.replacements[checkpoint.checkpointId] ?? (priorReplacement ? {
+    stepId: priorReplacement.stepId,
+    replacement: priorReplacement.replacement,
+    rationale: priorReplacement.rationale ?? "",
+  } : undefined);
   if (replacement) {
     replacementPreviewStepId = replacement.stepId;
     const replacementStep = document.getElementById("replacement-step") as HTMLSelectElement | null;

@@ -47,13 +47,14 @@ export function renderJourney(
       const active = !complete && activeMemberIndex >= 0;
       const state = complete ? "complete" : active ? "active" : "waiting";
       const item = element("li", `trail-stop trail-stop--${state} trail-stop--group`);
-      item.append(
+      const content = journeyStopButton(checkpoint.checkpointId, complete, [
         element("span", "trail-stop__marker", complete ? "✓" : active ? "•" : "○"),
         element("span", "trail-stop__title", checkpoint.journeyGroup.title),
         element("span", "trail-stop__decision", active
           ? `Principle ${activeMemberIndex + 1} of ${members.length}`
           : `${reviewed}/${members.length} reviewed`),
-      );
+      ]);
+      item.append(content);
       container.append(item);
       return;
     }
@@ -62,13 +63,30 @@ export function renderJourney(
     const active = !complete && index === view.session.currentCheckpointIndex;
     const state = complete ? "complete" : active ? "active" : "waiting";
     const item = element("li", `trail-stop trail-stop--${state}`);
-    item.append(
+    const content = journeyStopButton(checkpoint.checkpointId, complete, [
       element("span", "trail-stop__marker", complete ? "✓" : active ? "•" : "○"),
       element("span", "trail-stop__title", checkpoint.title),
-    );
-    if (answer.decision) item.append(element("span", "trail-stop__decision", labelDecision(answer.decision)));
+    ]);
+    if (answer.decision) content.append(element("span", "trail-stop__decision", labelDecision(answer.decision)));
+    item.append(content);
     container.append(item);
   });
+}
+
+function journeyStopButton(checkpointId: string, enabled: boolean, children: readonly HTMLElement[]): HTMLElement {
+  if (!enabled) {
+    const content = element("span", "trail-stop__content");
+    content.append(...children);
+    return content;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "trail-stop__link";
+  button.dataset.action = "jump-checkpoint";
+  button.dataset.checkpointId = checkpointId;
+  button.title = "Reopen this completed checkpoint";
+  button.append(...children);
+  return button;
 }
 
 export function renderCheckpoint(container: HTMLElement, view: ReviewView, speechSupported: boolean): void {

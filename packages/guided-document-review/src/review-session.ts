@@ -272,6 +272,52 @@ export function returnToPreviousPhase(
   return invalid("phase_at_start", "This checkpoint is already at its first step.");
 }
 
+export function reopenCheckpoint(
+  session: ReviewSession,
+  checkpointSet: CheckpointSet,
+  expected: ExpectedTransition,
+  checkpointId: string,
+  clock: Clock,
+): SessionResult {
+  if (session.checkpointSetId !== checkpointSet.checkpointSetId ||
+      session.checkpointSetDigest !== checkpointSet.checkpointSetDigest) {
+    return invalid("checkpoint_set_mismatch", "That checkpoint set does not belong to this review session.");
+  }
+  if (session.phase !== "complete" || expected.phase !== "complete") {
+    return invalid("review_incomplete", "Completed checkpoints can be reopened from the final review.");
+  }
+  if (session.events.some((event) => event.eventId === expected.eventId)) {
+    return invalid("event_replayed", "That action was already applied.");
+  }
+  if (expected.revision !== session.revision) {
+    return invalid("revision_stale", "The review changed. Reload before continuing.");
+  }
+  const checkpointIndex = checkpointSet.checkpoints.findIndex((checkpoint) => checkpoint.checkpointId === checkpointId);
+  const checkpoint = checkpointSet.checkpoints[checkpointIndex];
+  const answer = session.answers[checkpointId];
+  if (!checkpoint || !answer || expected.checkpointId !== checkpointId) {
+    return invalid("checkpoint_mismatch", "That checkpoint does not belong to this review.");
+  }
+  return changed(session, expected, {
+    phase: "orient",
+    currentCheckpointIndex: checkpointIndex,
+    currentStepIndex: 0,
+    answers: updateAnswer(session, checkpointId, {
+      revealedStepIds: [],
+      decision: null,
+      replacement: null,
+      replacements: [],
+      stepDispositions: checkpoint.learningSteps.map(({ stepId }) => ({
+        stepId,
+        disposition: null,
+        replacement: null,
+        decidedAt: null,
+      })),
+      decidedAt: null,
+    }),
+  }, clock);
+}
+
 export function recordExplanation(
   session: ReviewSession,
   checkpointSet: CheckpointSet,
@@ -289,10 +335,11 @@ export function recordExplanation(
   }
   const replacements = revisedReplacements(answer.stepDispositions);
   const recordedAt = validTime(clock());
-  const final = session.currentCheckpointIndex === checkpointSet.checkpoints.length - 1;
+  const nextIndex = nextCheckpointIndex(session, checkpointSet);
+  const final = nextIndex === session.currentCheckpointIndex;
   return changedAt(session, expected, {
     phase: final ? "complete" : "orient",
-    currentCheckpointIndex: final ? session.currentCheckpointIndex : session.currentCheckpointIndex + 1,
+    currentCheckpointIndex: nextIndex,
     currentStepIndex: 0,
     answers: updateAnswer(session, expected.checkpointId, {
       explanation: explanation.trim(),
@@ -337,10 +384,11 @@ export function recordDecision(
     return invalid("replacement_decision_mismatch", "A replacement request belongs with Needs revision.");
   }
   const decidedAt = validTime(clock());
-  const finalCheckpoint = session.currentCheckpointIndex === checkpointSet.checkpoints.length - 1;
+  const nextIndex = nextCheckpointIndex(session, checkpointSet);
+  const finalCheckpoint = nextIndex === session.currentCheckpointIndex;
   return changed(session, expected, {
     phase: finalCheckpoint ? "complete" : "orient",
-    currentCheckpointIndex: finalCheckpoint ? session.currentCheckpointIndex : session.currentCheckpointIndex + 1,
+    currentCheckpointIndex: nextIndex,
     currentStepIndex: 0,
     answers: updateAnswer(session, expected.checkpointId, {
       decision: input.decision,
@@ -393,13 +441,14 @@ function revisedReplacements(dispositions: readonly StepDispositionRecord[]): Re
 }
 
 function nextPhase(session: ReviewSession, checkpointSet: CheckpointSet): ReviewPhase {
-  return session.currentCheckpointIndex === checkpointSet.checkpoints.length - 1 ? "complete" : "orient";
+  return nextCheckpointIndex(session, checkpointSet) === session.currentCheckpointIndex ? "complete" : "orient";
 }
 
 function nextCheckpointIndex(session: ReviewSession, checkpointSet: CheckpointSet): number {
-  return session.currentCheckpointIndex === checkpointSet.checkpoints.length - 1
-    ? session.currentCheckpointIndex
-    : session.currentCheckpointIndex + 1;
+  const next = checkpointSet.checkpoints.findIndex((checkpoint, index) =>
+    index > session.currentCheckpointIndex && session.answers[checkpoint.checkpointId]?.decision === null,
+  );
+  return next < 0 ? session.currentCheckpointIndex : next;
 }
 
 function changed(
