@@ -35,6 +35,19 @@ test("prepared trail manifest loads one closed local packet", async () => {
   }
 });
 
+test("synthetic invoice proves a generic prepared Inspect Trail", async () => {
+  const trailsRoot = new URL("../review-kits/", import.meta.url).pathname;
+  const packet = await loadPreparedTrail(trailsRoot, "sample-invoice");
+
+  assert.equal(packet.title, "Invoice Inspect Trail");
+  assert.match(packet.documentText, /entirely synthetic/u);
+  assert.match(packet.documentText, /quantity 5 × \$6\.00 = \*\*\$24\.00\*\*/u);
+  assert.equal(packet.checkpoints.length, 4);
+  for (const step of packet.checkpoints.flatMap((checkpoint) => checkpoint.learningSteps)) {
+    assert.equal(packet.documentText.split(step.sourceQuote).length - 1, 1, step.stepId);
+  }
+});
+
 test("Mission Rail learning steps use focused passages instead of heading-only anchors", async () => {
   const packetPath = new URL("../review-kits/mission-rail-v2-checkpoints.json", import.meta.url);
   const checkpoints = JSON.parse(await readFile(packetPath, "utf8"));

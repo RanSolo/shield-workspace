@@ -1,0 +1,118 @@
+[
+  {
+    "checkpointId": "invoice-identity",
+    "title": "Confirm who, what, and when",
+    "reviewMode": "teach",
+    "learningSteps": [
+      {
+        "stepId": "invoice-parties",
+        "sourceQuote": "Billed by: **Pioneer Paper Goods LLC**  \nBilled to: **Trailhead Community Library**",
+        "purpose": "Identify the parties before evaluating any amount or term.",
+        "question": "Who issued this invoice, and who is expected to review or pay it?",
+        "explanation": "Pioneer Paper Goods LLC is the synthetic vendor, and Trailhead Community Library is the synthetic customer.",
+        "whyItMatters": "A valid-looking total is irrelevant when the document belongs to the wrong vendor or customer."
+      },
+      {
+        "stepId": "invoice-reference",
+        "sourceQuote": "Invoice number: **DT-1042**  \nPurchase order: **PO-DT-771**",
+        "purpose": "Capture the identifiers needed to reconcile the invoice with another record.",
+        "question": "Which two identifiers should be used to match this invoice to purchasing records?",
+        "explanation": "Invoice DT-1042 identifies the vendor document, while purchase order PO-DT-771 identifies the buyer's authorization record.",
+        "whyItMatters": "Stable identifiers prevent two similar invoices or purchases from being confused."
+      },
+      {
+        "stepId": "invoice-dates",
+        "sourceQuote": "Issued: **August 28, 2026**  \nDue: **September 27, 2026**",
+        "purpose": "Verify the billing period and payment deadline.",
+        "question": "When was the invoice issued, and when does it claim payment is due?",
+        "explanation": "The invoice was issued August 28, 2026 and is due September 27, 2026.",
+        "whyItMatters": "Dates determine whether terms are internally consistent and whether follow-up is timely."
+      }
+    ]
+  },
+  {
+    "checkpointId": "line-items",
+    "title": "Recalculate the billed work",
+    "reviewMode": "teach",
+    "learningSteps": [
+      {
+        "stepId": "archive-box-extension",
+        "sourceQuote": "- Archive boxes — quantity 12 × $8.50 = **$102.00**",
+        "purpose": "Verify one correct quantity-times-price extension before checking the suspicious line.",
+        "question": "Does the archive-box line calculate correctly?",
+        "explanation": "Yes. Twelve boxes at $8.50 each equal $102.00.",
+        "whyItMatters": "Recalculating each line distinguishes a document that merely looks orderly from one whose arithmetic is correct."
+      },
+      {
+        "stepId": "label-pack-anomaly",
+        "sourceQuote": "- Index-label packs — quantity 5 × $6.00 = **$24.00**",
+        "purpose": "Detect the intentionally planted invoice anomaly.",
+        "question": "Does the index-label line extension agree with its quantity and unit price?",
+        "explanation": "No. Five packs at $6.00 each equal $30.00, not $24.00. The displayed line is understated by $6.00.",
+        "whyItMatters": "A line-extension error can flow into the subtotal, tax, and final amount even when those later numbers are internally consistent."
+      },
+      {
+        "stepId": "delivery-extension",
+        "sourceQuote": "- Local delivery — quantity 1 × $18.00 = **$18.00**",
+        "purpose": "Complete the line-by-line arithmetic check.",
+        "question": "Does the delivery line calculate correctly?",
+        "explanation": "Yes. One delivery at $18.00 equals $18.00.",
+        "whyItMatters": "The corrected line-item total can now be calculated from independently checked values."
+      }
+    ]
+  },
+  {
+    "checkpointId": "amount-due",
+    "title": "Trace the anomaly into the total",
+    "reviewMode": "teach",
+    "learningSteps": [
+      {
+        "stepId": "displayed-subtotal",
+        "sourceQuote": "Subtotal: **$144.00**",
+        "purpose": "Compare the displayed subtotal with both the displayed and corrected line extensions.",
+        "question": "Why does $144.00 add up on the page but still need correction?",
+        "explanation": "It equals the three displayed extensions: $102 + $24 + $18. After correcting the label packs to $30, the proper subtotal is $150.00.",
+        "whyItMatters": "Internally consistent arithmetic can still preserve an earlier source error."
+      },
+      {
+        "stepId": "displayed-tax",
+        "sourceQuote": "Sales tax (7%): **$10.08**",
+        "purpose": "Recalculate tax from the corrected subtotal.",
+        "question": "What should the 7% tax be after correcting the subtotal?",
+        "explanation": "Seven percent of the corrected $150.00 subtotal is $10.50, rather than $10.08.",
+        "whyItMatters": "Downstream calculations must be recomputed after correcting an upstream amount."
+      },
+      {
+        "stepId": "displayed-total",
+        "sourceQuote": "Invoice total: **$154.08**",
+        "purpose": "Determine the corrected amount while preserving the finding as a question, not a payment instruction.",
+        "question": "What total follows from the corrected subtotal and tax?",
+        "explanation": "The corrected arithmetic produces $160.50: a $150.00 subtotal plus $10.50 tax.",
+        "whyItMatters": "Document Trail should explain the discrepancy and support follow-up; it must not authorize payment."
+      }
+    ]
+  },
+  {
+    "checkpointId": "terms-and-follow-up",
+    "title": "Decide the safe next follow-up",
+    "reviewMode": "teach",
+    "learningSteps": [
+      {
+        "stepId": "payment-terms",
+        "sourceQuote": "Payment terms: **Net 30**. A 1.5% monthly late fee may apply to balances remaining after the due date.",
+        "purpose": "Understand the stated terms without treating the document as authoritative financial advice.",
+        "question": "What does the invoice claim about timing and late fees?",
+        "explanation": "It claims payment is due within 30 days and that a 1.5% monthly late fee may apply afterward.",
+        "whyItMatters": "Terms should be checked against the purchase agreement before anyone relies on them."
+      },
+      {
+        "stepId": "follow-up-reference",
+        "sourceQuote": "Questions about this invoice should reference invoice **DT-1042** and purchase order **PO-DT-771**.",
+        "purpose": "Turn the inspection into a precise, bounded follow-up.",
+        "question": "What should a follow-up mention, and what discrepancy should it ask the vendor to resolve?",
+        "explanation": "Reference invoice DT-1042 and PO-DT-771, then ask the vendor to correct the index-label extension and recalculate subtotal, tax, and total.",
+        "whyItMatters": "A useful inspection ends with an exact, reviewable question rather than an unsupported accusation or payment action."
+      }
+    ]
+  }
+]
