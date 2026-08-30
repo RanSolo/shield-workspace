@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "slug": "sample-invoice",
+  "title": "Invoice Inspect Trail",
+  "reviewerName": "Randy Russell",
+  "documentPath": "sample-invoice.md",
+  "checkpointPath": "sample-invoice-checkpoints.json"
+}
