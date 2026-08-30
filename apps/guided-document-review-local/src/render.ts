@@ -252,8 +252,8 @@ function renderExplain(container: HTMLElement, view: ReviewView): void {
     label,
     textarea,
     draftStatus(),
-    actionButton("Continue to Looks right / Revise", "save-explanation", "primary"),
   );
+  renderDecisionControls(container, view, "save-explanation-decision");
   textarea.focus();
 }
 
@@ -272,12 +272,16 @@ function learningRecap(checkpoint: ReviewCheckpoint): HTMLElement {
 }
 
 function renderDecision(container: HTMLElement, view: ReviewView): void {
+  renderDecisionControls(container, view, "decision");
+}
+
+function renderDecisionControls(container: HTMLElement, view: ReviewView, decisionAction: string): void {
   container.append(element("p", "prompt", view.checkpoint.reviewMode === "disposition"
     ? "Does this principle pass, or does the document need a revision?"
     : "What should happen with this checkpoint?"));
   if (view.step.priorReview) container.append(priorReviewCard(view.step.priorReview));
   const toolbar = element("div", "decision-toolbar");
-  const approve = actionButton(view.checkpoint.reviewMode === "disposition" ? "✓ PASS" : "✓ Looks right", "decision", "success");
+  const approve = actionButton(view.checkpoint.reviewMode === "disposition" ? "✓ PASS" : "✓ Looks right", decisionAction, "success");
   approve.dataset.value = "approve";
   toolbar.append(
     approve,
@@ -329,7 +333,7 @@ function renderDecision(container: HTMLElement, view: ReviewView): void {
     rationaleLabel,
     draftStatus(),
   );
-  const save = actionButton("Save revision", "decision", "primary");
+  const save = actionButton("Save revision", decisionAction, "primary");
   save.dataset.value = "revise";
   container.append(save, element("p", "fine-print", "The requested change is recorded for the changes-only review at the end of the trail."));
 }

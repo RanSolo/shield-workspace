@@ -211,23 +211,35 @@ async function handleClick(event: MouseEvent): Promise<void> {
       : ready;
   }
   if (action === "back") result = returnToPreviousPhase(state.session, state.checkpointSet, expected, clock);
-  if (action === "save-explanation") {
-    result = recordExplanation(state.session, state.checkpointSet, expected, valueOf("explanation"), clock);
-  }
   if (action === "decision") {
     result = recordDecision(state.session, state.checkpointSet, expected, {
       decision: button.dataset.value as ReviewDecision,
       replacement: button.dataset.value === "revise" ? replacementInput() : undefined,
     }, clock);
   }
+  if (action === "save-explanation-decision") {
+    const explanationResult = recordExplanation(
+      state.session,
+      state.checkpointSet,
+      expected,
+      valueOf("explanation"),
+      clock,
+    );
+    result = explanationResult.ok
+      ? recordDecision(explanationResult.session, state.checkpointSet, replayExpectation(explanationResult.session, checkpoint.checkpointId), {
+          decision: button.dataset.value as ReviewDecision,
+          replacement: button.dataset.value === "revise" ? replacementInput() : undefined,
+        }, clock)
+      : explanationResult;
+  }
   if (!result) return;
   if (!result.ok) {
     state = { ...state, message: result.message };
   } else {
-    if (action === "save-explanation") {
+    if (action === "save-explanation-decision") {
       clearExplanationDraft(checkpoint.checkpointId);
     }
-    if (action === "decision") clearReplacementDraft(checkpoint.checkpointId);
+    if (action === "decision" || action === "save-explanation-decision") clearReplacementDraft(checkpoint.checkpointId);
     state = { ...state, session: result.session, message: null };
     if (result.session.phase !== "decide") {
       replacementPreviewStepId = null;
@@ -240,7 +252,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (action === "advance") {
     requestAnimationFrame(() => scrollCheckpointToToolbar());
   }
-  if (action === "quick-pass" || action === "decision" || action === "save-explanation") {
+  if (action === "quick-pass" || action === "decision" || action === "save-explanation-decision") {
     requestAnimationFrame(() => checkpointPanel.scrollTo({ top: 0, behavior: "smooth" }));
   }
   if (action === "quick-revise") {
