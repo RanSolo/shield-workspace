@@ -31,6 +31,14 @@ button { cursor: pointer; }
   width: clamp(150px, 24vw, 340px);
   height: 72px;
   overflow: hidden;
+  border-radius: 12px;
+  transition: background 500ms ease;
+}
+.trail-progress.time-day {
+  background: linear-gradient(180deg, #3d82aa 0%, #83bdcf 61%, #b8d6c5 100%);
+}
+.trail-progress.time-night {
+  background: linear-gradient(180deg, #08131d 0%, #132a38 62%, #243d3b 100%);
 }
 .trail-progress__stars {
   position: absolute;
@@ -65,6 +73,27 @@ button { cursor: pointer; }
 .trail-progress.is-traveling.time-night .trail-progress__stars::after {
   animation: trail-shooting-star 1.25s .65s ease-out both;
 }
+.trail-progress__clouds {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 400ms ease;
+}
+.trail-progress.time-day .trail-progress__clouds { opacity: .76; }
+.trail-progress__clouds::before,
+.trail-progress__clouds::after {
+  content: "";
+  position: absolute;
+  width: 29px;
+  height: 7px;
+  border-radius: 999px;
+  background: #f5fbf7;
+  box-shadow: 7px -5px 0 -1px #f5fbf7, 15px -2px 0 -1px #f5fbf7;
+}
+.trail-progress__clouds::before { top: 15px; right: 18px; }
+.trail-progress__clouds::after { top: 32px; left: 35px; scale: .72; opacity: .8; }
+.trail-progress.is-traveling.time-day .trail-progress__clouds { animation: trail-cloud-drift 5s linear both; }
 .trail-progress__sky {
   position: absolute;
   z-index: 0;
@@ -405,6 +434,10 @@ button { cursor: pointer; }
   18% { opacity: .9; }
   100% { right: 78px; top: 1px; opacity: .9; }
 }
+@keyframes trail-cloud-drift {
+  from { translate: 38px 0; }
+  to { translate: -46px 0; }
+}
 @keyframes trail-shooting-star {
   0% { opacity: 0; translate: 0 0; }
   15% { opacity: 1; }
@@ -664,7 +697,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 }
 @media (prefers-reduced-motion: reduce) {
   .button, .trail-progress__caravan { transition: none; }
-  .trail-progress__scenery, .trail-progress__sky { animation: none !important; }
+  .trail-progress__scenery, .trail-progress__sky, .trail-progress__clouds { animation: none !important; }
   .trail-progress.is-complete::after,
   .trail-progress.is-complete .trail-progress__wagon,
   .trail-progress.is-complete .trail-progress__team { animation: none; }
