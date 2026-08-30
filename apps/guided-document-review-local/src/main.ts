@@ -192,7 +192,20 @@ function render(): void {
   completionPanel.hidden = true;
   renderCheckpoint(checkpointPanel, { ...state, checkpoint, step, excerpt }, speech.supported);
   renderSource(sourcePanel, state.source, excerpt, step.sourceQuote, speech.supported);
+  wireLearningHighlight();
   syncReviewViewport();
+}
+
+function wireLearningHighlight(): void {
+  reviewPanel.classList.remove("source-emphasis");
+  const question = checkpointPanel.querySelector<HTMLElement>(".learning-question");
+  if (!question) return;
+  const emphasize = (): void => reviewPanel.classList.add("source-emphasis");
+  const relax = (): void => reviewPanel.classList.remove("source-emphasis");
+  question.addEventListener("mouseenter", emphasize);
+  question.addEventListener("mouseleave", relax);
+  question.addEventListener("focus", emphasize);
+  question.addEventListener("blur", relax);
 }
 
 function renderTrailProgress(): void {
