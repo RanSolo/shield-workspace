@@ -35,10 +35,10 @@ button { cursor: pointer; }
 .trail-progress__sky {
   position: absolute;
   z-index: 0;
-  top: 4px;
+  top: 1px;
   right: 78px;
-  width: 14px;
-  height: 14px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   opacity: 0;
 }
@@ -53,10 +53,10 @@ button { cursor: pointer; }
 .trail-progress__sky.sky--moon::after {
   content: "";
   position: absolute;
-  top: -2px;
-  left: 5px;
-  width: 13px;
-  height: 13px;
+  top: -3px;
+  left: 7px;
+  width: 19px;
+  height: 19px;
   border-radius: 50%;
   background: #11191c;
 }
@@ -361,11 +361,11 @@ button { cursor: pointer; }
   to { opacity: .58; translate: 0; }
 }
 @keyframes trail-sky-cross {
-  0% { opacity: 0; translate: 135px 12px; }
+  0% { right: -24px; top: 29px; opacity: 0; }
   18% { opacity: .9; }
-  50% { opacity: 1; translate: 0 -5px; }
+  50% { right: 50%; top: -3px; opacity: 1; }
   82% { opacity: .9; }
-  100% { opacity: 0; translate: -135px 12px; }
+  100% { right: calc(100% + 24px); top: 29px; opacity: 0; }
 }
 .brand-kicker, .eyebrow { margin: 0 0 8px; color: var(--gold); font-size: .72rem; font-weight: 900; letter-spacing: .16em; text-transform: uppercase; }
 .topbar__promise { margin: 0; color: var(--teal); font-weight: 800; }
