@@ -64,6 +64,7 @@ required("start-custom").addEventListener("click", () => void startCustom());
 required("copy-ai-prompt").addEventListener("click", () => void copyAiPrompt());
 required("document-file").addEventListener("change", (event) => void loadTextFile(event, "document-text"));
 required("checkpoint-file").addEventListener("change", (event) => void loadTextFile(event, "checkpoint-json"));
+animateTrail();
 
 async function startSample(): Promise<void> {
   await beginReview("Mission Rail V2", sampleDocument, sampleCheckpoints, reviewerName());
@@ -103,6 +104,7 @@ async function beginReview(title: string, text: string, checkpoints: unknown, na
   setupPanel.hidden = true;
   reviewPanel.hidden = false;
   render();
+  animateTrail();
   window.scrollTo({ top: 0, left: 0, behavior: "auto" });
 }
 
