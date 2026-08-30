@@ -130,7 +130,7 @@ async function beginReview(title: string, text: string, checkpoints: unknown, na
   const source = await createSourceDocument(title, text);
   const checkpointSet = await createCheckpointSet(`${title} learning trail`, checkpoints, text);
   const reviewer = name ? { kind: "self_asserted" as const, name } : { kind: "unattributed" as const, name: null };
-  const saved = await readDraft(source, checkpointSet);
+  const saved = await readDraft(source, checkpointSet, reviewer);
   const session = saved ?? await startReviewSession(source, checkpointSet, reviewer, clock);
   state = { source, checkpointSet, session, message: saved ? "Your saved V2 trail was restored." : null };
   lastTrailPercent = null;
@@ -355,15 +355,130 @@ function restart(): void {
   showSetupMessage("");
 }
 
-async function readDraft(source: SourceDocument, set: CheckpointSet): Promise<ReviewSession | null> {
+async function readDraft(
+  source: SourceDocument,
+  set: CheckpointSet,
+  reviewer: ReviewSession["reviewer"],
+): Promise<ReviewSession | null> {
   const raw = localStorage.getItem(storageKey(source, set));
-  if (!raw) return null;
-  try {
-    const decoded = await decodeReviewSession(JSON.parse(raw), source, set);
-    return decoded.ok ? decoded.session : null;
-  } catch {
-    return null;
+  let exact: ReviewSession | null = null;
+  if (raw) {
+    try {
+      const decoded = await decodeReviewSession(JSON.parse(raw), source, set);
+      exact = decoded.ok ? decoded.session : null;
+    } catch {
+      exact = null;
+    }
   }
+
+  const carried = await carryForwardCompletedCheckpoints(source, set, reviewer);
+  if (carried && reviewProgress(carried) > reviewProgress(exact)) {
+    localStorage.setItem(storageKey(source, set), JSON.stringify(carried));
+    return carried;
+  }
+  return exact;
+}
+
+async function carryForwardCompletedCheckpoints(
+  source: SourceDocument,
+  set: CheckpointSet,
+  reviewer: ReviewSession["reviewer"],
+): Promise<ReviewSession | null> {
+  const prefix = `${storagePrefix}${source.sourceDigest}:`;
+  let best: ReviewSession | null = null;
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (!key?.startsWith(prefix) || key === storageKey(source, set)) continue;
+    try {
+      const candidate = JSON.parse(localStorage.getItem(key) ?? "null") as {
+        sourceDigest?: unknown;
+        answers?: Record<string, unknown>;
+      };
+      if (candidate?.sourceDigest !== source.sourceDigest || !candidate.answers) continue;
+      const migrated = await replayCompletedPrefix(source, set, reviewer, candidate.answers);
+      if (reviewProgress(migrated) > reviewProgress(best)) best = migrated;
+    } catch {
+      // Ignore unrelated or malformed local drafts.
+    }
+  }
+  return best;
+}
+
+async function replayCompletedPrefix(
+  source: SourceDocument,
+  set: CheckpointSet,
+  reviewer: ReviewSession["reviewer"],
+  priorAnswers: Record<string, unknown>,
+): Promise<ReviewSession> {
+  let session = await startReviewSession(source, set, reviewer, clock);
+  for (const checkpoint of set.checkpoints) {
+    const answer = priorAnswers[checkpoint.checkpointId] as {
+      revealedStepIds?: unknown;
+      explanation?: unknown;
+      confidence?: unknown;
+      decision?: unknown;
+      replacement?: unknown;
+    } | undefined;
+    const stepIds = checkpoint.learningSteps.map(({ stepId }) => stepId);
+    if (!answer || !Array.isArray(answer.revealedStepIds) ||
+        answer.revealedStepIds.join("|") !== stepIds.join("|") ||
+        typeof answer.explanation !== "string" ||
+        ![1, 2, 3, 4, 5].includes(answer.confidence as number) ||
+        !["understand", "question", "revise", "approve"].includes(answer.decision as string)) break;
+
+    let result = advancePhase(session, set, replayExpectation(session, checkpoint.checkpointId), clock);
+    if (!result.ok) break;
+    session = result.session;
+    for (const step of checkpoint.learningSteps) {
+      result = advancePhase(session, set, replayExpectation(session, checkpoint.checkpointId, step.stepId), clock);
+      if (!result.ok) return session;
+      session = result.session;
+    }
+    result = recordExplanation(session, set, replayExpectation(session, checkpoint.checkpointId), answer.explanation, clock);
+    if (!result.ok) break;
+    session = result.session;
+    result = recordConfidence(
+      session,
+      set,
+      replayExpectation(session, checkpoint.checkpointId),
+      answer.confidence as 1 | 2 | 3 | 4 | 5,
+      clock,
+    );
+    if (!result.ok) break;
+    session = result.session;
+    result = recordDecision(session, set, replayExpectation(session, checkpoint.checkpointId), {
+      decision: answer.decision as ReviewDecision,
+      ...(answer.decision === "revise" && isReplacementInput(answer.replacement)
+        ? { replacement: answer.replacement }
+        : {}),
+    }, clock);
+    if (!result.ok) break;
+    session = result.session;
+  }
+  return session;
+}
+
+function replayExpectation(session: ReviewSession, checkpointId: string, stepId?: string): ExpectedTransition {
+  return {
+    eventId: crypto.randomUUID(),
+    checkpointId,
+    ...(stepId ? { stepId } : {}),
+    phase: session.phase,
+    revision: session.revision,
+  };
+}
+
+function isReplacementInput(value: unknown): value is { stepId: string; replacement: string; rationale?: string } {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { stepId?: unknown; replacement?: unknown; rationale?: unknown };
+  return typeof candidate.stepId === "string" && typeof candidate.replacement === "string" &&
+    (candidate.rationale === null || candidate.rationale === undefined || typeof candidate.rationale === "string");
+}
+
+function reviewProgress(session: ReviewSession | null): number {
+  if (!session) return -1;
+  const phase = ["orient", "learn", "explain_back", "confidence", "decide", "complete"].indexOf(session.phase);
+  return session.currentCheckpointIndex * 100 + session.currentStepIndex * 10 + phase;
 }
 
 function saveDraft(): void {
