@@ -732,6 +732,7 @@ function completedSourceMarkers(): readonly {
   stepId: string;
   sourceQuote: string;
   status: "passed" | "revised";
+  replacement?: string;
 }[] {
   if (!state) return [];
   return state.checkpointSet.checkpoints.flatMap((checkpoint) => {
@@ -742,6 +743,9 @@ function completedSourceMarkers(): readonly {
           stepId: step.stepId,
           sourceQuote: step.sourceQuote,
           status: decision === "approve" ? "passed" as const : "revised" as const,
+          ...(decision === "revise" && state?.session.answers[checkpoint.checkpointId]?.replacement
+            ? { replacement: state.session.answers[checkpoint.checkpointId].replacement?.replacement }
+            : {}),
         }))
       : [];
   });

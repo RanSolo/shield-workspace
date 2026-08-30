@@ -60,11 +60,18 @@ test("shows passed, revised, and active numbered principles as distinct block hi
   const source = "1. **First principle.** Detail one.\n2. **Second principle.** Detail two.\n3. **Third principle.** Detail three.";
   const article = render(source, "**Third principle.**", [
     { checkpointId: "principle-1", stepId: "step-1", sourceQuote: "**First principle.**", status: "passed" },
-    { checkpointId: "principle-2", stepId: "step-2", sourceQuote: "**Second principle.**", status: "revised" },
+    {
+      checkpointId: "principle-2",
+      stepId: "step-2",
+      sourceQuote: "**Second principle.**",
+      status: "revised",
+      replacement: "**Second principle revised.** Better detail.",
+    },
   ]);
 
   assert.match(article.querySelector("li.source-passed")?.textContent ?? "", /First principle/u);
   assert.match(article.querySelector("li.source-revised")?.textContent ?? "", /Second principle/u);
+  assert.match(article.querySelector("li.source-revised .source-diff__added")?.textContent ?? "", /revised/u);
   assert.match(article.querySelector("li.source-highlight")?.textContent ?? "", /Third principle/u);
 });
 

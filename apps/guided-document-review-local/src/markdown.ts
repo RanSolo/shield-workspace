@@ -7,6 +7,7 @@ export interface CompletedSourceMarker {
   readonly stepId: string;
   readonly sourceQuote: string;
   readonly status: "passed" | "revised";
+  readonly replacement?: string;
 }
 
 export interface SourceRevisionPreview {
@@ -28,7 +29,7 @@ export function renderMarkdownSections(
     const completedPassage = renderedMarkdownText(completed.sourceQuote);
     const completedMarker = locateRenderedPassage(staging, completedPassage);
     if (completedMarker.state === "resolved") {
-      highlightRenderedBlocks(
+      const completedBlocks = highlightRenderedBlocks(
         staging,
         completedMarker.start,
         completedMarker.end,
@@ -36,6 +37,9 @@ export function renderMarkdownSections(
         completed.stepId,
         completed.status === "passed" ? "source-passed" : "source-revised",
       );
+      if (completed.status === "revised" && completed.replacement?.trim()) {
+        renderRevisionDiff(completedBlocks, completed.replacement.trim());
+      }
     }
   });
 
