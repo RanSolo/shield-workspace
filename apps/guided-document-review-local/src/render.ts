@@ -372,10 +372,10 @@ function actionButton(label: string, action: string, style: string): HTMLButtonE
 
 function checkpointToolbar(speechSupported: boolean, showBack: boolean): HTMLElement {
   const actions = reviewToolbar();
+  if (showBack) actions.append(actionButton("← Back", "back", "quiet"));
   if (speechSupported) {
     actions.append(actionButton("▶ Read", "read-checkpoint", "secondary"), actionButton("■ Stop", "stop-reading", "quiet"));
   }
-  if (showBack) actions.append(actionButton("← Back", "back", "quiet"));
   return actions;
 }
 
