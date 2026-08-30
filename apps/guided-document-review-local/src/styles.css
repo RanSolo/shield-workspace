@@ -46,8 +46,8 @@ button { cursor: pointer; }
   position: absolute;
   inset: -6px 0;
   background: repeating-linear-gradient(90deg, transparent 0 12px, #526168 12px 15px, transparent 15px 25px);
-  animation: trail-ties-roll 1.1s linear infinite;
 }
+.trail-progress.is-traveling .trail-progress__track::after { animation: trail-ties-roll 1.1s linear infinite; }
 .trail-progress__caravan {
   position: absolute;
   left: calc(var(--trail-progress) * 1%);
@@ -95,8 +95,9 @@ button { cursor: pointer; }
   border-radius: 50%;
   background: repeating-conic-gradient(#d7e0df 0 14deg, #1a2529 14deg 45deg);
   box-shadow: inset 0 0 0 3px #1a2529;
-  animation: wagon-wheel-turn 1.2s linear infinite;
 }
+.trail-progress.is-traveling .trail-progress__wagon::before,
+.trail-progress.is-traveling .trail-progress__wagon::after { animation: wagon-wheel-turn 1.2s linear infinite; }
 .trail-progress__wagon::before { left: 6px; }
 .trail-progress__wagon::after { right: 6px; }
 .trail-progress__wagon span {
@@ -153,8 +154,8 @@ button { cursor: pointer; }
   border-radius: 10px 8px 6px 6px;
   background: #c99b61;
   box-shadow: inset 0 -3px #855d36;
-  animation: ox-team-bob .8s ease-in-out infinite alternate;
 }
+.trail-progress.is-traveling .trail-progress__team i { animation: ox-team-bob .8s ease-in-out infinite alternate; }
 .trail-progress__team i:nth-child(2) { animation-delay: -.4s; }
 .trail-progress__team i::before {
   content: "";
@@ -179,6 +180,26 @@ button { cursor: pointer; }
   background: #855d36;
   box-shadow: 9px 0 #855d36;
 }
+.trail-progress__team i b {
+  position: absolute;
+  z-index: 4;
+  top: -6px;
+  right: -10px;
+  width: 18px;
+  height: 10px;
+}
+.trail-progress__team i b::before,
+.trail-progress__team i b::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  width: 12px;
+  height: 7px;
+  border-top: 2px solid #fff0bd;
+  border-radius: 50%;
+}
+.trail-progress__team i b::before { left: 0; rotate: -24deg; }
+.trail-progress__team i b::after { right: 0; rotate: 24deg; }
 @keyframes wagon-wheel-turn { to { rotate: 1turn; } }
 @keyframes ox-team-bob { to { translate: 0 -2px; } }
 @keyframes trail-ties-roll { to { background-position-x: -25px; } }

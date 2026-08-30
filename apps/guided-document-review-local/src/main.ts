@@ -40,6 +40,8 @@ interface AppState {
 const storagePrefix = "document-trail:v2:";
 let state: AppState | null = null;
 let revisionPacketConfirmed = false;
+let lastTrailPercent: number | null = null;
+let trailMotionTimer: number | null = null;
 
 const setupPanel = required("setup-panel");
 const reviewPanel = required("review-panel");
@@ -96,6 +98,7 @@ async function beginReview(title: string, text: string, checkpoints: unknown, na
   const saved = await readDraft(source, checkpointSet);
   const session = saved ?? await startReviewSession(source, checkpointSet, reviewer, clock);
   state = { source, checkpointSet, session, message: saved ? "Your saved V2 trail was restored." : null };
+  lastTrailPercent = null;
   revisionPacketConfirmed = false;
   setupPanel.hidden = true;
   reviewPanel.hidden = false;
@@ -194,9 +197,22 @@ function renderTrailProgress(): void {
   const total = state.checkpointSet.checkpoints.length;
   const percent = state.session.phase === "complete" ? 100 : total <= 1 ? 0 :
     Math.round((state.session.currentCheckpointIndex / (total - 1)) * 100);
+  if (lastTrailPercent !== null && percent > lastTrailPercent) animateTrail();
+  lastTrailPercent = percent;
   trailProgress.style.setProperty("--trail-progress", String(percent));
   trailProgress.setAttribute("aria-valuenow", String(percent));
   trailProgress.setAttribute("aria-valuetext", `Checkpoint ${Math.min(state.session.currentCheckpointIndex + 1, total)} of ${total}`);
+}
+
+function animateTrail(): void {
+  if (trailMotionTimer !== null) window.clearTimeout(trailMotionTimer);
+  trailProgress.classList.remove("is-traveling");
+  void trailProgress.offsetWidth;
+  trailProgress.classList.add("is-traveling");
+  trailMotionTimer = window.setTimeout(() => {
+    trailProgress.classList.remove("is-traveling");
+    trailMotionTimer = null;
+  }, 5_000);
 }
 
 function completionActions(hasChanges: boolean): HTMLElement {
