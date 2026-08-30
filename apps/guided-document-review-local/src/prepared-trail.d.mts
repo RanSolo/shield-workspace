@@ -23,3 +23,13 @@ export function isPreparedReviewBinding(value: unknown): value is PreparedReview
 export function reviewerIdentityFromOperatorEntry(value: unknown):
   | Readonly<{ kind: "self_asserted"; name: string }>
   | Readonly<{ kind: "unattributed"; name: null }>;
+export function exactDraftForReviewer<T extends Readonly<{ reviewer: unknown }>>(
+  session: T,
+  reviewer: unknown,
+): T | null;
+export function carryForwardAnswersForReviewer(
+  candidate: unknown,
+  sourceDigest: string,
+  reviewer: unknown,
+): Readonly<Record<string, unknown>> | null;
+export function reviewerIdentitiesEqual(left: unknown, right: unknown): boolean;

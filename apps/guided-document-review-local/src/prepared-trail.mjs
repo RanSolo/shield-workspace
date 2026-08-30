@@ -24,6 +24,23 @@ export function reviewerIdentityFromOperatorEntry(value) {
     : { kind: "unattributed", name: null };
 }
 
+export function exactDraftForReviewer(session, reviewer) {
+  return isRecord(session) && reviewerIdentitiesEqual(session.reviewer, reviewer) ? session : null;
+}
+
+export function carryForwardAnswersForReviewer(candidate, sourceDigest, reviewer) {
+  return isRecord(candidate) && candidate.sourceDigest === sourceDigest &&
+    isRecord(candidate.answers) && reviewerIdentitiesEqual(candidate.reviewer, reviewer)
+    ? candidate.answers
+    : null;
+}
+
+export function reviewerIdentitiesEqual(left, right) {
+  return isRecord(left) && isRecord(right) && left.kind === right.kind && left.name === right.name &&
+    ((left.kind === "unattributed" && left.name === null) ||
+      (left.kind === "self_asserted" && typeof left.name === "string" && left.name.length > 0));
+}
+
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

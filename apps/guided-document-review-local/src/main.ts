@@ -32,7 +32,9 @@ import { renderCheckpoint, renderCompletion, renderJourney, renderSource, render
 import { sampleCheckpoints, sampleDocument } from "./sample-review.js";
 import { createSpeechControls } from "./speech.js";
 import {
+  carryForwardAnswersForReviewer,
   decodePreparedTrailResponse,
+  exactDraftForReviewer,
   reviewerIdentityFromOperatorEntry,
   type PreparedReviewBinding,
 } from "./prepared-trail.mjs";
@@ -486,8 +488,8 @@ async function readDraft(
     try {
       const decoded = await decodeReviewSession(JSON.parse(raw), source, set);
       if (decoded.ok) {
-        exact = Object.freeze({ ...withoutConfidenceStop(decoded.session), reviewer });
-        if ("migrated" in decoded && decoded.migrated) {
+        exact = exactDraftForReviewer(withoutConfidenceStop(decoded.session), reviewer);
+        if (exact && "migrated" in decoded && decoded.migrated) {
           localStorage.setItem(storageKey(source, set), JSON.stringify(exact));
         }
       }
@@ -515,12 +517,10 @@ async function carryForwardCompletedCheckpoints(
     const key = localStorage.key(index);
     if (!key?.startsWith(prefix) || key === storageKey(source, set)) continue;
     try {
-      const candidate = JSON.parse(localStorage.getItem(key) ?? "null") as {
-        sourceDigest?: unknown;
-        answers?: Record<string, unknown>;
-      };
-      if (candidate?.sourceDigest !== source.sourceDigest || !candidate.answers) continue;
-      const migrated = await replayCompletedPrefix(source, set, reviewer, candidate.answers);
+      const candidate = JSON.parse(localStorage.getItem(key) ?? "null");
+      const answers = carryForwardAnswersForReviewer(candidate, source.sourceDigest, reviewer);
+      if (!answers) continue;
+      const migrated = await replayCompletedPrefix(source, set, reviewer, answers);
       if (isBetterRecovery(migrated, best)) best = migrated;
     } catch {
       // Ignore unrelated or malformed local drafts.
@@ -533,7 +533,7 @@ async function replayCompletedPrefix(
   source: SourceDocument,
   set: CheckpointSet,
   reviewer: ReviewSession["reviewer"],
-  priorAnswers: Record<string, unknown>,
+  priorAnswers: Readonly<Record<string, unknown>>,
 ): Promise<ReviewSession> {
   let session = await startReviewSession(source, set, reviewer, clock);
   for (const checkpoint of set.checkpoints) {
