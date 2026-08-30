@@ -259,7 +259,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
     saveDraft();
   }
   render();
-  if (action === "advance" || action === "quick-pass") {
+  if (action === "advance" || action === "quick-pass" || action === "decision") {
     requestAnimationFrame(() => checkpointPanel.scrollTo({ top: 0, behavior: "smooth" }));
   }
   if (action === "quick-revise") {
