@@ -95,8 +95,8 @@ button { cursor: pointer; }
 }
 .trail-progress.time-day .sky--sun,
 .trail-progress.time-night .sky--moon { opacity: .9; }
-.trail-progress.is-traveling.time-day .sky--sun,
-.trail-progress.is-traveling.time-night .sky--moon { animation: trail-sky-cross 3.1s linear forwards; }
+.trail-progress.is-traveling.time-day .sky--sun { animation: trail-sky-cross 3.1s linear forwards; }
+.trail-progress.is-traveling.time-night .sky--moon { animation: trail-moon-rise 4.8s ease-out forwards; }
 .trail-progress__scenery {
   position: absolute;
   z-index: 0;
@@ -399,6 +399,11 @@ button { cursor: pointer; }
   50% { right: 50%; top: 0; opacity: 1; }
   82% { opacity: .9; }
   100% { right: calc(100% + 24px); top: 37px; opacity: 0; }
+}
+@keyframes trail-moon-rise {
+  0% { right: -24px; top: 37px; opacity: 0; }
+  18% { opacity: .9; }
+  100% { right: 78px; top: 1px; opacity: .9; }
 }
 @keyframes trail-shooting-star {
   0% { opacity: 0; translate: 0 0; }
