@@ -128,7 +128,7 @@ export function renderSource(
   revisionPreview?: SourceRevisionPreview,
 ): void {
   const renderedPassage = renderedMarkdownText(sourceQuote);
-  const actions = element("div", "source-actions");
+  const actions = reviewToolbar();
   actions.append(actionButton("Copy passage", "copy-source", "secondary"));
   if (speechSupported) {
     actions.append(actionButton("▶ Read", "read-source", "secondary"));
@@ -370,9 +370,13 @@ function actionButton(label: string, action: string, style: string): HTMLButtonE
 }
 
 function speechActions(label: string, action: string): HTMLElement {
-  const actions = element("div", "speech-actions");
+  const actions = reviewToolbar();
   actions.append(actionButton(`▶ ${label}`, action, "secondary"), actionButton("■ Stop", "stop-reading", "quiet"));
   return actions;
+}
+
+function reviewToolbar(): HTMLElement {
+  return element("div", "review-toolbar");
 }
 
 function card(label: string, body: string): HTMLElement {

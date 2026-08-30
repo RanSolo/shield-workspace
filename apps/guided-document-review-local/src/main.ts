@@ -259,12 +259,29 @@ async function handleClick(event: MouseEvent): Promise<void> {
     saveDraft();
   }
   render();
-  if (action === "advance" || action === "quick-pass" || action === "decision") {
+  if (action === "advance") {
+    requestAnimationFrame(() => scrollCheckpointToToolbar());
+  }
+  if (action === "quick-pass" || action === "decision") {
     requestAnimationFrame(() => checkpointPanel.scrollTo({ top: 0, behavior: "smooth" }));
   }
   if (action === "quick-revise") {
     requestAnimationFrame(() => checkpointPanel.scrollTo({ top: checkpointScrollTop, behavior: "auto" }));
   }
+}
+
+function scrollCheckpointToToolbar(): void {
+  const toolbar = checkpointPanel.querySelector<HTMLElement>(".review-toolbar");
+  if (!toolbar) {
+    checkpointPanel.scrollTo({ top: 0, behavior: "smooth" });
+    return;
+  }
+  const panelBox = checkpointPanel.getBoundingClientRect();
+  const toolbarBox = toolbar.getBoundingClientRect();
+  checkpointPanel.scrollTo({
+    top: Math.max(0, checkpointPanel.scrollTop + toolbarBox.top - panelBox.top),
+    behavior: "smooth",
+  });
 }
 
 function render(): void {
