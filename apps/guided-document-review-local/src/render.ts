@@ -32,8 +32,11 @@ export function renderJourney(
 ): void {
   container.replaceChildren();
   const renderedGroups = new Set<string>();
+  const hasCompletedCheckpointAfterCurrent = view.checkpointSet.checkpoints
+    .slice(view.session.currentCheckpointIndex + 1)
+    .some(({ checkpointId }) => view.session.answers[checkpointId].decision !== null);
   const trailCompleted =
-    view.session.phase === "complete" || view.session.events.some((event) => event.phase === "complete");
+    view.session.phase === "complete" || hasCompletedCheckpointAfterCurrent;
   const canReopenCheckpoint = view.session.phase === "complete";
   view.checkpointSet.checkpoints.forEach((checkpoint, index) => {
     if (checkpoint.journeyGroup) {
