@@ -431,10 +431,13 @@ function restoreTextDraft(checkpoint: ReviewCheckpoint): void {
   }
   const replacement = drafts.replacements[checkpoint.checkpointId];
   if (!answer.replacement && replacement) {
-    setValue("replacement-step", replacement.stepId);
-    setValue("replacement-text", replacement.replacement);
-    setValue("replacement-rationale", replacement.rationale);
     replacementPreviewStepId = replacement.stepId;
+    const replacementStep = document.getElementById("replacement-step") as HTMLSelectElement | null;
+    const replacementText = document.getElementById("replacement-text") as HTMLTextAreaElement | null;
+    const replacementRationale = document.getElementById("replacement-rationale") as HTMLTextAreaElement | null;
+    if (replacementStep) replacementStep.value = replacement.stepId;
+    if (replacementText) replacementText.value = replacement.replacement;
+    if (replacementRationale) replacementRationale.value = replacement.rationale;
     const step = checkpoint.learningSteps.find((candidate) => candidate.stepId === replacement.stepId);
     const original = document.getElementById("replacement-original");
     if (step && original) original.textContent = `Original passage (locked): ${step.sourceQuote}`;
