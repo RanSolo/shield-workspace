@@ -98,14 +98,15 @@ function journeyStopButton(checkpointId: string, enabled: boolean, children: rea
 export function renderCheckpoint(container: HTMLElement, view: ReviewView, speechSupported: boolean): void {
   container.replaceChildren();
   const quickReview = view.checkpoint.reviewMode === "disposition";
+  const codeReview = view.checkpoint.dispositionOptions?.includes("needs_qa") ?? false;
   const principleCheckpoints = view.checkpointSet.checkpoints.filter(({ reviewMode }) => reviewMode === "disposition");
   const principleIndex = principleCheckpoints.findIndex(({ checkpointId }) => checkpointId === view.checkpoint.checkpointId);
   const header = element("header", "checkpoint-header");
   header.append(
-    element("p", "eyebrow", quickReview ? "Quick principle review" : phaseTitle(view.session.phase)),
+    element("p", "eyebrow", codeReview ? "Guided code review" : quickReview ? "Quick principle review" : phaseTitle(view.session.phase)),
     element("h2", "checkpoint-title", view.checkpoint.title),
     element("p", "checkpoint-count", quickReview
-      ? `Principle ${principleIndex + 1} of ${principleCheckpoints.length}`
+      ? `${codeReview ? "Criterion" : "Principle"} ${principleIndex + 1} of ${principleCheckpoints.length}`
       : `Checkpoint ${view.session.currentCheckpointIndex + 1} of ${view.checkpointSet.checkpoints.length}`),
   );
   if (speechSupported || view.session.phase !== "orient") {
@@ -280,10 +281,24 @@ function renderExplain(container: HTMLElement, view: ReviewView): void {
 
 function renderStepDispositionControls(container: HTMLElement, view: ReviewView): void {
   const toolbar = element("div", "decision-toolbar");
-  const pass = actionButton("✓ Looks right / PASS", "step-disposition", "success");
-  pass.dataset.value = "pass";
+  const options = view.checkpoint.dispositionOptions ?? ["pass", "revise"];
+  if (options.includes("pass")) {
+    const pass = actionButton("✓ Looks right / PASS", "step-disposition", "success");
+    pass.dataset.value = "pass";
+    toolbar.append(pass);
+  }
+  if (options.includes("question")) {
+    const question = actionButton("? Question", "step-disposition", "secondary");
+    question.dataset.value = "question";
+    toolbar.append(question);
+  }
+  if (options.includes("needs_qa")) {
+    const needsQa = actionButton("◎ Needs QA", "step-disposition", "secondary");
+    needsQa.dataset.value = "needs_qa";
+    toolbar.append(needsQa);
+  }
   const revise = actionButton(view.revisionEditorOpen ? "Close revision" : "✎ Revise", view.revisionEditorOpen ? "hide-revision" : "show-revision", "secondary");
-  toolbar.append(pass, revise);
+  if (options.includes("revise")) toolbar.append(revise);
   container.append(toolbar);
   if (!view.revisionEditorOpen) {
     container.append(element("p", "fine-print", "PASS records this exact learning passage as correct for this review."));
@@ -455,5 +470,5 @@ function phaseTitle(phase: ReviewSession["phase"]): string {
 }
 
 function labelDecision(decision: ReviewDecision): string {
-  return ({ understand: "Understood", question: "Question", revise: "Needs revision", approve: "Looks right" })[decision];
+  return ({ understand: "Understood", question: "Question", needs_qa: "Needs QA", revise: "Needs revision", approve: "Looks right" })[decision];
 }

@@ -575,7 +575,7 @@ function stepDispositionInputs(
       const candidate = entry as { stepId?: unknown; disposition?: unknown; replacement?: unknown };
       if (candidate.stepId !== checkpoint.learningSteps[index].stepId) break;
       if (candidate.disposition === null || candidate.disposition === undefined) break;
-      if (!["pass", "revise"].includes(candidate.disposition as string)) return null;
+      if (!["pass", "revise", "question", "needs_qa"].includes(candidate.disposition as string)) return null;
       const input = { stepId: candidate.stepId, disposition: candidate.disposition as StepDisposition };
       if (candidate.disposition === "revise") {
         if (!isReplacementInput(candidate.replacement)) return null;
@@ -590,7 +590,7 @@ function stepDispositionInputs(
     }
     const hasRecordedProgress = values.length > 0 ||
       (Array.isArray(answer.revealedStepIds) && answer.revealedStepIds.length > 0) ||
-      ["understand", "question", "revise", "approve"].includes(answer.decision as string);
+      ["understand", "question", "needs_qa", "revise", "approve"].includes(answer.decision as string);
     return hasRecordedProgress ? values : null;
   }
   return completedCheckpointInputs(checkpoint, answer);
@@ -600,14 +600,15 @@ function completedCheckpointInputs(
   checkpoint: ReviewCheckpoint,
   answer: { decision?: unknown; replacement?: unknown },
 ): { stepId: string; disposition: StepDisposition; replacement?: { stepId: string; replacement: string; rationale?: string } }[] | null {
-  if (!["understand", "question", "revise", "approve"].includes(answer.decision as string)) return null;
+  if (!["understand", "question", "needs_qa", "revise", "approve"].includes(answer.decision as string)) return null;
   const legacyReplacement = isReplacementInput(answer.replacement) ? answer.replacement : null;
   if (answer.decision === "revise" && !legacyReplacement) return null;
   if (answer.decision === "revise" && legacyReplacement &&
       !checkpoint.learningSteps.some(({ stepId }) => stepId === legacyReplacement.stepId)) return null;
   return checkpoint.learningSteps.map((step) => {
     const replacement = answer.decision === "revise" && legacyReplacement?.stepId === step.stepId ? legacyReplacement : undefined;
-    return { stepId: step.stepId, disposition: replacement ? "revise" : "pass", ...(replacement ? { replacement } : {}) };
+    const disposition = replacement ? "revise" : answer.decision === "question" ? "question" : answer.decision === "needs_qa" ? "needs_qa" : "pass";
+    return { stepId: step.stepId, disposition, ...(replacement ? { replacement } : {}) };
   });
 }
 

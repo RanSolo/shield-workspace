@@ -1,5 +1,22 @@
 # Document Trail local app
 
+## Prepare a pull-request review
+
+The GitHub adapter is read-only. It observes the pull request and linked issue,
+then combines those facts with an explicit authored coverage map. The pure
+compiler rejects stale heads, missing acceptance criteria, and changed-file
+claims outside the observed diff.
+
+```sh
+npm run prepare:pr-review --workspace @shield/guided-document-review-local -- \
+  --pr https://github.com/RanSolo/shield-workspace/pull/435 \
+  --authoring apps/guided-document-review-local/review-kits/pr-435-authoring.json
+```
+
+Then open `/trails/pr-435-guided-code-review` on the local Document Trail
+server. The generated packet JSON is canonical; Markdown and checkpoints are
+review projections.
+
 Document Trail turns a Markdown or text document into a small learning journey. It shows one learning step at a time, asks the reviewer to explain the idea back, and exports a V2 educational evidence artifact. It never grants authority or approves repository effects.
 
 The review screen also offers browser-native **Read aloud** controls. The checkpoint button reads only the currently visible learning step; the source button reads the complete source paragraph. No text leaves the browser for an application API.

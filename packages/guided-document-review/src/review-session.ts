@@ -3,7 +3,7 @@ import { sha256Json } from "./canonical-json.js";
 import type { SourceDocument } from "./source-document.js";
 
 export type ReviewPhase = "orient" | "learn" | "explain_back" | "confidence" | "decide" | "complete";
-export type ReviewDecision = "understand" | "question" | "revise" | "approve";
+export type ReviewDecision = "understand" | "question" | "needs_qa" | "revise" | "approve";
 export type ReviewerIdentity =
   | Readonly<{ kind: "unattributed"; name: null }>
   | Readonly<{ kind: "self_asserted"; name: string }>;
@@ -21,7 +21,7 @@ export interface ReplacementRequestInput {
   readonly rationale?: string;
 }
 
-export type StepDisposition = "pass" | "revise";
+export type StepDisposition = "pass" | "revise" | "question" | "needs_qa";
 
 export interface StepDispositionRecord {
   readonly stepId: string;
@@ -190,13 +190,14 @@ export function recordStepDisposition(
       answer.stepDispositions[session.currentStepIndex]?.disposition !== null) {
     return invalid("step_order", "Learning passages must be disposed in their original order.");
   }
-  if (input.disposition !== "pass" && input.disposition !== "revise") {
-    return invalid("disposition_invalid", "Choose PASS or Revise for the active learning passage.");
+  const allowedDispositions = checkpoint.dispositionOptions ?? ["pass", "revise"];
+  if (!allowedDispositions.includes(input.disposition)) {
+    return invalid("disposition_invalid", `Choose one of: ${allowedDispositions.join(", ")}.`);
   }
   const replacement = input.replacement ? createReplacement(checkpointSet, session, input.replacement) : null;
   if (replacement && !replacement.ok) return replacement;
-  if (input.disposition === "pass" && input.replacement) {
-    return invalid("replacement_forbidden", "PASS cannot include a replacement request.");
+  if (input.disposition !== "revise" && input.replacement) {
+    return invalid("replacement_forbidden", "Only Revise can include a replacement request.");
   }
   if (input.disposition === "revise" && !replacement) {
     return invalid("replacement_required", "Provide a desired replacement before choosing Revise.");
@@ -227,7 +228,7 @@ export function recordStepDisposition(
       replacements: revised,
       replacement: revised[0] ?? null,
       ...(final ? {
-        decision: revised.length ? "revise" : "approve",
+        decision: aggregateDecision(stepDispositions),
         decidedAt,
       } : {}),
     }),
@@ -438,6 +439,13 @@ function revisedReplacements(dispositions: readonly StepDispositionRecord[]): Re
   return dispositions.filter((entry) => entry.disposition === "revise")
     .map((entry) => entry.replacement)
     .filter((entry): entry is ReplacementRequest => entry !== null);
+}
+
+function aggregateDecision(dispositions: readonly StepDispositionRecord[]): ReviewDecision {
+  if (dispositions.some(({ disposition }) => disposition === "revise")) return "revise";
+  if (dispositions.some(({ disposition }) => disposition === "needs_qa")) return "needs_qa";
+  if (dispositions.some(({ disposition }) => disposition === "question")) return "question";
+  return "approve";
 }
 
 function nextPhase(session: ReviewSession, checkpointSet: CheckpointSet): ReviewPhase {

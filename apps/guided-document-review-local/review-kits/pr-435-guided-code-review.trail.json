@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "slug": "pr-435-guided-code-review",
+  "title": "Guided Code Review · Document Trail baseline",
+  "reviewerName": "Randy Russell",
+  "documentPath": "pr-435-guided-code-review.md",
+  "checkpointPath": "pr-435-guided-code-review-checkpoints.json"
+}

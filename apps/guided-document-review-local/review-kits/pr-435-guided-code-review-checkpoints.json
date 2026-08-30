@@ -1,0 +1,127 @@
+[
+  {
+    "checkpointId": "issue-434-ac-1",
+    "title": "Acceptance criterion 1",
+    "reviewMode": "disposition",
+    "dispositionOptions": [
+      "pass",
+      "question",
+      "needs_qa",
+      "revise"
+    ],
+    "journeyGroup": {
+      "groupId": "acceptance-criteria",
+      "title": "Acceptance criteria"
+    },
+    "learningSteps": [
+      {
+        "stepId": "issue-434-ac-1-review",
+        "sourceQuote": "Acceptance criterion 1: Baseline branch is pushed and represented by a draft PR.",
+        "purpose": "Decide whether PR #435 satisfies this acceptance criterion at the exact review revision.",
+        "question": "Does this pull request give the baseline a clear, reviewable delivery home?",
+        "explanation": "The Document Trail baseline is represented by PR #435 from the pushed agent/document-trail branch.",
+        "whyItMatters": "Acceptance criteria are the promised outcomes; changed files and validation are evidence, not substitutes for the outcome."
+      }
+    ]
+  },
+  {
+    "checkpointId": "issue-434-ac-2",
+    "title": "Acceptance criterion 2",
+    "reviewMode": "disposition",
+    "dispositionOptions": [
+      "pass",
+      "question",
+      "needs_qa",
+      "revise"
+    ],
+    "journeyGroup": {
+      "groupId": "acceptance-criteria",
+      "title": "Acceptance criteria"
+    },
+    "learningSteps": [
+      {
+        "stepId": "issue-434-ac-2-review",
+        "sourceQuote": "Acceptance criterion 2: Both Document Trail Nx projects build, typecheck, and test successfully.",
+        "purpose": "Decide whether PR #435 satisfies this acceptance criterion at the exact review revision.",
+        "question": "Do the focused project contracts and recorded validation adequately prove both Document Trail projects?",
+        "explanation": "The reusable domain package and local application define focused Nx build, typecheck, and test targets.",
+        "whyItMatters": "Acceptance criteria are the promised outcomes; changed files and validation are evidence, not substitutes for the outcome."
+      }
+    ]
+  },
+  {
+    "checkpointId": "issue-434-ac-3",
+    "title": "Acceptance criterion 3",
+    "reviewMode": "disposition",
+    "dispositionOptions": [
+      "pass",
+      "question",
+      "needs_qa",
+      "revise"
+    ],
+    "journeyGroup": {
+      "groupId": "acceptance-criteria",
+      "title": "Acceptance criteria"
+    },
+    "learningSteps": [
+      {
+        "stepId": "issue-434-ac-3-review",
+        "sourceQuote": "Acceptance criterion 3: Current architecture and Factory review kits load as prepared trails.",
+        "purpose": "Decide whether PR #435 satisfies this acceptance criterion at the exact review revision.",
+        "question": "Can a reviewer open both prepared learning trails without manually locating source and checkpoint files?",
+        "explanation": "Prepared-trail manifests connect the Mission Rail architecture and Factory learning documents to curated checkpoint sets.",
+        "whyItMatters": "Acceptance criteria are the promised outcomes; changed files and validation are evidence, not substitutes for the outcome."
+      }
+    ]
+  },
+  {
+    "checkpointId": "issue-434-ac-4",
+    "title": "Acceptance criterion 4",
+    "reviewMode": "disposition",
+    "dispositionOptions": [
+      "pass",
+      "question",
+      "needs_qa",
+      "revise"
+    ],
+    "journeyGroup": {
+      "groupId": "acceptance-criteria",
+      "title": "Acceptance criteria"
+    },
+    "learningSteps": [
+      {
+        "stepId": "issue-434-ac-4-review",
+        "sourceQuote": "Acceptance criterion 4: The PR explains known prototype limitations and identifies the next small product slices.",
+        "purpose": "Decide whether PR #435 satisfies this acceptance criterion at the exact review revision.",
+        "question": "Does the PR make the prototype boundary and next delivery shape understandable enough to accept as a baseline?",
+        "explanation": "The PR body describes the baseline, validation, exclusions, and the policy that later product changes move through smaller issue-bound pull requests.",
+        "whyItMatters": "Acceptance criteria are the promised outcomes; changed files and validation are evidence, not substitutes for the outcome."
+      }
+    ]
+  },
+  {
+    "checkpointId": "issue-434-ac-5",
+    "title": "Acceptance criterion 5",
+    "reviewMode": "disposition",
+    "dispositionOptions": [
+      "pass",
+      "question",
+      "needs_qa",
+      "revise"
+    ],
+    "journeyGroup": {
+      "groupId": "acceptance-criteria",
+      "title": "Acceptance criteria"
+    },
+    "learningSteps": [
+      {
+        "stepId": "issue-434-ac-5-review",
+        "sourceQuote": "Acceptance criterion 5: Future product work does not accumulate directly on the baseline branch after review begins.",
+        "purpose": "Decide whether PR #435 satisfies this acceptance criterion at the exact review revision.",
+        "question": "Does the observed follow-on work demonstrate that the baseline branch has stopped accumulating unrelated product slices?",
+        "explanation": "New Document Trail work has moved to issue-bound stacked branches instead of accumulating on the baseline branch.",
+        "whyItMatters": "Acceptance criteria are the promised outcomes; changed files and validation are evidence, not substitutes for the outcome."
+      }
+    ]
+  }
+]
