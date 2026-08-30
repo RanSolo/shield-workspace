@@ -43,21 +43,38 @@ export function renderJourney(
 
 export function renderCheckpoint(container: HTMLElement, view: ReviewView, speechSupported: boolean): void {
   container.replaceChildren();
+  const quickReview = view.checkpoint.reviewMode === "disposition";
+  const principleCheckpoints = view.checkpointSet.checkpoints.filter(({ reviewMode }) => reviewMode === "disposition");
+  const principleIndex = principleCheckpoints.findIndex(({ checkpointId }) => checkpointId === view.checkpoint.checkpointId);
   const header = element("header", "checkpoint-header");
   header.append(
-    element("p", "eyebrow", phaseTitle(view.session.phase)),
+    element("p", "eyebrow", quickReview ? "Quick principle review" : phaseTitle(view.session.phase)),
     element("h2", "checkpoint-title", view.checkpoint.title),
-    element("p", "checkpoint-count", `Checkpoint ${view.session.currentCheckpointIndex + 1} of ${view.checkpointSet.checkpoints.length}`),
+    element("p", "checkpoint-count", quickReview
+      ? `Principle ${principleIndex + 1} of ${principleCheckpoints.length}`
+      : `Checkpoint ${view.session.currentCheckpointIndex + 1} of ${view.checkpointSet.checkpoints.length}`),
   );
   container.append(header);
   if (speechSupported) container.append(speechActions("Read checkpoint aloud", "read-checkpoint"));
   if (view.message) container.append(element("p", "message message--warning", view.message));
-  if (view.session.phase === "orient") renderOrient(container, view);
+  if (view.session.phase === "orient" && quickReview) renderQuickDisposition(container, view);
+  if (view.session.phase === "orient" && !quickReview) renderOrient(container, view);
   if (view.session.phase === "learn") renderLearn(container, view);
   if (view.session.phase === "explain_back") renderExplain(container, view);
   if (view.session.phase === "confidence") renderConfidence(container);
   if (view.session.phase === "decide") renderDecision(container, view);
   if (view.session.phase !== "orient") container.append(actionButton("← Back", "back", "quiet"));
+}
+
+function renderQuickDisposition(container: HTMLElement, view: ReviewView): void {
+  container.append(
+    card("Purpose", view.step.purpose),
+    element("p", "eyebrow", "Question"),
+    element("p", "learning-question learning-question--static", view.step.question),
+    learningReveal(view.step.explanation, view.step.whyItMatters),
+  );
+  if (view.step.priorReview) container.append(priorReviewCard(view.step.priorReview));
+  container.append(actionButton("Choose PASS or Revise", "review-disposition", "primary"));
 }
 
 export function renderSource(

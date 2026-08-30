@@ -337,12 +337,9 @@ function checkEventConsistency(
     if (answer.confidence !== null && !checkpointEvents.some((event) => event.phase === "confidence")) {
       errors.push(`Checkpoint ${checkpoint.checkpointId} confidence has no matching event.`);
     }
-    const decisionEvents = checkpointEvents.filter((event) => event.phase === "decide");
-    if (answer.decision === null && decisionEvents.length !== 0) {
-      errors.push(`Checkpoint ${checkpoint.checkpointId} has a decision event without a decision.`);
-    }
-    if (answer.decision !== null && decisionEvents.length !== 1) {
-      errors.push(`Checkpoint ${checkpoint.checkpointId} must have exactly one decision event.`);
+    const finalCheckpointEvent = checkpointEvents.at(-1);
+    if (answer.decision !== null && finalCheckpointEvent?.phase !== "decide") {
+      errors.push(`Checkpoint ${checkpoint.checkpointId} must end with its decision event.`);
     }
   });
 }

@@ -201,7 +201,12 @@ export function returnToPreviousPhase(
     }, clock);
   }
   if (session.phase === "confidence") return changed(session, expected, { phase: "explain_back" }, clock);
-  if (session.phase === "decide") return changed(session, expected, { phase: "confidence" }, clock);
+  if (session.phase === "decide") {
+    const checkpoint = checkpointSet.checkpoints[session.currentCheckpointIndex];
+    return changed(session, expected, {
+      phase: checkpoint.reviewMode === "disposition" ? "learn" : "confidence",
+    }, clock);
+  }
   return invalid("phase_at_start", "This checkpoint is already at its first step.");
 }
 

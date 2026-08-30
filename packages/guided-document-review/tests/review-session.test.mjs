@@ -83,6 +83,11 @@ test("a disposition checkpoint routes directly from its revealed principle to PA
   assert.equal(session.answers["principle-one"].explanation, null);
   assert.equal(session.answers["principle-one"].confidence, null);
 
+  session = success(returnToPreviousPhase(session, set, expected(session, "principle-one"), fixedClock));
+  assert.equal(session.phase, "learn");
+  session = success(advancePhase(session, set, expected(session, "principle-one", "principle-one-step"), fixedClock));
+  assert.equal(session.phase, "decide");
+
   session = success(recordDecision(session, set, expected(session, "principle-one"), { decision: "approve" }, fixedClock));
   assert.equal(session.phase, "complete");
   const decoded = await decodeReviewSession(session, source, set);

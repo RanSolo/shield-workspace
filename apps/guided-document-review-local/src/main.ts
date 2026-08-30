@@ -186,6 +186,17 @@ async function handleClick(event: MouseEvent): Promise<void> {
   const expected = expectation(checkpoint.checkpointId, state.session.phase === "learn" ? step.stepId : undefined);
   let result;
   if (action === "advance") result = advancePhase(state.session, state.checkpointSet, expected, clock);
+  if (action === "review-disposition") {
+    const oriented = advancePhase(state.session, state.checkpointSet, expected, clock);
+    result = oriented.ok
+      ? advancePhase(
+          oriented.session,
+          state.checkpointSet,
+          replayExpectation(oriented.session, checkpoint.checkpointId, step.stepId),
+          clock,
+        )
+      : oriented;
+  }
   if (action === "back") result = returnToPreviousPhase(state.session, state.checkpointSet, expected, clock);
   if (action === "save-explanation") {
     result = recordExplanation(state.session, state.checkpointSet, expected, valueOf("explanation"), clock);
@@ -233,7 +244,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
     saveDraft();
   }
   render();
-  if (action === "advance") {
+  if (action === "advance" || action === "review-disposition") {
     requestAnimationFrame(() => checkpointPanel.scrollTo({ top: 0, behavior: "smooth" }));
   }
 }
