@@ -186,9 +186,9 @@ async function handleClick(event: MouseEvent): Promise<void> {
   const expected = expectation(checkpoint.checkpointId, state.session.phase === "learn" ? step.stepId : undefined);
   let result;
   if (action === "advance") result = advancePhase(state.session, state.checkpointSet, expected, clock);
-  if (action === "review-disposition") {
+  if (action === "quick-pass" || action === "quick-revise") {
     const oriented = advancePhase(state.session, state.checkpointSet, expected, clock);
-    result = oriented.ok
+    const ready = oriented.ok
       ? advancePhase(
           oriented.session,
           state.checkpointSet,
@@ -196,6 +196,15 @@ async function handleClick(event: MouseEvent): Promise<void> {
           clock,
         )
       : oriented;
+    result = action === "quick-pass" && ready.ok
+      ? recordDecision(
+          ready.session,
+          state.checkpointSet,
+          replayExpectation(ready.session, checkpoint.checkpointId),
+          { decision: "approve" },
+          clock,
+        )
+      : ready;
   }
   if (action === "back") result = returnToPreviousPhase(state.session, state.checkpointSet, expected, clock);
   if (action === "save-explanation") {
@@ -241,10 +250,11 @@ async function handleClick(event: MouseEvent): Promise<void> {
       replacementPreviewStepId = null;
       revisionEditorOpen = false;
     }
+    if (action === "quick-revise") revisionEditorOpen = true;
     saveDraft();
   }
   render();
-  if (action === "advance" || action === "review-disposition") {
+  if (action === "advance" || action === "quick-pass" || action === "quick-revise") {
     requestAnimationFrame(() => checkpointPanel.scrollTo({ top: 0, behavior: "smooth" }));
   }
 }

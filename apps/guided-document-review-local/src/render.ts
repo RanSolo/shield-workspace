@@ -74,7 +74,12 @@ function renderQuickDisposition(container: HTMLElement, view: ReviewView): void 
     learningReveal(view.step.explanation, view.step.whyItMatters),
   );
   if (view.step.priorReview) container.append(priorReviewCard(view.step.priorReview));
-  container.append(actionButton("Choose PASS or Revise", "review-disposition", "primary"));
+  const toolbar = element("div", "decision-toolbar");
+  toolbar.append(
+    actionButton("✓ PASS", "quick-pass", "success"),
+    actionButton("✎ Revise", "quick-revise", "secondary"),
+  );
+  container.append(toolbar);
 }
 
 export function renderSource(
