@@ -31,6 +31,10 @@ import {
 import { renderCheckpoint, renderCompletion, renderJourney, renderSource, renderStats } from "./render.js";
 import { sampleCheckpoints, sampleDocument } from "./sample-review.js";
 import { createSpeechControls } from "./speech.js";
+import {
+  decodePreparedTrailResponse,
+  type PreparedReviewBinding,
+} from "./prepared-trail.mjs";
 
 interface AppState {
   source: SourceDocument;
@@ -39,14 +43,6 @@ interface AppState {
   message: string | null;
   preparedReview: PreparedReviewBinding | null;
   preparedTrailSlug: string | null;
-}
-
-interface PreparedReviewBinding {
-  readonly packetId: string;
-  readonly packetDigest: string;
-  readonly repository: string;
-  readonly pullRequestNumber: number;
-  readonly headRevision: string;
 }
 
 interface TextDrafts {
@@ -93,25 +89,21 @@ setTrailTimeOfDay();
 animateTrail();
 void loadPreparedTrailFromLocation();
 
-interface PreparedTrailPacket {
-  readonly schemaVersion: 2;
-  readonly slug: string;
-  readonly title: string;
-  readonly reviewerName: string;
-  readonly documentText: string;
-  readonly checkpoints: unknown;
-  readonly reviewBinding: PreparedReviewBinding;
-}
-
 async function loadPreparedTrailFromLocation(): Promise<void> {
   const match = window.location.pathname.match(/^\/trails\/([a-z0-9-]+)$/u);
   if (!match) return;
   try {
     const response = await fetch(`/api/trails/${match[1]}`, { headers: { accept: "application/json" } });
     if (!response.ok) throw new Error(await response.text() || "Prepared trail not found.");
-    const packet = await response.json() as PreparedTrailPacket;
-    if (packet.schemaVersion !== 2 || packet.slug !== match[1] || !isPreparedReviewBinding(packet.reviewBinding)) throw new Error("Prepared trail response is malformed.");
-    await beginReview(packet.title, packet.documentText, packet.checkpoints, packet.reviewerName, packet.reviewBinding, packet.slug);
+    const packet = decodePreparedTrailResponse(await response.json(), match[1]);
+    await beginReview(
+      packet.title,
+      packet.documentText,
+      packet.checkpoints,
+      packet.reviewerName,
+      packet.schemaVersion === 2 ? packet.reviewBinding : null,
+      packet.schemaVersion === 2 ? packet.slug : null,
+    );
   } catch (error) {
     showSetupMessage(error instanceof Error ? error.message : "Unable to load this prepared trail.");
   }
@@ -434,23 +426,15 @@ async function assertPreparedReviewCurrent(slugValue: string, expected: Prepared
     headers: { accept: "application/json" },
   });
   if (!response.ok) throw new Error(response.status === 409 ? await response.text() : "Unable to verify the prepared review head.");
-  const packet = await response.json() as Partial<PreparedTrailPacket>;
-  if (!isPreparedReviewBinding(packet.reviewBinding) ||
-      packet.reviewBinding!.packetId !== expected.packetId ||
-      packet.reviewBinding!.packetDigest !== expected.packetDigest ||
-      packet.reviewBinding!.repository !== expected.repository ||
-      packet.reviewBinding!.pullRequestNumber !== expected.pullRequestNumber ||
-      packet.reviewBinding!.headRevision !== expected.headRevision) {
+  const packet = decodePreparedTrailResponse(await response.json(), slugValue);
+  if (packet.schemaVersion !== 2 ||
+      packet.reviewBinding.packetId !== expected.packetId ||
+      packet.reviewBinding.packetDigest !== expected.packetDigest ||
+      packet.reviewBinding.repository !== expected.repository ||
+      packet.reviewBinding.pullRequestNumber !== expected.pullRequestNumber ||
+      packet.reviewBinding.headRevision !== expected.headRevision) {
     throw new Error("Prepared review binding changed; reload the prepared trail before continuing.");
   }
-}
-
-function isPreparedReviewBinding(value: unknown): value is PreparedReviewBinding {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const candidate = value as Partial<PreparedReviewBinding>;
-  return typeof candidate.packetId === "string" && /^sha256:[0-9a-f]{64}$/u.test(candidate.packetDigest ?? "") &&
-    typeof candidate.repository === "string" && typeof candidate.pullRequestNumber === "number" && Number.isSafeInteger(candidate.pullRequestNumber) && candidate.pullRequestNumber > 0 &&
-    /^[0-9a-f]{40}$/u.test(candidate.headRevision ?? "");
 }
 
 async function copyRevisionPrompt(): Promise<void> {
