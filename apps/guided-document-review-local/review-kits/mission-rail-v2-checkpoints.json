@@ -377,16 +377,16 @@
     "learningSteps": [
       {
         "stepId": "canonical-contract",
-        "sourceQuote": "### `@shield/canonical-contract`",
-        "purpose": "Understand the package that gives records stable identity.",
+        "sourceQuote": "Owns canonical JSON, deterministic digests, content IDs, closed-result helpers,\nand primitive validators. Begin by surgically extracting the proven neutral\nparts of `@shield/mission-preparation/canonical-json-v1.mts` with their tests.\nNo Git, filesystem, seat, mission-phase, or authority concepts are allowed.",
+        "purpose": "Canonical Contract identity",
         "question": "What does canonical contract work make stable?",
         "explanation": "This package turns equivalent data into one canonical form and gives it a deterministic digest. It does not know about Git, seats, or authority.",
         "whyItMatters": "Stable identity lets every later decision refer to the same exact thing."
       },
       {
         "stepId": "mission-rail",
-        "sourceQuote": "### `@shield/mission-rail`",
-        "purpose": "Understand the pure rail that chooses the next operation.",
+        "sourceQuote": "Owns the pure mission model and transition function. It has no filesystem,\nprocess, network, GitHub, signer, model, or clock access.",
+        "purpose": "Pure Mission Rail decisions",
         "question": "Why should next-action calculation be separate from host effects?",
         "explanation": "The mission rail reads durable state and observations, then returns one legal next operation. A host may perform that operation, but it must not change the rule while doing so.",
         "whyItMatters": "Pure decisions are easier to test, replay, and move between hosts."
