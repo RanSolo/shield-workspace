@@ -5,9 +5,9 @@
     "learningSteps": [
       {
         "stepId": "problem-failure",
-        "sourceQuote": "## Problem being solved",
+      "sourceQuote": "The current repository contains valuable behavior, but delivery mechanics and\ngovernance evolved together inside `@shield/team-system`. This produced three\noperational failures:",
         "purpose": "Name the delivery problem before choosing a solution.",
-        "question": "What is failing in the current delivery process?",
+      "question": "What underlying condition produced the current delivery failures?",
         "explanation": "This section describes a useful system trapped inside delivery and governance mechanics that grew together. The problem is the way work is composed and recovered, not a lack of individual safety checks.",
         "whyItMatters": "A precise problem keeps the replacement from recreating the same friction."
       },
