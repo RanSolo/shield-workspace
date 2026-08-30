@@ -145,7 +145,7 @@ function renderLearn(container: HTMLElement, view: ReviewView): void {
   container.append(
     element("p", "step-count", `Learning step ${view.session.currentStepIndex + 1} of ${view.checkpoint.learningSteps.length}`),
     card("Purpose", view.step.purpose),
-    element("p", "eyebrow", "Question · hover the source passage, then click to reveal"),
+    element("p", "eyebrow", "Question · read the highlighted passage, then click to reveal"),
     question,
   );
   if (revealed) {
