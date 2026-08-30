@@ -22,23 +22,7 @@ button { cursor: pointer; }
 [hidden] { display: none !important; }
 
 .app-shell { width: min(1440px, 100%); margin: 0 auto; padding: 24px; }
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 8px 0 18px;
-  border-bottom: 1px solid var(--line);
-  background: linear-gradient(180deg, #070a0c 78%, #070a0cf2);
-  transition: border-color 250ms ease, box-shadow 250ms ease;
-}
-.topbar:has(.trail-progress.is-traveling) {
-  border-color: var(--gold);
-  box-shadow: 0 10px 24px -18px var(--gold);
-}
+.topbar { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding: 8px 0 26px; border-bottom: 1px solid var(--line); }
 .topbar h1 { margin: 0; font: 800 clamp(1.8rem, 4vw, 3.2rem)/1 Georgia, serif; letter-spacing: -.04em; }
 .brand-line { display: flex; align-items: center; gap: clamp(18px, 3vw, 42px); }
 .trail-progress {
@@ -47,6 +31,74 @@ button { cursor: pointer; }
   width: clamp(150px, 24vw, 340px);
   height: 54px;
   overflow: hidden;
+}
+.trail-progress__scenery {
+  position: absolute;
+  z-index: 0;
+  right: -120px;
+  bottom: 12px;
+  width: 460px;
+  height: 34px;
+  opacity: .58;
+}
+.trail-progress.is-traveling .trail-progress__scenery { animation: trail-scenery-roll 5.5s linear; }
+.trail-progress__scenery i { position: absolute; display: block; }
+.trail-progress__scenery .tree {
+  right: 62px;
+  bottom: 0;
+  width: 5px;
+  height: 17px;
+  border-radius: 2px;
+  background: #6f5135;
+}
+.trail-progress__scenery .tree::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  width: 25px;
+  height: 21px;
+  border-radius: 55% 45% 50% 48%;
+  background: #31594a;
+  translate: -50% 0;
+  box-shadow: -8px 4px #294b40, 8px 5px #3d6857;
+}
+.trail-progress__scenery .barn {
+  right: 205px;
+  bottom: 0;
+  width: 29px;
+  height: 19px;
+  border-radius: 2px;
+  background: #93472f;
+  box-shadow: inset 0 -3px #62301f;
+}
+.trail-progress__scenery .barn::before {
+  content: "";
+  position: absolute;
+  top: -9px;
+  left: -4px;
+  border-right: 18px solid transparent;
+  border-bottom: 11px solid #c7784d;
+  border-left: 18px solid transparent;
+}
+.trail-progress__scenery .barn::after {
+  content: "";
+  position: absolute;
+  right: 8px;
+  bottom: 0;
+  width: 8px;
+  height: 12px;
+  border: 1px solid #dba472;
+  background: #4e2b20;
+}
+.trail-progress__scenery .fence {
+  right: 318px;
+  bottom: 1px;
+  width: 66px;
+  height: 12px;
+  border-top: 2px solid #725c46;
+  border-bottom: 2px solid #725c46;
+  background: repeating-linear-gradient(90deg, #725c46 0 3px, transparent 3px 18px);
 }
 .trail-progress__track {
   position: absolute;
@@ -219,6 +271,7 @@ button { cursor: pointer; }
 @keyframes wagon-wheel-turn { to { rotate: 1turn; } }
 @keyframes ox-team-bob { to { translate: 0 -2px; } }
 @keyframes trail-ties-roll { to { background-position-x: -25px; } }
+@keyframes trail-scenery-roll { to { translate: -125px 0; } }
 .brand-kicker, .eyebrow { margin: 0 0 8px; color: var(--gold); font-size: .72rem; font-weight: 900; letter-spacing: .16em; text-transform: uppercase; }
 .topbar__promise { margin: 0; color: var(--teal); font-weight: 800; }
 
@@ -377,7 +430,8 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
   .trail-stop::after { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .button, .topbar, .trail-progress__caravan { transition: none; }
+  .button, .trail-progress__caravan { transition: none; }
+  .trail-progress__scenery { animation: none !important; }
   .trail-progress__track::after { animation: none; }
   .trail-progress__wagon::before, .trail-progress__wagon::after { animation: none; }
   .trail-progress__team i { animation: none; }
