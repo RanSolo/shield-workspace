@@ -191,14 +191,15 @@ function render(): void {
   sourcePanel.hidden = false;
   completionPanel.hidden = true;
   renderCheckpoint(checkpointPanel, { ...state, checkpoint, step, excerpt }, speech.supported);
-  renderSource(sourcePanel, state.source, excerpt, step.sourceQuote, speech.supported);
-  wireLearningHighlight();
+  renderSource(sourcePanel, state.source, excerpt, checkpoint.checkpointId, step.stepId, step.sourceQuote, speech.supported);
+  wireLearningHighlight(checkpoint.checkpointId, step.stepId);
   syncReviewViewport();
 }
 
-function wireLearningHighlight(): void {
+function wireLearningHighlight(checkpointId: string, stepId: string): void {
   const question = checkpointPanel.querySelector<HTMLElement>(".learning-question");
-  const sourceMarks = sourcePanel.querySelectorAll<HTMLElement>(".source-highlight");
+  const sourceMarks = Array.from(sourcePanel.querySelectorAll<HTMLElement>(".source-highlight"))
+    .filter((mark) => mark.dataset.checkpointId === checkpointId && mark.dataset.stepId === stepId);
   if (!question) return;
   const emphasize = (): void => sourceMarks.forEach((mark) => mark.classList.add("source-highlight--emphasis"));
   const relax = (): void => sourceMarks.forEach((mark) => mark.classList.remove("source-highlight--emphasis"));

@@ -1,12 +1,25 @@
 import { markdownToSafeHtml } from "./markdown-engine.mjs";
 
-export function renderMarkdownSections(source: string, highlight = ""): HTMLElement {
+type SourceMarkerState = "resolved" | "unresolved" | "ambiguous";
+
+export function renderMarkdownSections(
+  source: string,
+  checkpointId: string,
+  stepId: string,
+  sourceQuote: string,
+): HTMLElement {
   const staging = document.createElement("div");
   staging.innerHTML = markdownToSafeHtml(source);
-  if (highlight) highlightFirstExactText(staging, highlight);
+
+  const renderedPassage = renderedMarkdownText(sourceQuote);
+  const marker = locateRenderedPassage(staging, renderedPassage);
+  if (marker.state === "resolved") {
+    wrapRenderedPassage(staging, marker.start, marker.end, checkpointId, stepId);
+  }
 
   const article = document.createElement("article");
   article.className = "source-markdown";
+  article.dataset.sourceMarkerState = marker.state;
   const anchorCounts = new Map<string, number>();
   let section: HTMLElement | null = null;
 
@@ -22,37 +35,115 @@ export function renderMarkdownSections(source: string, highlight = ""): HTMLElem
     section.append(node);
   });
 
+  if (marker.state !== "resolved") article.prepend(markerStatus(marker.message));
   return article;
 }
 
-function highlightFirstExactText(root: HTMLElement, phrase: string): void {
-  if (highlightTextNode(root, phrase)) return;
-  const renderedPhrase = renderedText(phrase);
-  if (renderedPhrase && renderedPhrase !== phrase) highlightTextNode(root, renderedPhrase);
-}
-
-function highlightTextNode(root: HTMLElement, phrase: string): boolean {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    const text = node.nodeValue ?? "";
-    const index = text.indexOf(phrase);
-    if (index < 0 || !node.parentNode) continue;
-    const mark = document.createElement("mark");
-    mark.className = "source-highlight";
-    mark.textContent = phrase;
-    const remainder = (node as Text).splitText(index);
-    remainder.parentNode?.insertBefore(mark, remainder);
-    remainder.nodeValue = remainder.nodeValue?.slice(phrase.length) ?? "";
-    return true;
-  }
-  return false;
-}
-
-function renderedText(markdown: string): string {
+export function renderedMarkdownText(markdown: string): string {
   const staging = document.createElement("div");
   staging.innerHTML = markdownToSafeHtml(markdown);
   return staging.textContent?.trim() ?? "";
+}
+
+interface TextNodeProjection {
+  readonly node: Text;
+  readonly start: number;
+  readonly end: number;
+}
+
+interface MarkerLocation {
+  readonly state: SourceMarkerState;
+  readonly message: string;
+  readonly start: number;
+  readonly end: number;
+}
+
+function locateRenderedPassage(root: HTMLElement, renderedPassage: string): MarkerLocation {
+  if (!renderedPassage) {
+    return {
+      state: "unresolved",
+      message: "Source passage unresolved: the Markdown quote renders to no text.",
+      start: 0,
+      end: 0,
+    };
+  }
+
+  const projection = projectTextNodes(root);
+  const occurrences = findOccurrences(projection.text, renderedPassage);
+  if (occurrences.length === 0) {
+    return {
+      state: "unresolved",
+      message: "Source passage unresolved: the rendered passage was not found in this excerpt.",
+      start: 0,
+      end: 0,
+    };
+  }
+  if (occurrences.length > 1) {
+    return {
+      state: "ambiguous",
+      message: "Source passage ambiguous: the rendered passage appears multiple times in this excerpt.",
+      start: 0,
+      end: 0,
+    };
+  }
+
+  return { state: "resolved", message: "", start: occurrences[0], end: occurrences[0] + renderedPassage.length };
+}
+
+function projectTextNodes(root: HTMLElement): { text: string; nodes: readonly TextNodeProjection[] } {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: TextNodeProjection[] = [];
+  let text = "";
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const textNode = node as Text;
+    const start = text.length;
+    text += textNode.nodeValue ?? "";
+    nodes.push({ node: textNode, start, end: text.length });
+  }
+  return { text, nodes };
+}
+
+function findOccurrences(text: string, phrase: string): number[] {
+  const occurrences: number[] = [];
+  let from = 0;
+  while (from <= text.length - phrase.length) {
+    const index = text.indexOf(phrase, from);
+    if (index < 0) break;
+    occurrences.push(index);
+    from = index + 1;
+  }
+  return occurrences;
+}
+
+function wrapRenderedPassage(root: HTMLElement, start: number, end: number, checkpointId: string, stepId: string): void {
+  const projection = projectTextNodes(root);
+  projection.nodes.forEach(({ node, start: nodeStart, end: nodeEnd }) => {
+    const fragmentStart = Math.max(start, nodeStart);
+    const fragmentEnd = Math.min(end, nodeEnd);
+    if (fragmentStart >= fragmentEnd || !node.parentNode) return;
+
+    const localStart = fragmentStart - nodeStart;
+    const localEnd = fragmentEnd - nodeStart;
+    let selected = node;
+    if (localStart > 0) selected = node.splitText(localStart);
+    if (localEnd < selected.length) selected.splitText(localEnd - localStart);
+
+    const marker = document.createElement("mark");
+    marker.className = "source-highlight";
+    marker.dataset.checkpointId = checkpointId;
+    marker.dataset.stepId = stepId;
+    selected.parentNode?.insertBefore(marker, selected);
+    marker.append(selected);
+  });
+}
+
+function markerStatus(message: string): HTMLElement {
+  const status = document.createElement("p");
+  status.className = "source-marker-status message message--warning";
+  status.setAttribute("role", "status");
+  status.textContent = message;
+  return status;
 }
 
 function sourceSection(anchor: string): HTMLElement {

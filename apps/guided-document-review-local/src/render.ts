@@ -8,7 +8,7 @@ import type {
 } from "@shield/guided-document-review";
 
 import type { RevisionPromptChange } from "@shield/guided-document-review";
-import { renderMarkdownSections } from "./markdown.js";
+import { renderMarkdownSections, renderedMarkdownText } from "./markdown.js";
 
 export interface ReviewView {
   readonly source: SourceDocument;
@@ -63,9 +63,12 @@ export function renderSource(
   container: HTMLElement,
   source: SourceDocument,
   excerpt: string,
+  checkpointId: string,
+  stepId: string,
   sourceQuote: string,
   speechSupported: boolean,
 ): void {
+  const renderedPassage = renderedMarkdownText(sourceQuote);
   const actions = element("div", "source-actions");
   actions.append(actionButton("Copy passage", "copy-source", "secondary"));
   if (speechSupported) {
@@ -75,9 +78,9 @@ export function renderSource(
   container.replaceChildren(
     element("p", "eyebrow", "Source document"),
     element("h2", "source-title", source.title),
-    element("p", "source-quote-label", `Exact passage: “${sourceQuote}”`),
+    element("p", "source-quote-label", renderedPassage ? `Exact passage: “${renderedPassage}”` : "Exact passage: unresolved"),
     actions,
-    renderMarkdownSections(excerpt, sourceQuote),
+    renderMarkdownSections(excerpt, checkpointId, stepId, sourceQuote),
   );
 }
 
