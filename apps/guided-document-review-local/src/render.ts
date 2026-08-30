@@ -85,7 +85,7 @@ export function renderCheckpoint(container: HTMLElement, view: ReviewView, speec
       : `Checkpoint ${view.session.currentCheckpointIndex + 1} of ${view.checkpointSet.checkpoints.length}`),
   );
   container.append(header);
-  if (speechSupported) container.append(speechActions("Read checkpoint aloud", "read-checkpoint"));
+  if (speechSupported) container.append(speechActions("Read", "read-checkpoint"));
   if (view.message) container.append(element("p", "message message--warning", view.message));
   if (view.session.phase === "orient" && quickReview) renderQuickDisposition(container, view);
   if (view.session.phase === "orient" && !quickReview) renderOrient(container, view);
