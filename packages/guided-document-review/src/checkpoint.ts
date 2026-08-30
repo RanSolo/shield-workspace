@@ -18,6 +18,10 @@ export interface ReviewCheckpoint {
   readonly checkpointId: string;
   readonly title: string;
   readonly reviewMode?: "teach" | "disposition";
+  readonly journeyGroup?: Readonly<{
+    groupId: string;
+    title: string;
+  }>;
   readonly learningSteps: readonly LearningStep[];
 }
 
@@ -109,12 +113,23 @@ export function checkpointsFromHeadings(text: string): readonly ReviewCheckpoint
 function isExactCheckpoint(value: unknown): value is ReviewCheckpoint {
   if (!isRecord(value)) return false;
   const requiredFields = ["checkpointId", "title", "learningSteps"];
-  const fields = value.reviewMode === undefined ? requiredFields : [...requiredFields, "reviewMode"];
+  const fields = [
+    ...requiredFields,
+    ...(value.reviewMode === undefined ? [] : ["reviewMode"]),
+    ...(value.journeyGroup === undefined ? [] : ["journeyGroup"]),
+  ];
   return exactKeys(value, fields) &&
     (value.reviewMode === undefined || value.reviewMode === "teach" || value.reviewMode === "disposition") &&
+    (value.journeyGroup === undefined || isJourneyGroup(value.journeyGroup)) &&
     Array.isArray(value.learningSteps) &&
     value.learningSteps.length >= 1 && value.learningSteps.length <= 3 &&
     value.learningSteps.every(isExactLearningStep);
+}
+
+function isJourneyGroup(value: unknown): value is NonNullable<ReviewCheckpoint["journeyGroup"]> {
+  return isRecord(value) && exactKeys(value, ["groupId", "title"]) &&
+    typeof value.groupId === "string" && value.groupId.trim().length > 0 &&
+    typeof value.title === "string" && value.title.trim().length > 0;
 }
 
 function isExactLearningStep(value: unknown): value is LearningStep {
@@ -147,6 +162,7 @@ function copyAndFreezeCheckpoints(checkpoints: readonly ReviewCheckpoint[]): rea
     checkpointId: checkpoint.checkpointId,
     title: checkpoint.title,
     reviewMode: checkpoint.reviewMode ?? "teach",
+    ...(checkpoint.journeyGroup ? { journeyGroup: Object.freeze({ ...checkpoint.journeyGroup }) } : {}),
     learningSteps: Object.freeze(checkpoint.learningSteps.map((step) => Object.freeze({
       stepId: step.stepId,
       sourceQuote: step.sourceQuote,

@@ -265,7 +265,7 @@ function render(): void {
   if (!state) return;
   renderTrailProgress();
   renderJourney(journey, state);
-  renderStats(stats, state.session, state.checkpointSet.checkpoints.length);
+  renderStats(stats, state.session, state.checkpointSet);
   if (state.session.phase === "complete") {
     checkpointPanel.hidden = true;
     sourcePanel.hidden = true;

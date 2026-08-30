@@ -28,6 +28,8 @@ test("V2 validation enforces closed shapes, 1–3 steps, unique IDs, and exact u
   assert.equal(validateCheckpoints([{ ...checkpoint, surprise: true }], source).ok, false);
   assert.equal(validateCheckpoints([{ ...checkpoint, reviewMode: "unknown" }], source).ok, false);
   assert.equal(validateCheckpoints([{ ...checkpoint, reviewMode: "disposition" }], source).ok, true);
+  assert.equal(validateCheckpoints([{ ...checkpoint, journeyGroup: { groupId: "principles", title: "Principles" } }], source).ok, true);
+  assert.equal(validateCheckpoints([{ ...checkpoint, journeyGroup: { groupId: "principles" } }], source).ok, false);
   assert.equal(validateCheckpoints([{ ...checkpoint, learningSteps: [{
     ...checkpoint.learningSteps[0],
     priorReview: { disposition: "pass", note: "Previously accepted as non-negotiable." },

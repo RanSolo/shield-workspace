@@ -26,14 +26,39 @@ export function renderJourney(
   view: Pick<ReviewView, "checkpointSet" | "session">,
 ): void {
   container.replaceChildren();
+  const renderedGroups = new Set<string>();
   view.checkpointSet.checkpoints.forEach((checkpoint, index) => {
+    if (checkpoint.journeyGroup) {
+      if (renderedGroups.has(checkpoint.journeyGroup.groupId)) return;
+      renderedGroups.add(checkpoint.journeyGroup.groupId);
+      const members = view.checkpointSet.checkpoints.filter(
+        (candidate) => candidate.journeyGroup?.groupId === checkpoint.journeyGroup?.groupId,
+      );
+      const reviewed = members.filter((member) => view.session.answers[member.checkpointId].decision !== null).length;
+      const activeMemberIndex = members.findIndex(
+        (member) => member.checkpointId === view.checkpointSet.checkpoints[view.session.currentCheckpointIndex]?.checkpointId,
+      );
+      const complete = reviewed === members.length;
+      const active = !complete && activeMemberIndex >= 0;
+      const state = complete ? "complete" : active ? "active" : "waiting";
+      const item = element("li", `trail-stop trail-stop--${state} trail-stop--group`);
+      item.append(
+        element("span", "trail-stop__marker", complete ? "✓" : active ? "•" : "○"),
+        element("span", "trail-stop__title", checkpoint.journeyGroup.title),
+        element("span", "trail-stop__decision", active
+          ? `Principle ${activeMemberIndex + 1} of ${members.length}`
+          : `${reviewed}/${members.length} reviewed`),
+      );
+      container.append(item);
+      return;
+    }
     const answer = view.session.answers[checkpoint.checkpointId];
     const complete = view.session.phase === "complete" || index < view.session.currentCheckpointIndex;
     const active = !complete && index === view.session.currentCheckpointIndex;
     const state = complete ? "complete" : active ? "active" : "waiting";
     const item = element("li", `trail-stop trail-stop--${state}`);
     item.append(
-      element("span", "trail-stop__marker", complete ? "✓" : String(index + 1)),
+      element("span", "trail-stop__marker", complete ? "✓" : active ? "•" : "○"),
       element("span", "trail-stop__title", checkpoint.title),
     );
     if (answer.decision) item.append(element("span", "trail-stop__decision", labelDecision(answer.decision)));
@@ -112,11 +137,18 @@ export function renderSource(
   );
 }
 
-export function renderStats(container: HTMLElement, session: ReviewSession, total: number): void {
-  const completed = Object.values(session.answers).filter((answer) => answer.decision).length;
+export function renderStats(container: HTMLElement, session: ReviewSession, checkpointSet: CheckpointSet): void {
+  const stops = new Map<string, readonly ReviewCheckpoint[]>();
+  checkpointSet.checkpoints.forEach((checkpoint) => {
+    const key = checkpoint.journeyGroup ? `group:${checkpoint.journeyGroup.groupId}` : `checkpoint:${checkpoint.checkpointId}`;
+    stops.set(key, [...(stops.get(key) ?? []), checkpoint]);
+  });
+  const completed = [...stops.values()].filter((members) =>
+    members.every(({ checkpointId }) => session.answers[checkpointId].decision !== null),
+  ).length;
   const revealed = Object.values(session.answers).reduce((sum, answer) => sum + answer.revealedStepIds.length, 0);
   container.replaceChildren(
-    stat("Trail", `${completed}/${total}`),
+    stat("Trail", `${completed}/${stops.size}`),
     stat("Reveals", String(revealed)),
     stat("Clarity", `${Object.values(session.answers).filter((answer) => (answer.confidence ?? 0) >= 4).length} strong`),
   );

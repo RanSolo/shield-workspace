@@ -39,7 +39,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-2-derived-authority",
@@ -58,7 +62,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-3-readable-gates",
@@ -77,7 +85,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-4-delivery",
@@ -96,7 +108,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-5-stable-lanes",
@@ -115,7 +131,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-6-followups",
@@ -134,7 +154,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-7-trusted-host",
@@ -153,7 +177,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-8-nx",
@@ -172,7 +200,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-9-adapters",
@@ -191,7 +223,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-10-compatibility",
@@ -211,7 +247,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-11-maintainability",
@@ -231,7 +271,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-12-small",
@@ -250,7 +294,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-13-velocity",
@@ -270,7 +318,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-14-reference-quality",
@@ -290,7 +342,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "principle-15-human-steering",
@@ -309,7 +365,11 @@
         }
       }
     ],
-    "reviewMode": "disposition"
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
   },
   {
     "checkpointId": "canonical-and-rail",
