@@ -84,8 +84,8 @@ export function renderCheckpoint(container: HTMLElement, view: ReviewView, speec
       ? `Principle ${principleIndex + 1} of ${principleCheckpoints.length}`
       : `Checkpoint ${view.session.currentCheckpointIndex + 1} of ${view.checkpointSet.checkpoints.length}`),
   );
-  container.append(header);
   if (speechSupported) container.append(speechActions("Read", "read-checkpoint"));
+  container.append(header);
   if (view.message) container.append(element("p", "message message--warning", view.message));
   if (view.session.phase === "orient" && quickReview) renderQuickDisposition(container, view);
   if (view.session.phase === "orient" && !quickReview) renderOrient(container, view);
@@ -135,10 +135,10 @@ export function renderSource(
     actions.append(actionButton("■ Stop", "stop-reading", "quiet"));
   }
   container.replaceChildren(
+    actions,
     element("p", "eyebrow", "Source document"),
     element("h2", "source-title", source.title),
     element("p", "source-quote-label", renderedPassage ? `Exact passage: “${renderedPassage}”` : "Exact passage: unresolved"),
-    actions,
     renderMarkdownSections(excerpt, checkpointId, stepId, sourceQuote, completedMarkers, revisionPreview),
   );
 }
