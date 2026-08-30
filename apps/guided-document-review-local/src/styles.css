@@ -334,9 +334,11 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 }
 .trail-sidebar, .checkpoint-panel, .source-panel, .completion-panel { padding: 22px; }
 .trail-sidebar, .checkpoint-panel, .source-panel {
+  height: 100%;
   min-height: 0;
-  max-height: 100%;
-  overflow: auto;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: scroll;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
@@ -429,7 +431,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
   .setup { grid-template-columns: 1fr; }
   .hero { min-height: 420px; }
   .review-layout { grid-template-columns: 220px 1fr; height: auto; overflow: visible; }
-  .trail-sidebar, .checkpoint-panel, .source-panel { max-height: none; }
+  .trail-sidebar, .checkpoint-panel, .source-panel { height: auto; max-height: none; overflow: visible; }
   .source-panel { position: static; grid-column: 2; }
   .completion-panel { grid-column: 2; }
 }
