@@ -461,10 +461,34 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
   background: #e8793426;
   color: var(--ink);
 }
-.source-highlight:is(li),
-.source-passed:is(li),
-.source-revised:is(li) {
-  list-style-position: inside;
+:is(li).source-highlight,
+:is(li).source-passed,
+:is(li).source-revised {
+  position: relative;
+  isolation: isolate;
+  margin-inline: 0;
+  padding: 10px 4px;
+  border: 0;
+  background: transparent;
+  list-style-position: outside;
+}
+:is(li).source-highlight { --list-highlight-border: var(--gold); --list-highlight-bg: #f1b84b2b; }
+:is(li).source-passed { --list-highlight-border: #58c99a; --list-highlight-bg: #3bbf7a24; }
+:is(li).source-revised { --list-highlight-border: var(--orange); --list-highlight-bg: #e8793426; }
+:is(li).source-highlight::before,
+:is(li).source-passed::before,
+:is(li).source-revised::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  right: -10px;
+  bottom: 0;
+  left: -2.15rem;
+  border: 1px solid var(--list-highlight-border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: var(--list-highlight-bg);
 }
 .source-diff__removed {
   margin: 4px 0 10px;
