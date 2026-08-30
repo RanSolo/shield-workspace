@@ -55,6 +55,7 @@ let trailWasComplete = false;
 let replacementPreviewStepId: string | null = null;
 let revisionEditorOpen = false;
 const reopenedCheckpointAnswers = new Map<string, CheckpointAnswer>();
+let completedSessionBeforeReopen: ReviewSession | null = null;
 
 const setupPanel = required("setup-panel");
 const reviewPanel = required("review-panel");
@@ -143,6 +144,7 @@ async function beginReview(title: string, text: string, checkpoints: unknown, na
   revisionPacketConfirmed = false;
   revisionEditorOpen = false;
   reopenedCheckpointAnswers.clear();
+  completedSessionBeforeReopen = null;
   setupPanel.hidden = true;
   reviewPanel.hidden = false;
   render();
@@ -166,10 +168,20 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (action === "copy-revision-prompt") return void copyRevisionPrompt();
   if (action === "download-revised") return void downloadRevisedMarkdown();
   if (action === "stop-reading") return speech.stop(showSpeechStatus);
+  if (action === "cancel-reopen" && state && completedSessionBeforeReopen) {
+    state = { ...state, session: completedSessionBeforeReopen, message: null };
+    completedSessionBeforeReopen = null;
+    reopenedCheckpointAnswers.clear();
+    revisionEditorOpen = false;
+    saveDraft();
+    render();
+    return;
+  }
   if (action === "jump-checkpoint" && state?.session.phase === "complete") {
     const checkpointId = button.dataset.checkpointId ?? "";
     const priorAnswer = state.session.answers[checkpointId];
     if (priorAnswer) reopenedCheckpointAnswers.set(checkpointId, priorAnswer);
+    completedSessionBeforeReopen = state.session;
     const result = reopenCheckpoint(
       state.session,
       state.checkpointSet,
@@ -238,6 +250,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
     if ((action === "decision" || action === "step-disposition") &&
         result.session.answers[checkpoint.checkpointId]?.decision !== null) {
       reopenedCheckpointAnswers.delete(checkpoint.checkpointId);
+      if (result.session.phase === "complete") completedSessionBeforeReopen = null;
     }
     if (action === "step-disposition" || result.session.phase !== "decide") {
       replacementPreviewStepId = null;
@@ -297,6 +310,14 @@ function render(): void {
   sourcePanel.hidden = false;
   completionPanel.hidden = true;
   renderCheckpoint(checkpointPanel, { ...state, checkpoint, step, excerpt, revisionEditorOpen }, speech.supported);
+  if (completedSessionBeforeReopen) {
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "button button--quiet reopen-cancel";
+    cancel.dataset.action = "cancel-reopen";
+    cancel.textContent = "← Return to changes review";
+    checkpointPanel.querySelector(".review-toolbar")?.prepend(cancel);
+  }
   restoreTextDraft(checkpoint);
   renderSource(
     sourcePanel,
