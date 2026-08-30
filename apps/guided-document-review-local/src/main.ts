@@ -43,6 +43,7 @@ let revisionPacketConfirmed = false;
 let lastTrailPercent: number | null = null;
 let trailMotionTimer: number | null = null;
 let sceneryScene: "a" | "b" = "a";
+let trailWasComplete = false;
 
 const setupPanel = required("setup-panel");
 const reviewPanel = required("review-panel");
@@ -125,6 +126,7 @@ async function beginReview(title: string, text: string, checkpoints: unknown, na
   const session = saved ?? await startReviewSession(source, checkpointSet, reviewer, clock);
   state = { source, checkpointSet, session, message: saved ? "Your saved V2 trail was restored." : null };
   lastTrailPercent = null;
+  trailWasComplete = false;
   revisionPacketConfirmed = false;
   setupPanel.hidden = true;
   reviewPanel.hidden = false;
@@ -222,10 +224,13 @@ function render(): void {
 function renderTrailProgress(): void {
   if (!state) return;
   const total = state.checkpointSet.checkpoints.length;
-  const percent = state.session.phase === "complete" ? 100 : total <= 1 ? 0 :
+  const complete = state.session.phase === "complete";
+  const percent = complete ? 100 : total <= 1 ? 0 :
     Math.round((state.session.currentCheckpointIndex / (total - 1)) * 100);
-  if (lastTrailPercent !== null && percent > lastTrailPercent) animateTrail();
+  if ((lastTrailPercent !== null && percent > lastTrailPercent) || (complete && !trailWasComplete)) animateTrail();
+  trailProgress.classList.toggle("is-complete", complete);
   lastTrailPercent = percent;
+  trailWasComplete = complete;
   trailProgress.style.setProperty("--trail-progress", String(percent));
   trailProgress.setAttribute("aria-valuenow", String(percent));
   trailProgress.setAttribute("aria-valuetext", `Checkpoint ${Math.min(state.session.currentCheckpointIndex + 1, total)} of ${total}`);

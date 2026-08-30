@@ -233,6 +233,23 @@ button { cursor: pointer; }
   box-shadow: inset 0 -3px #855d36;
 }
 .trail-progress.is-traveling .trail-progress__team i { animation: ox-team-bob .8s ease-in-out infinite alternate; }
+.trail-progress.is-complete .trail-progress__wagon { animation: wagon-blow-up .85s 4.5s cubic-bezier(.2, .8, .3, 1) forwards; }
+.trail-progress.is-complete .trail-progress__team { animation: ox-team-flee .9s 4.35s ease-in forwards; }
+.trail-progress.is-complete::after {
+  content: "";
+  position: absolute;
+  z-index: 8;
+  right: 5px;
+  top: 1px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  opacity: 0;
+  background:
+    radial-gradient(circle, #fff7c7 0 9%, #ffd75a 10% 22%, #ef6f38 23% 38%, transparent 39%),
+    repeating-conic-gradient(from 8deg, #ffd75a 0 8deg, transparent 8deg 24deg);
+  animation: wagon-blast .8s 4.45s ease-out forwards;
+}
 .trail-progress__team i:nth-child(2) { animation-delay: -.4s; }
 .trail-progress__team i::before {
   content: "";
@@ -280,6 +297,17 @@ button { cursor: pointer; }
 @keyframes wagon-wheel-turn { to { rotate: 1turn; } }
 @keyframes ox-team-bob { to { translate: 0 -2px; } }
 @keyframes trail-ties-roll { to { background-position-x: -25px; } }
+@keyframes wagon-blow-up {
+  0% { opacity: 1; transform: translate(0) rotate(0) scale(1); }
+  35% { opacity: 1; transform: translate(-5px, -13px) rotate(-18deg) scale(1.12); }
+  100% { opacity: 0; transform: translate(-18px, -34px) rotate(-75deg) scale(.35); }
+}
+@keyframes ox-team-flee { to { opacity: 0; transform: translateX(54px); } }
+@keyframes wagon-blast {
+  0% { opacity: 0; transform: scale(.15) rotate(0); }
+  38% { opacity: 1; transform: scale(1.2) rotate(22deg); }
+  100% { opacity: 0; transform: scale(1.8) rotate(38deg); }
+}
 @keyframes trail-scenery-out {
   from { opacity: .58; translate: 0; }
   to { opacity: 0; translate: -125px 0; }
@@ -450,6 +478,9 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 @media (prefers-reduced-motion: reduce) {
   .button, .trail-progress__caravan { transition: none; }
   .trail-progress__scenery { animation: none !important; }
+  .trail-progress.is-complete::after,
+  .trail-progress.is-complete .trail-progress__wagon,
+  .trail-progress.is-complete .trail-progress__team { animation: none; }
   .trail-progress__track::after { animation: none; }
   .trail-progress__wagon::before, .trail-progress__wagon::after { animation: none; }
   .trail-progress__team i { animation: none; }
