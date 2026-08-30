@@ -74,12 +74,16 @@ function renderQuickDisposition(container: HTMLElement, view: ReviewView): void 
     learningReveal(view.step.explanation, view.step.whyItMatters),
   );
   if (view.step.priorReview) container.append(priorReviewCard(view.step.priorReview));
+  container.append(quickDispositionToolbar());
+}
+
+function quickDispositionToolbar(): HTMLElement {
   const toolbar = element("div", "decision-toolbar");
   toolbar.append(
     actionButton("✓ PASS", "quick-pass", "success"),
     actionButton("✎ Revise", "quick-revise", "secondary"),
   );
-  container.append(toolbar);
+  return toolbar;
 }
 
 export function renderSource(
@@ -170,11 +174,9 @@ function renderLearn(container: HTMLElement, view: ReviewView): void {
     learningReveal(view.step.explanation, view.step.whyItMatters),
   );
   if (view.step.priorReview) container.append(priorReviewCard(view.step.priorReview));
-  container.append(actionButton(
-    view.checkpoint.reviewMode === "disposition" ? "Review this principle" : "Continue to the next step",
-    "advance",
-    "primary",
-  ));
+  container.append(view.checkpoint.reviewMode === "disposition"
+    ? quickDispositionToolbar()
+    : actionButton("Continue to the next step", "advance", "primary"));
 }
 
 function priorReviewCard(prior: NonNullable<LearningStep["priorReview"]>): HTMLElement {

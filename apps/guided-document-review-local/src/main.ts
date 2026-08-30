@@ -187,8 +187,10 @@ async function handleClick(event: MouseEvent): Promise<void> {
   let result;
   if (action === "advance") result = advancePhase(state.session, state.checkpointSet, expected, clock);
   if (action === "quick-pass" || action === "quick-revise") {
-    const oriented = advancePhase(state.session, state.checkpointSet, expected, clock);
-    const ready = oriented.ok
+    const oriented = state.session.phase === "orient"
+      ? advancePhase(state.session, state.checkpointSet, expected, clock)
+      : { ok: true as const, session: state.session };
+    const ready = oriented.ok && oriented.session.phase === "learn"
       ? advancePhase(
           oriented.session,
           state.checkpointSet,
