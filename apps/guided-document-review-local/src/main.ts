@@ -220,7 +220,22 @@ function render(): void {
   completionPanel.hidden = true;
   renderCheckpoint(checkpointPanel, { ...state, checkpoint, step, excerpt }, speech.supported);
   renderSource(sourcePanel, state.source, excerpt, checkpoint.checkpointId, step.stepId, step.sourceQuote, speech.supported);
+  scrollSourceToHighlight();
   syncReviewViewport();
+}
+
+function scrollSourceToHighlight(): void {
+  const highlight = sourcePanel.querySelector<HTMLElement>(".source-highlight");
+  if (!highlight) return;
+  requestAnimationFrame(() => {
+    const panelBox = sourcePanel.getBoundingClientRect();
+    const highlightBox = highlight.getBoundingClientRect();
+    const centeredTop = sourcePanel.scrollTop
+      + highlightBox.top
+      - panelBox.top
+      - Math.max(0, (sourcePanel.clientHeight - highlightBox.height) / 2);
+    sourcePanel.scrollTo({ top: Math.max(0, centeredTop), behavior: "smooth" });
+  });
 }
 
 function renderTrailProgress(): void {
@@ -372,6 +387,7 @@ function updateReplacementOriginal(event: Event): void {
   if (original) original.textContent = `Original passage (locked): ${step.sourceQuote}`;
   const excerpt = findSourceExcerpt(state.source, step.sourceQuote);
   renderSource(sourcePanel, state.source, excerpt, activeCheckpoint().checkpointId, step.stepId, step.sourceQuote, speech.supported);
+  scrollSourceToHighlight();
 }
 
 async function loadTextFile(event: Event, targetId: string): Promise<void> {
