@@ -481,6 +481,16 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .source-section pre code { padding: 0; background: transparent; }
 .source-section blockquote { margin-left: 0; padding-left: 16px; border-left: 3px solid var(--orange); color: var(--muted); }
 .source-section a { color: var(--teal); }
+.prior-review {
+  margin: 16px 0;
+  padding: 14px 16px;
+  border-left: 4px solid #58c99a;
+  border-radius: 8px;
+  background: #3bbf7a16;
+}
+.prior-review--revise { border-left-color: var(--orange); background: #e8793418; }
+.prior-review p:last-child { margin-bottom: 0; }
+.prior-review__replacement { color: var(--ink); }
 .completion-panel { grid-column: 2 / 4; text-align: center; padding: clamp(36px, 7vw, 90px); }
 .completion-burst { color: var(--gold); font-weight: 900; letter-spacing: .18em; }
 .completion-title { font: 800 clamp(2.4rem, 5vw, 5rem)/1 Georgia, serif; }

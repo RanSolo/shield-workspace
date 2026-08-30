@@ -7,6 +7,11 @@ export interface LearningStep {
   readonly question: string;
   readonly explanation: string;
   readonly whyItMatters: string;
+  readonly priorReview?: Readonly<{
+    disposition: "pass" | "revise";
+    note: string;
+    replacement?: string;
+  }>;
 }
 
 export interface ReviewCheckpoint {
@@ -114,11 +119,23 @@ function isExactCheckpoint(value: unknown): value is ReviewCheckpoint {
 
 function isExactLearningStep(value: unknown): value is LearningStep {
   if (!isRecord(value)) return false;
-  const fields = ["stepId", "sourceQuote", "purpose", "question", "explanation", "whyItMatters"];
-  return exactKeys(value, fields) && fields.every((field) => {
+  const requiredFields = ["stepId", "sourceQuote", "purpose", "question", "explanation", "whyItMatters"];
+  const fields = value.priorReview === undefined ? requiredFields : [...requiredFields, "priorReview"];
+  return exactKeys(value, fields) && requiredFields.every((field) => {
     const fieldValue = value[field];
     return typeof fieldValue === "string" && fieldValue.trim().length > 0;
-  });
+  }) && (value.priorReview === undefined || isPriorReview(value.priorReview));
+}
+
+function isPriorReview(value: unknown): value is NonNullable<LearningStep["priorReview"]> {
+  if (!isRecord(value)) return false;
+  const fields = value.replacement === undefined
+    ? ["disposition", "note"]
+    : ["disposition", "note", "replacement"];
+  return exactKeys(value, fields) &&
+    (value.disposition === "pass" || value.disposition === "revise") &&
+    typeof value.note === "string" && value.note.trim().length > 0 &&
+    (value.replacement === undefined || (typeof value.replacement === "string" && value.replacement.trim().length > 0));
 }
 
 function exactKeys(value: Record<string, unknown>, fields: readonly string[]): boolean {
@@ -137,6 +154,7 @@ function copyAndFreezeCheckpoints(checkpoints: readonly ReviewCheckpoint[]): rea
       question: step.question,
       explanation: step.explanation,
       whyItMatters: step.whyItMatters,
+      ...(step.priorReview ? { priorReview: Object.freeze({ ...step.priorReview }) } : {}),
     }))),
   }));
   return Object.freeze(copy);

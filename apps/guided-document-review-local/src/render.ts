@@ -146,8 +146,23 @@ function renderLearn(container: HTMLElement, view: ReviewView): void {
     element("p", "eyebrow", "Question"),
     element("p", "learning-question learning-question--static", view.step.question),
     learningReveal(view.step.explanation, view.step.whyItMatters),
-    actionButton(view.checkpoint.reviewMode === "disposition" ? "Review this principle" : "Continue to the next step", "advance", "primary"),
   );
+  if (view.step.priorReview) container.append(priorReviewCard(view.step.priorReview));
+  container.append(actionButton(
+    view.checkpoint.reviewMode === "disposition" ? "Review this principle" : "Continue to the next step",
+    "advance",
+    "primary",
+  ));
+}
+
+function priorReviewCard(prior: NonNullable<LearningStep["priorReview"]>): HTMLElement {
+  const section = element("section", `prior-review prior-review--${prior.disposition}`);
+  section.append(
+    element("p", "eyebrow", `Recovered earlier answer · ${prior.disposition === "pass" ? "NN / PASS" : "REVISE"}`),
+    element("p", "learning-card__copy", prior.note),
+  );
+  if (prior.replacement) section.append(element("p", "prior-review__replacement", `Prepared revision: ${prior.replacement}`));
+  return section;
 }
 
 function learningReveal(explanation: string, whyItMatters: string): HTMLElement {
@@ -171,7 +186,14 @@ function renderExplain(container: HTMLElement, view: ReviewView): void {
   textarea.rows = 7;
   textarea.placeholder = "What does this mean, why does it matter, and what would you challenge?";
   textarea.value = view.session.answers[view.checkpoint.checkpointId].explanation ?? "";
-  container.append(label, textarea, draftStatus(), actionButton("Lock in my explanation", "save-explanation", "primary"));
+  container.append(
+    label,
+    textarea,
+    draftStatus(),
+    element("p", "prompt", "How confidently could you explain this to someone else?"),
+    confidenceButtons("save-explanation-confidence"),
+    element("p", "hint", "1 = I need another pass · 5 = I could teach it"),
+  );
   textarea.focus();
 }
 
@@ -191,20 +213,25 @@ function learningRecap(checkpoint: ReviewCheckpoint): HTMLElement {
 
 function renderConfidence(container: HTMLElement): void {
   container.append(element("p", "prompt", "How confidently could you explain this to someone else?"));
+  container.append(confidenceButtons("confidence"), element("p", "hint", "1 = I need another pass · 5 = I could teach it"));
+}
+
+function confidenceButtons(action: string): HTMLElement {
   const group = element("div", "confidence-grid");
   [1, 2, 3, 4, 5].forEach((level) => {
-    const button = actionButton(String(level), "confidence", level >= 4 ? "success" : "secondary");
+    const button = actionButton(String(level), action, level >= 4 ? "success" : "secondary");
     button.dataset.value = String(level);
     button.setAttribute("aria-label", `Confidence ${level} of 5`);
     group.append(button);
   });
-  container.append(group, element("p", "hint", "1 = I need another pass · 5 = I could teach it"));
+  return group;
 }
 
 function renderDecision(container: HTMLElement, view: ReviewView): void {
   container.append(element("p", "prompt", view.checkpoint.reviewMode === "disposition"
     ? "Does this principle pass, or does the document need a revision?"
     : "What should happen with this checkpoint?"));
+  if (view.step.priorReview) container.append(priorReviewCard(view.step.priorReview));
   const toolbar = element("div", "decision-toolbar");
   const approve = actionButton(view.checkpoint.reviewMode === "disposition" ? "✓ PASS" : "✓ Looks right", "decision", "success");
   approve.dataset.value = "approve";
@@ -219,6 +246,7 @@ function renderDecision(container: HTMLElement, view: ReviewView): void {
   }
 
   const replacement = view.session.answers[view.checkpoint.checkpointId].replacement;
+  const priorReview = view.step.priorReview;
   const stepSelect = document.createElement("select");
   stepSelect.id = "replacement-step";
   view.checkpoint.learningSteps.forEach((step) => {
@@ -239,7 +267,7 @@ function renderDecision(container: HTMLElement, view: ReviewView): void {
   replacementText.id = "replacement-text";
   replacementText.rows = 4;
   replacementText.placeholder = "Write the complete replacement text for the locked passage.";
-  replacementText.value = replacement?.replacement ?? "";
+  replacementText.value = replacement?.replacement ?? priorReview?.replacement ?? "";
   replacementLabel.append(replacementText);
   const rationaleLabel = element("label", "field-label", "Optional rationale");
   rationaleLabel.htmlFor = "replacement-rationale";
@@ -247,7 +275,7 @@ function renderDecision(container: HTMLElement, view: ReviewView): void {
   rationale.id = "replacement-rationale";
   rationale.rows = 3;
   rationale.placeholder = "Why would this replacement help?";
-  rationale.value = replacement?.rationale ?? "";
+  rationale.value = replacement?.rationale ?? (priorReview?.disposition === "revise" ? priorReview.note : "");
   rationaleLabel.append(rationale);
   container.append(
     element("p", "hint", "Choose Revise only when the complete desired replacement is ready."),

@@ -190,6 +190,24 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (action === "save-explanation") {
     result = recordExplanation(state.session, state.checkpointSet, expected, valueOf("explanation"), clock);
   }
+  if (action === "save-explanation-confidence") {
+    const explanationResult = recordExplanation(
+      state.session,
+      state.checkpointSet,
+      expected,
+      valueOf("explanation"),
+      clock,
+    );
+    result = explanationResult.ok
+      ? recordConfidence(
+          explanationResult.session,
+          state.checkpointSet,
+          replayExpectation(explanationResult.session, checkpoint.checkpointId),
+          Number(button.dataset.value) as 1 | 2 | 3 | 4 | 5,
+          clock,
+        )
+      : explanationResult;
+  }
   if (action === "confidence") {
     result = recordConfidence(state.session, state.checkpointSet, expected, Number(button.dataset.value) as 1 | 2 | 3 | 4 | 5, clock);
   }
@@ -203,7 +221,9 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (!result.ok) {
     state = { ...state, message: result.message };
   } else {
-    if (action === "save-explanation") clearExplanationDraft(checkpoint.checkpointId);
+    if (action === "save-explanation" || action === "save-explanation-confidence") {
+      clearExplanationDraft(checkpoint.checkpointId);
+    }
     if (action === "decision") clearReplacementDraft(checkpoint.checkpointId);
     state = { ...state, session: result.session, message: null };
     if (result.session.phase !== "decide") {
