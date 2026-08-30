@@ -333,7 +333,8 @@ function renderTrailProgress(): void {
 }
 
 function setTrailTimeOfDay(now = new Date()): void {
-  const isDaytime = now.getHours() >= 6 && now.getHours() < 18;
+  const preview = new URLSearchParams(window.location.search).get("time");
+  const isDaytime = preview === "day" || (preview !== "night" && now.getHours() >= 6 && now.getHours() < 18);
   trailProgress.classList.toggle("time-day", isDaytime);
   trailProgress.classList.toggle("time-night", !isDaytime);
 }
