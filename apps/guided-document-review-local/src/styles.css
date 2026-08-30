@@ -394,6 +394,50 @@ button { cursor: pointer; }
     repeating-conic-gradient(from 8deg, #ffd75a 0 8deg, transparent 8deg 24deg);
   animation: wagon-blast .8s 4.45s ease-out forwards;
 }
+.trail-progress__debris {
+  position: absolute;
+  z-index: 9;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.trail-progress__debris i {
+  position: absolute;
+  top: 7px;
+  right: 20px;
+  display: block;
+  opacity: 0;
+}
+.trail-progress__debris .debris--wheel {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #d7e0df;
+  border-radius: 50%;
+  background: repeating-conic-gradient(#d7e0df 0 14deg, #1a2529 14deg 45deg);
+}
+.trail-progress__debris .debris--canvas {
+  width: 17px;
+  height: 10px;
+  border: 1px solid #a88451;
+  border-radius: 8px 8px 2px 2px;
+  background: #fff2c9;
+}
+.trail-progress__debris .debris--crate {
+  width: 10px;
+  height: 9px;
+  border: 1px solid #5f351f;
+  background: linear-gradient(45deg, transparent 43%, #6f351f 44% 56%, transparent 57%), #a86b35;
+}
+.trail-progress__debris .debris--boot {
+  width: 9px;
+  height: 7px;
+  border-radius: 1px 1px 5px 2px;
+  background: #563924;
+}
+.trail-progress.is-complete .debris--wheel { animation: debris-fall-wheel 1.6s 5.05s ease-in both; }
+.trail-progress.is-complete .debris--canvas { animation: debris-fall-canvas 1.8s 5.12s ease-in both; }
+.trail-progress.is-complete .debris--crate { animation: debris-fall-crate 1.5s 5.2s ease-in both; }
+.trail-progress.is-complete .debris--boot { animation: debris-fall-boot 1.7s 5.28s ease-in both; }
 .trail-progress__team i:nth-child(2) { animation-delay: -.4s; }
 .trail-progress__team i::before {
   content: "";
@@ -451,6 +495,26 @@ button { cursor: pointer; }
   0% { opacity: 0; transform: scale(.15) rotate(0); }
   38% { opacity: 1; transform: scale(1.2) rotate(22deg); }
   100% { opacity: 0; transform: scale(1.8) rotate(38deg); }
+}
+@keyframes debris-fall-wheel {
+  0% { opacity: 0; transform: translate(0, 25px) rotate(0); }
+  12% { opacity: 1; transform: translate(-26px, -8px) rotate(80deg); }
+  100% { opacity: .9; transform: translate(-42px, 66px) rotate(620deg); }
+}
+@keyframes debris-fall-canvas {
+  0% { opacity: 0; transform: translate(0, 24px) rotate(0); }
+  12% { opacity: 1; transform: translate(17px, -13px) rotate(-28deg); }
+  100% { opacity: .9; transform: translate(29px, 67px) rotate(155deg); }
+}
+@keyframes debris-fall-crate {
+  0% { opacity: 0; transform: translate(0, 24px) rotate(0); }
+  12% { opacity: 1; transform: translate(-7px, -17px) rotate(32deg); }
+  100% { opacity: .9; transform: translate(-14px, 68px) rotate(290deg); }
+}
+@keyframes debris-fall-boot {
+  0% { opacity: 0; transform: translate(0, 24px) rotate(0); }
+  12% { opacity: 1; transform: translate(34px, -4px) rotate(-48deg); }
+  100% { opacity: .9; transform: translate(50px, 68px) rotate(210deg); }
 }
 @keyframes trail-scenery-out {
   from { opacity: .58; translate: 0; }
