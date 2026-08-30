@@ -415,6 +415,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .completion-panel { grid-column: 2 / 4; text-align: center; padding: clamp(36px, 7vw, 90px); }
 .completion-burst { color: var(--gold); font-weight: 900; letter-spacing: .18em; }
 .completion-title { font: 800 clamp(2.4rem, 5vw, 5rem)/1 Georgia, serif; }
+.completion-epilogue { margin: 14px 0 24px; color: var(--orange); font: 700 1.05rem/1.4 Georgia, serif; font-style: italic; }
 .completion-copy { max-width: 60ch; margin: 0 auto 28px; color: var(--muted); }
 .completion-list { width: min(600px, 100%); margin: 20px auto; text-align: left; }
 .completion-change { margin: 6px 0 14px; color: #ffba9f; }

@@ -103,6 +103,7 @@ export function renderCompletion(
   container.replaceChildren(
     element("p", "completion-burst", "✦ TRAIL COMPLETE ✦"),
     element("h2", "completion-title", "Changes-only review"),
+    element("p", "completion-epilogue", "Document complete. You have died of dysentery."),
     element("p", "completion-copy", changes.length
       ? "Review the requested replacements in checkpoint order. Confirmation is educational/document approval only; it is not authority to implement, publish, merge, or release."
       : "No replacement requests were recorded. The original document remains unchanged, and there is no revision packet to confirm or apply."),
