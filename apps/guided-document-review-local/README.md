@@ -2,10 +2,11 @@
 
 ## Prepare a pull-request review
 
-The GitHub adapter is read-only. It observes the pull request and linked issue,
-then combines those facts with an explicit authored coverage map. The pure
-compiler rejects stale heads, missing acceptance criteria, and changed-file
-claims outside the observed diff.
+The GitHub adapter is read-only. It observes the pull request, linked issue,
+changed files, PR-body validation, and checks, then combines those facts with
+an explicit authored guidance map. The compiler resolves typed provenance
+anchors, excludes observation time from packet identity, and rejects stale
+heads or claims outside observed inputs.
 
 ```sh
 npm run prepare:pr-review --workspace @shield/guided-document-review-local -- \
@@ -15,7 +16,8 @@ npm run prepare:pr-review --workspace @shield/guided-document-review-local -- \
 
 Then open `/trails/pr-435-guided-code-review` on the local Document Trail
 server. The generated packet JSON is canonical; Markdown and checkpoints are
-review projections.
+review projections bound to its packet digest and exact PR head. Opening,
+resuming, and exporting perform a fresh read-only head check.
 
 Document Trail turns a Markdown or text document into a small learning journey. It shows one learning step at a time, asks the reviewer to explain the idea back, and exports a V2 educational evidence artifact. It never grants authority or approves repository effects.
 

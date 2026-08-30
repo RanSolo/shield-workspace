@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "slug": "pr-435-guided-code-review",
   "title": "Guided Code Review · Document Trail baseline",
   "reviewerName": "Randy Russell",
@@ -7,64 +7,53 @@
   "coverage": [
     {
       "criterionId": "issue-434-ac-1",
-      "summary": "The Document Trail baseline is represented by PR #435 from the pushed agent/document-trail branch.",
-      "filePaths": [],
-      "evidence": [
-        "GitHub reports PR #435 at exact head 5c70027cbd4ebff3bcea57e73b1f356ae972dae5.",
-        "The PR is linked to Issue #434 through its closing reference."
+      "explanation": "The observed pull request is the review home for the Document Trail baseline.",
+      "anchors": [
+        { "kind": "pull_request", "field": "number" },
+        { "kind": "pull_request", "field": "head_revision" },
+        { "kind": "issue", "issueNumber": 434, "field": "title" }
       ],
-      "reportedValidation": "The read-only GitHub observation found the expected branch, PR number, linked issue, and exact head revision.",
       "openGaps": [],
       "reviewQuestion": "Does this pull request give the baseline a clear, reviewable delivery home?"
     },
     {
       "criterionId": "issue-434-ac-2",
-      "summary": "The reusable domain package and local application define focused Nx build, typecheck, and test targets.",
-      "filePaths": [
-        "packages/guided-document-review/package.json",
-        "apps/guided-document-review-local/package.json"
+      "explanation": "The observed diff contains the focused Nx project contracts and the PR reports their validation.",
+      "anchors": [
+        { "kind": "file", "path": "packages/guided-document-review/package.json" },
+        { "kind": "file", "path": "apps/guided-document-review-local/package.json" },
+        { "kind": "validation", "validationId": "pr-body-validation:1" },
+        { "kind": "validation", "validationId": "pr-body-validation:2" }
       ],
-      "evidence": [
-        "The PR records a focused Nx run for both projects with build, test, and typecheck targets.",
-        "The PR records 37 focused tests passing; this is a declared result to verify during review, not a compiler-generated claim."
-      ],
-      "reportedValidation": "PR #435 reports focused Nx build, test, and typecheck success for both baseline projects; the Guided Code Review branch independently reruns the affected projects.",
       "openGaps": [
-        "The human reviewer must decide whether the reported proof is sufficient for baseline acceptance."
+        "The human reviewer must decide whether the observed proof is sufficient for baseline acceptance."
       ],
-      "reviewQuestion": "Do the focused project contracts and recorded validation adequately prove both Document Trail projects?"
+      "reviewQuestion": "Do the focused project contracts and reported validation adequately prove both Document Trail projects?"
     },
     {
       "criterionId": "issue-434-ac-3",
-      "summary": "Prepared-trail manifests connect the Mission Rail architecture and Factory learning documents to curated checkpoint sets.",
-      "filePaths": [
-        "apps/guided-document-review-local/review-kits/mission-rail-v1.trail.json",
-        "apps/guided-document-review-local/review-kits/mission-rail-v2-checkpoints.json",
-        "apps/guided-document-review-local/review-kits/shield-inside-factory.trail.json",
-        "apps/guided-document-review-local/review-kits/shield-inside-factory-checkpoints.json"
+      "explanation": "The observed diff contains the prepared-trail manifests and checkpoint sets used by the local application.",
+      "anchors": [
+        { "kind": "file", "path": "apps/guided-document-review-local/review-kits/mission-rail-v1.trail.json" },
+        { "kind": "file", "path": "apps/guided-document-review-local/review-kits/mission-rail-v2-checkpoints.json" },
+        { "kind": "file", "path": "apps/guided-document-review-local/review-kits/shield-inside-factory.trail.json" },
+        { "kind": "file", "path": "apps/guided-document-review-local/review-kits/shield-inside-factory-checkpoints.json" },
+        { "kind": "pr_body", "excerpt": "- Local Document Trail application and prepared-trail route." }
       ],
-      "evidence": [
-        "The prepared manifests name their source documents and checkpoint JSON.",
-        "The local server exposes prepared trails through /trails/<slug>."
-      ],
-      "reportedValidation": "The local prepared-trail loader and checkpoint validator pass for the generated manifests and checkpoint sets.",
       "openGaps": [
-        "Visual behavior remains a human QA observation rather than a compiler claim."
+        "Visual behavior remains a human QA observation rather than an adapter observation."
       ],
       "reviewQuestion": "Can a reviewer open both prepared learning trails without manually locating source and checkpoint files?"
     },
     {
       "criterionId": "issue-434-ac-4",
-      "summary": "The PR body describes the baseline, validation, exclusions, and the policy that later product changes move through smaller issue-bound pull requests.",
-      "filePaths": [
-        "apps/guided-document-review-local/README.md",
-        "apps/guided-document-review-local/QA-CHECKLIST.md"
+      "explanation": "The observed PR body describes the baseline, validation, exclusions, and issue-bound follow-on delivery policy.",
+      "anchors": [
+        { "kind": "file", "path": "apps/guided-document-review-local/README.md" },
+        { "kind": "file", "path": "apps/guided-document-review-local/QA-CHECKLIST.md" },
+        { "kind": "pr_body", "excerpt": "This is intentionally the one large prototype-baseline PR." },
+        { "kind": "pr_body", "excerpt": "No deployment, release, hosted persistence, provider credentials, or Mission Rail V1 construction contracts." }
       ],
-      "evidence": [
-        "The PR body identifies the baseline contents and explicit exclusions.",
-        "Issue #434 and the PR delivery note identify future work as small product slices rather than additions to the baseline."
-      ],
-      "reportedValidation": "README and QA checklist paths are present in the observed PR diff; prose quality remains a human review decision.",
       "openGaps": [
         "The reviewer may request clearer limitations or next-slice wording."
       ],
@@ -72,15 +61,12 @@
     },
     {
       "criterionId": "issue-434-ac-5",
-      "summary": "New Document Trail work has moved to issue-bound stacked branches instead of accumulating on the baseline branch.",
-      "filePaths": [],
-      "evidence": [
-        "Invoice Inspect is tracked by Issue #436 and stacked PR #437 rather than appended to PR #435.",
-        "Guided Code Review is tracked by Issue #438 and this branch is based on the baseline branch."
+      "explanation": "The observed PR body states that later product changes should be issue-bound and delivered separately after review begins.",
+      "anchors": [
+        { "kind": "pr_body", "excerpt": "further product changes should be issue-bound, lane-assigned, and delivered in small PRs rather than appended here." }
       ],
-      "reportedValidation": "GitHub shows follow-on work in separate issue-bound branches and PRs.",
       "openGaps": [],
-      "reviewQuestion": "Does the observed follow-on work demonstrate that the baseline branch has stopped accumulating unrelated product slices?"
+      "reviewQuestion": "Does the observed delivery policy make the baseline branch boundary clear without relying on unobserved follow-on PR claims?"
     }
   ]
 }

@@ -87,6 +87,12 @@ test("a configured code-review checkpoint records Question and Needs QA as human
   qaSession = success(recordStepDisposition(qaSession, set, expected(qaSession, "ac-one", "ac-one-step"), { disposition: "needs_qa" }, fixedClock));
   assert.equal(qaSession.answers["ac-one"].decision, "needs_qa");
   assert.equal((await decodeReviewSession(structuredClone(qaSession), source, set)).ok, true);
+  const questionArtifact = await createReviewArtifact(source, set, questionSession);
+  const qaArtifact = await createReviewArtifact(source, set, qaSession);
+  assert.equal(questionArtifact.dispositions[0].disposition, "QUESTION");
+  assert.equal(qaArtifact.dispositions[0].disposition, "NEEDS_QA");
+  assert.equal(questionArtifact.dispositions[0].reviewer.name, "Randy");
+  assert.equal(typeof questionArtifact.dispositions[0].decidedAt, "string");
 });
 
 test("step revisions require changed text and PASS forbids replacement material", async () => {
@@ -169,8 +175,18 @@ test("artifacts preserve multiple replacements in checkpoint and step order", as
   session = reviseStep(session, set, "purpose-why", "one deterministic next action");
   session = reviseStep(session, set, "purpose-finish", "The stable lane stays ready for reuse.");
   session = success(recordExplanation(session, set, expected(session, "purpose"), "Both passages now state deterministic progress and reusable lane completion clearly.", fixedClock));
-  const artifact = await createReviewArtifact(source, set, session);
+  const artifact = await createReviewArtifact(source, set, session, {
+    packetId: "pr-review:example/repo#13:0123456789abcdef",
+    packetDigest: `sha256:${"a".repeat(64)}`,
+    repository: "example/repo",
+    pullRequestNumber: 13,
+    headRevision: "b".repeat(40),
+  });
+  assert.equal(artifact.schemaVersion, 3);
   assert.deepEqual(artifact.replacements.map(({ stepId }) => stepId), ["purpose-why", "purpose-finish"]);
+  assert.deepEqual(artifact.dispositions.map(({ disposition }) => disposition), ["REVISE", "REVISE"]);
+  assert.equal(artifact.reviewBinding?.headRevision, "b".repeat(40));
+  assert.equal(artifact.guidance[0].provenance.kind, "checkpoint_projection");
   assert.notEqual(artifact.revisedSourceDigest, source.sourceDigest);
   assert.equal(artifact.authority, "none");
 });

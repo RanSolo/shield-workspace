@@ -37,6 +37,16 @@ interface AppState {
   checkpointSet: CheckpointSet;
   session: ReviewSession;
   message: string | null;
+  preparedReview: PreparedReviewBinding | null;
+  preparedTrailSlug: string | null;
+}
+
+interface PreparedReviewBinding {
+  readonly packetId: string;
+  readonly packetDigest: string;
+  readonly repository: string;
+  readonly pullRequestNumber: number;
+  readonly headRevision: string;
 }
 
 interface TextDrafts {
@@ -84,12 +94,13 @@ animateTrail();
 void loadPreparedTrailFromLocation();
 
 interface PreparedTrailPacket {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly slug: string;
   readonly title: string;
   readonly reviewerName: string;
   readonly documentText: string;
   readonly checkpoints: unknown;
+  readonly reviewBinding: PreparedReviewBinding;
 }
 
 async function loadPreparedTrailFromLocation(): Promise<void> {
@@ -97,10 +108,10 @@ async function loadPreparedTrailFromLocation(): Promise<void> {
   if (!match) return;
   try {
     const response = await fetch(`/api/trails/${match[1]}`, { headers: { accept: "application/json" } });
-    if (!response.ok) throw new Error("Prepared trail not found.");
+    if (!response.ok) throw new Error(await response.text() || "Prepared trail not found.");
     const packet = await response.json() as PreparedTrailPacket;
-    if (packet.schemaVersion !== 1 || packet.slug !== match[1]) throw new Error("Prepared trail response is malformed.");
-    await beginReview(packet.title, packet.documentText, packet.checkpoints, packet.reviewerName);
+    if (packet.schemaVersion !== 2 || packet.slug !== match[1] || !isPreparedReviewBinding(packet.reviewBinding)) throw new Error("Prepared trail response is malformed.");
+    await beginReview(packet.title, packet.documentText, packet.checkpoints, packet.reviewerName, packet.reviewBinding, packet.slug);
   } catch (error) {
     showSetupMessage(error instanceof Error ? error.message : "Unable to load this prepared trail.");
   }
@@ -132,13 +143,14 @@ async function copyAiPrompt(): Promise<void> {
   }
 }
 
-async function beginReview(title: string, text: string, checkpoints: unknown, name: string): Promise<void> {
+async function beginReview(title: string, text: string, checkpoints: unknown, name: string, preparedReview: PreparedReviewBinding | null = null, preparedTrailSlug: string | null = null): Promise<void> {
+  if (preparedReview && preparedTrailSlug) await assertPreparedReviewCurrent(preparedTrailSlug, preparedReview);
   const source = await createSourceDocument(title, text);
   const checkpointSet = await createCheckpointSet(`${title} learning trail`, checkpoints, text);
   const reviewer = name ? { kind: "self_asserted" as const, name } : { kind: "unattributed" as const, name: null };
   const saved = await readDraft(source, checkpointSet, reviewer);
   const session = saved ?? await startReviewSession(source, checkpointSet, reviewer, clock);
-  state = { source, checkpointSet, session, message: saved ? "Your saved V2 trail was restored." : null };
+  state = { source, checkpointSet, session, message: saved ? "Your saved V2 trail was restored." : null, preparedReview, preparedTrailSlug };
   lastTrailPercent = null;
   trailWasComplete = false;
   revisionPacketConfirmed = false;
@@ -406,8 +418,39 @@ function completionActions(hasChanges: boolean): HTMLElement {
 
 async function downloadArtifact(): Promise<void> {
   if (!state) return;
-  const artifact = await createReviewArtifact(state.source, state.checkpointSet, state.session);
-  download(`${slug(state.source.title)}-review-v2.json`, JSON.stringify(artifact, null, 2) + "\n", "application/json");
+  try {
+    if (state.preparedReview && state.preparedTrailSlug) await assertPreparedReviewCurrent(state.preparedTrailSlug, state.preparedReview);
+    const artifact = await createReviewArtifact(state.source, state.checkpointSet, state.session, state.preparedReview);
+    download(`${slug(state.source.title)}-review-v3.json`, JSON.stringify(artifact, null, 2) + "\n", "application/json");
+  } catch (error) {
+    state = { ...state, message: error instanceof Error ? error.message : "Review is no longer current; reload the prepared trail." };
+    render();
+  }
+}
+
+async function assertPreparedReviewCurrent(slugValue: string, expected: PreparedReviewBinding): Promise<void> {
+  const response = await fetch(`/api/trails/${slugValue}?head-check=${encodeURIComponent(String(Date.now()))}`, {
+    cache: "no-store",
+    headers: { accept: "application/json" },
+  });
+  if (!response.ok) throw new Error(response.status === 409 ? await response.text() : "Unable to verify the prepared review head.");
+  const packet = await response.json() as Partial<PreparedTrailPacket>;
+  if (!isPreparedReviewBinding(packet.reviewBinding) ||
+      packet.reviewBinding!.packetId !== expected.packetId ||
+      packet.reviewBinding!.packetDigest !== expected.packetDigest ||
+      packet.reviewBinding!.repository !== expected.repository ||
+      packet.reviewBinding!.pullRequestNumber !== expected.pullRequestNumber ||
+      packet.reviewBinding!.headRevision !== expected.headRevision) {
+    throw new Error("Prepared review binding changed; reload the prepared trail before continuing.");
+  }
+}
+
+function isPreparedReviewBinding(value: unknown): value is PreparedReviewBinding {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Partial<PreparedReviewBinding>;
+  return typeof candidate.packetId === "string" && /^sha256:[0-9a-f]{64}$/u.test(candidate.packetDigest ?? "") &&
+    typeof candidate.repository === "string" && typeof candidate.pullRequestNumber === "number" && Number.isSafeInteger(candidate.pullRequestNumber) && candidate.pullRequestNumber > 0 &&
+    /^[0-9a-f]{40}$/u.test(candidate.headRevision ?? "");
 }
 
 async function copyRevisionPrompt(): Promise<void> {

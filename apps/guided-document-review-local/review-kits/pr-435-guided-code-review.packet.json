@@ -7,7 +7,7 @@
     "url": "https://github.com/RanSolo/shield-workspace/pull/435",
     "baseRevision": "af4c3a76c8c65def029dce2e68c25f556b2790d7",
     "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5",
-    "observedAt": "2026-08-30T22:44:00.594Z"
+    "observedAt": "2026-08-30T23:06:06.228Z"
   },
   "criteria": [
     {
@@ -16,15 +16,48 @@
         "text": "Baseline branch is pushed and represented by a draft PR.",
         "sourceIssueNumber": 434
       },
-      "summary": "The Document Trail baseline is represented by PR #435 from the pushed agent/document-trail branch.",
-      "files": [],
-      "evidence": [
-        "GitHub reports PR #435 at exact head 5c70027cbd4ebff3bcea57e73b1f356ae972dae5.",
-        "The PR is linked to Issue #434 through its closing reference."
+      "guidance": {
+        "explanation": "The observed pull request is the review home for the Document Trail baseline.",
+        "openGaps": [],
+        "reviewQuestion": "Does this pull request give the baseline a clear, reviewable delivery home?"
+      },
+      "anchors": [
+        {
+          "kind": "pull_request",
+          "field": "number",
+          "value": 435,
+          "provenance": {
+            "source": "pull_request",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        },
+        {
+          "kind": "pull_request",
+          "field": "head_revision",
+          "value": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5",
+          "provenance": {
+            "source": "pull_request",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        },
+        {
+          "kind": "issue",
+          "field": "title",
+          "value": "Document Trail V0: establish the product baseline and reviewable delivery flow",
+          "provenance": {
+            "source": "issue",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5",
+            "issueNumber": 434
+          }
+        }
       ],
-      "reportedValidation": "The read-only GitHub observation found the expected branch, PR number, linked issue, and exact head revision.",
-      "openGaps": [],
-      "reviewQuestion": "Does this pull request give the baseline a clear, reviewable delivery home?"
+      "files": []
     },
     {
       "criterion": {
@@ -32,7 +65,79 @@
         "text": "Both Document Trail Nx projects build, typecheck, and test successfully.",
         "sourceIssueNumber": 434
       },
-      "summary": "The reusable domain package and local application define focused Nx build, typecheck, and test targets.",
+      "guidance": {
+        "explanation": "The observed diff contains the focused Nx project contracts and the PR reports their validation.",
+        "openGaps": [
+          "The human reviewer must decide whether the observed proof is sufficient for baseline acceptance."
+        ],
+        "reviewQuestion": "Do the focused project contracts and reported validation adequately prove both Document Trail projects?"
+      },
+      "anchors": [
+        {
+          "kind": "file",
+          "file": {
+            "path": "packages/guided-document-review/package.json",
+            "additions": 28,
+            "deletions": 0,
+            "changeType": "ADDED"
+          },
+          "provenance": {
+            "source": "file",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        },
+        {
+          "kind": "file",
+          "file": {
+            "path": "apps/guided-document-review-local/package.json",
+            "additions": 36,
+            "deletions": 0,
+            "changeType": "ADDED"
+          },
+          "provenance": {
+            "source": "file",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        },
+        {
+          "kind": "validation",
+          "validation": {
+            "validationId": "pr-body-validation:1",
+            "name": "Reported PR validation",
+            "status": "unknown",
+            "conclusion": null,
+            "details": "`npm exec -- nx run-many --targets=build,test,typecheck --projects=@shield/guided-document-review,@shield/guided-document-review-local --parallel=3 --outputStyle=static`",
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          },
+          "provenance": {
+            "source": "validation",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        },
+        {
+          "kind": "validation",
+          "validation": {
+            "validationId": "pr-body-validation:2",
+            "name": "Reported PR validation",
+            "status": "unknown",
+            "conclusion": null,
+            "details": "37 focused tests passed.",
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          },
+          "provenance": {
+            "source": "validation",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        }
+      ],
       "files": [
         {
           "path": "packages/guided-document-review/package.json",
@@ -46,16 +151,7 @@
           "deletions": 0,
           "changeType": "ADDED"
         }
-      ],
-      "evidence": [
-        "The PR records a focused Nx run for both projects with build, test, and typecheck targets.",
-        "The PR records 37 focused tests passing; this is a declared result to verify during review, not a compiler-generated claim."
-      ],
-      "reportedValidation": "PR #435 reports focused Nx build, test, and typecheck success for both baseline projects; the Guided Code Review branch independently reruns the affected projects.",
-      "openGaps": [
-        "The human reviewer must decide whether the reported proof is sufficient for baseline acceptance."
-      ],
-      "reviewQuestion": "Do the focused project contracts and recorded validation adequately prove both Document Trail projects?"
+      ]
     },
     {
       "criterion": {
@@ -63,7 +159,85 @@
         "text": "Current architecture and Factory review kits load as prepared trails.",
         "sourceIssueNumber": 434
       },
-      "summary": "Prepared-trail manifests connect the Mission Rail architecture and Factory learning documents to curated checkpoint sets.",
+      "guidance": {
+        "explanation": "The observed diff contains the prepared-trail manifests and checkpoint sets used by the local application.",
+        "openGaps": [
+          "Visual behavior remains a human QA observation rather than an adapter observation."
+        ],
+        "reviewQuestion": "Can a reviewer open both prepared learning trails without manually locating source and checkpoint files?"
+      },
+      "anchors": [
+        {
+          "kind": "file",
+          "file": {
+            "path": "apps/guided-document-review-local/review-kits/mission-rail-v1.trail.json",
+            "additions": 8,
+            "deletions": 0,
+            "changeType": "ADDED"
+          },
+          "provenance": {
+            "source": "file",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        },
+        {
+          "kind": "file",
+          "file": {
+            "path": "apps/guided-document-review-local/review-kits/mission-rail-v2-checkpoints.json",
+            "additions": 610,
+            "deletions": 0,
+            "changeType": "ADDED"
+          },
+          "provenance": {
+            "source": "file",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        },
+        {
+          "kind": "file",
+          "file": {
+            "path": "apps/guided-document-review-local/review-kits/shield-inside-factory.trail.json",
+            "additions": 8,
+            "deletions": 0,
+            "changeType": "ADDED"
+          },
+          "provenance": {
+            "source": "file",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        },
+        {
+          "kind": "file",
+          "file": {
+            "path": "apps/guided-document-review-local/review-kits/shield-inside-factory-checkpoints.json",
+            "additions": 134,
+            "deletions": 0,
+            "changeType": "ADDED"
+          },
+          "provenance": {
+            "source": "file",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        },
+        {
+          "kind": "pr_body",
+          "excerpt": "- Local Document Trail application and prepared-trail route.",
+          "provenance": {
+            "source": "pr_body",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        }
+      ],
       "files": [
         {
           "path": "apps/guided-document-review-local/review-kits/mission-rail-v1.trail.json",
@@ -89,16 +263,7 @@
           "deletions": 0,
           "changeType": "ADDED"
         }
-      ],
-      "evidence": [
-        "The prepared manifests name their source documents and checkpoint JSON.",
-        "The local server exposes prepared trails through /trails/<slug>."
-      ],
-      "reportedValidation": "The local prepared-trail loader and checkpoint validator pass for the generated manifests and checkpoint sets.",
-      "openGaps": [
-        "Visual behavior remains a human QA observation rather than a compiler claim."
-      ],
-      "reviewQuestion": "Can a reviewer open both prepared learning trails without manually locating source and checkpoint files?"
+      ]
     },
     {
       "criterion": {
@@ -106,7 +271,65 @@
         "text": "The PR explains known prototype limitations and identifies the next small product slices.",
         "sourceIssueNumber": 434
       },
-      "summary": "The PR body describes the baseline, validation, exclusions, and the policy that later product changes move through smaller issue-bound pull requests.",
+      "guidance": {
+        "explanation": "The observed PR body describes the baseline, validation, exclusions, and issue-bound follow-on delivery policy.",
+        "openGaps": [
+          "The reviewer may request clearer limitations or next-slice wording."
+        ],
+        "reviewQuestion": "Does the PR make the prototype boundary and next delivery shape understandable enough to accept as a baseline?"
+      },
+      "anchors": [
+        {
+          "kind": "file",
+          "file": {
+            "path": "apps/guided-document-review-local/README.md",
+            "additions": 47,
+            "deletions": 0,
+            "changeType": "ADDED"
+          },
+          "provenance": {
+            "source": "file",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        },
+        {
+          "kind": "file",
+          "file": {
+            "path": "apps/guided-document-review-local/QA-CHECKLIST.md",
+            "additions": 55,
+            "deletions": 0,
+            "changeType": "ADDED"
+          },
+          "provenance": {
+            "source": "file",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        },
+        {
+          "kind": "pr_body",
+          "excerpt": "This is intentionally the one large prototype-baseline PR.",
+          "provenance": {
+            "source": "pr_body",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        },
+        {
+          "kind": "pr_body",
+          "excerpt": "No deployment, release, hosted persistence, provider credentials, or Mission Rail V1 construction contracts.",
+          "provenance": {
+            "source": "pr_body",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        }
+      ],
       "files": [
         {
           "path": "apps/guided-document-review-local/README.md",
@@ -120,16 +343,7 @@
           "deletions": 0,
           "changeType": "ADDED"
         }
-      ],
-      "evidence": [
-        "The PR body identifies the baseline contents and explicit exclusions.",
-        "Issue #434 and the PR delivery note identify future work as small product slices rather than additions to the baseline."
-      ],
-      "reportedValidation": "README and QA checklist paths are present in the observed PR diff; prose quality remains a human review decision.",
-      "openGaps": [
-        "The reviewer may request clearer limitations or next-slice wording."
-      ],
-      "reviewQuestion": "Does the PR make the prototype boundary and next delivery shape understandable enough to accept as a baseline?"
+      ]
     },
     {
       "criterion": {
@@ -137,17 +351,26 @@
         "text": "Future product work does not accumulate directly on the baseline branch after review begins.",
         "sourceIssueNumber": 434
       },
-      "summary": "New Document Trail work has moved to issue-bound stacked branches instead of accumulating on the baseline branch.",
-      "files": [],
-      "evidence": [
-        "Invoice Inspect is tracked by Issue #436 and stacked PR #437 rather than appended to PR #435.",
-        "Guided Code Review is tracked by Issue #438 and this branch is based on the baseline branch."
+      "guidance": {
+        "explanation": "The observed PR body states that later product changes should be issue-bound and delivered separately after review begins.",
+        "openGaps": [],
+        "reviewQuestion": "Does the observed delivery policy make the baseline branch boundary clear without relying on unobserved follow-on PR claims?"
+      },
+      "anchors": [
+        {
+          "kind": "pr_body",
+          "excerpt": "further product changes should be issue-bound, lane-assigned, and delivered in small PRs rather than appended here.",
+          "provenance": {
+            "source": "pr_body",
+            "repository": "RanSolo/shield-workspace",
+            "pullRequestNumber": 435,
+            "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+          }
+        }
       ],
-      "reportedValidation": "GitHub shows follow-on work in separate issue-bound branches and PRs.",
-      "openGaps": [],
-      "reviewQuestion": "Does the observed follow-on work demonstrate that the baseline branch has stopped accumulating unrelated product slices?"
+      "files": []
     }
   ],
-  "packetId": "pr-review:RanSolo/shield-workspace#435:1514bb5cd7e0c15f",
-  "packetDigest": "sha256:1514bb5cd7e0c15fe30d388d9fca26e1214dea113c076c2f4f0c0bec5786c397"
+  "packetId": "pr-review:RanSolo/shield-workspace#435:b8ebad8d4cad3eb8",
+  "packetDigest": "sha256:b8ebad8d4cad3eb8f1fbc61d613a07dc8dac10cee13056ed4db2797d51c1550e"
 }

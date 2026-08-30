@@ -1,0 +1,29 @@
+{
+  "name": "@shield/github-pr-review-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit",
+    "test": "npm run build && node --test tests/*.test.mjs"
+  },
+  "nx": {
+    "tags": ["scope:guided-review", "type:adapter"],
+    "targets": {
+      "build": {
+        "outputs": ["{projectRoot}/dist"]
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "20.12.12",
+    "typescript": "5.4.5"
+  }
+}
