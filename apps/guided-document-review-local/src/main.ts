@@ -148,6 +148,7 @@ async function beginReview(title: string, text: string, checkpoints: unknown, na
 async function handleClick(event: MouseEvent): Promise<void> {
   const button = (event.target as Element).closest<HTMLButtonElement>("button[data-action]");
   if (!button) return;
+  const checkpointScrollTop = checkpointPanel.scrollTop;
   const action = button.dataset.action;
   if (action === "restart") return restart();
   if (action === "download") return void downloadArtifact();
@@ -173,6 +174,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (action === "show-revision" || action === "hide-revision") {
     revisionEditorOpen = action === "show-revision";
     render();
+    requestAnimationFrame(() => checkpointPanel.scrollTo({ top: checkpointScrollTop, behavior: "auto" }));
     return;
   }
 
@@ -257,8 +259,11 @@ async function handleClick(event: MouseEvent): Promise<void> {
     saveDraft();
   }
   render();
-  if (action === "advance" || action === "quick-pass" || action === "quick-revise") {
+  if (action === "advance" || action === "quick-pass") {
     requestAnimationFrame(() => checkpointPanel.scrollTo({ top: 0, behavior: "smooth" }));
+  }
+  if (action === "quick-revise") {
+    requestAnimationFrame(() => checkpointPanel.scrollTo({ top: checkpointScrollTop, behavior: "auto" }));
   }
 }
 
