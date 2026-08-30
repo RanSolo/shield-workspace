@@ -399,7 +399,7 @@
     "learningSteps": [
       {
         "stepId": "guided-review-contract",
-        "sourceQuote": "### `@shield/guided-review`",
+        "sourceQuote": "It projects a Fury-reviewed plan, an exact implementation diff, or executable\nQA scenarios into ordered, acceptance-criterion-aligned sections. Plan sections\nshow scope, exclusions, commands, risks, and unresolved assumptions. Code\nsections show the approved requirement, changed files, behavior, and review\nevidence. QA sections show setup, action, expected result, observed result, and\nretained evidence.",
         "purpose": "See Guided Review as a small projection over canonical work.",
         "question": "What should a reviewer see instead of raw agent protocol?",
         "explanation": "Guided Review turns plan, code, and QA evidence into ordered sections with decisions and proof a person can understand.",
