@@ -420,7 +420,7 @@ async function readDraft(
   }
 
   const carried = await carryForwardCompletedCheckpoints(source, set, reviewer);
-  if (carried && reviewProgress(carried) > reviewProgress(exact)) {
+  if (carried && isBetterRecovery(carried, exact)) {
     localStorage.setItem(storageKey(source, set), JSON.stringify(carried));
     return carried;
   }
@@ -444,7 +444,7 @@ async function carryForwardCompletedCheckpoints(
       };
       if (candidate?.sourceDigest !== source.sourceDigest || !candidate.answers) continue;
       const migrated = await replayCompletedPrefix(source, set, reviewer, candidate.answers);
-      if (reviewProgress(migrated) > reviewProgress(best)) best = migrated;
+      if (isBetterRecovery(migrated, best)) best = migrated;
     } catch {
       // Ignore unrelated or malformed local drafts.
     }
@@ -468,10 +468,9 @@ async function replayCompletedPrefix(
       replacements?: unknown;
       stepDispositions?: unknown;
     } | undefined;
-    const stepIds = checkpoint.learningSteps.map(({ stepId }) => stepId);
-    if (!answer || !["understand", "question", "revise", "approve"].includes(answer.decision as string)) break;
+    if (!answer) break;
     const priorDispositions = stepDispositionInputs(checkpoint, answer);
-    if (!priorDispositions || (checkpoint.reviewMode !== "disposition" && typeof answer.explanation !== "string")) break;
+    if (!priorDispositions) break;
 
     let result = advancePhase(session, set, replayExpectation(session, checkpoint.checkpointId), clock);
     if (!result.ok) break;
@@ -482,7 +481,9 @@ async function replayCompletedPrefix(
       session = result.session;
     }
     if (!result?.ok) break;
+    if (priorDispositions.length < checkpoint.learningSteps.length) return session;
     if (checkpoint.reviewMode !== "disposition") {
+      if (typeof answer.explanation !== "string" || !answer.explanation.trim()) return session;
       result = recordExplanation(session, set, replayExpectation(session, checkpoint.checkpointId), answer.explanation as string, clock);
       if (!result.ok) break;
       session = result.session;
@@ -510,19 +511,34 @@ function isReplacementInput(value: unknown): value is { stepId: string; replacem
 
 function stepDispositionInputs(
   checkpoint: ReviewCheckpoint,
-  answer: { decision?: unknown; replacement?: unknown; stepDispositions?: unknown },
+  answer: {
+    decision?: unknown;
+    replacement?: unknown;
+    revealedStepIds?: unknown;
+    stepDispositions?: unknown;
+  },
 ): { stepId: string; disposition: StepDisposition; replacement?: { stepId: string; replacement: string; rationale?: string } }[] | null {
-  if (Array.isArray(answer.stepDispositions) && answer.stepDispositions.length === checkpoint.learningSteps.length) {
-    const values = answer.stepDispositions.map((entry, index) => {
-      if (!entry || typeof entry !== "object") return null;
+  if (Array.isArray(answer.stepDispositions)) {
+    const values: { stepId: string; disposition: StepDisposition; replacement?: { stepId: string; replacement: string; rationale?: string } }[] = [];
+    for (let index = 0; index < checkpoint.learningSteps.length; index += 1) {
+      const entry = answer.stepDispositions[index];
+      if (!entry || typeof entry !== "object") break;
       const candidate = entry as { stepId?: unknown; disposition?: unknown; replacement?: unknown };
-      if (candidate.stepId !== checkpoint.learningSteps[index].stepId || !["pass", "revise"].includes(candidate.disposition as string)) return null;
+      if (candidate.stepId !== checkpoint.learningSteps[index].stepId) break;
+      if (candidate.disposition === null || candidate.disposition === undefined) break;
+      if (!["pass", "revise"].includes(candidate.disposition as string)) return null;
       const input = { stepId: candidate.stepId, disposition: candidate.disposition as StepDisposition };
-      if (candidate.disposition === "revise" && isReplacementInput(candidate.replacement)) return { ...input, replacement: candidate.replacement };
-      return candidate.disposition === "pass" ? input : null;
-    });
-    return values.every((value): value is { stepId: string; disposition: StepDisposition; replacement?: { stepId: string; replacement: string; rationale?: string } } => value !== null)
-      ? values : null;
+      if (candidate.disposition === "revise") {
+        if (!isReplacementInput(candidate.replacement)) return null;
+        values.push({ ...input, replacement: candidate.replacement });
+      } else {
+        values.push(input);
+      }
+    }
+    const hasRecordedProgress = values.length > 0 ||
+      (Array.isArray(answer.revealedStepIds) && answer.revealedStepIds.length > 0) ||
+      ["understand", "question", "revise", "approve"].includes(answer.decision as string);
+    return hasRecordedProgress ? values : null;
   }
   if (!["understand", "question", "revise", "approve"].includes(answer.decision as string)) return null;
   return checkpoint.learningSteps.map((step) => {
@@ -535,6 +551,21 @@ function reviewProgress(session: ReviewSession | null): number {
   if (!session) return -1;
   const phase = ["orient", "learn", "explain_back", "confidence", "decide", "complete"].indexOf(session.phase);
   return session.currentCheckpointIndex * 100 + session.currentStepIndex * 10 + phase;
+}
+
+function isBetterRecovery(candidate: ReviewSession, current: ReviewSession | null): boolean {
+  const candidateProgress = reviewProgress(candidate);
+  const currentProgress = reviewProgress(current);
+  if (candidateProgress !== currentProgress) return candidateProgress > currentProgress;
+  return recordedAnswerCount(candidate) > recordedAnswerCount(current);
+}
+
+function recordedAnswerCount(session: ReviewSession | null): number {
+  if (!session) return -1;
+  return Object.values(session.answers).reduce((total, answer) => total +
+    answer.stepDispositions.filter(({ disposition }) => disposition !== null).length +
+    (answer.explanation ? 1 : 0) +
+    (answer.decision ? 1 : 0), 0);
 }
 
 function withoutConfidenceStop(session: ReviewSession): ReviewSession {
