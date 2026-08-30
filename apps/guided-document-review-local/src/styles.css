@@ -593,10 +593,11 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
-  margin: 0 0 18px;
-  padding: 8px 0 12px;
+  margin: -22px -22px 18px;
+  padding: 14px 22px 12px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
+  box-shadow: 0 8px 12px -12px #000;
 }
 .review-toolbar .button { padding: 6px 11px; font-size: .76rem; }
 .source-markdown { color: #d3dcda; overflow-wrap: anywhere; }

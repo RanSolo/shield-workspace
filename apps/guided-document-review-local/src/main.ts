@@ -250,7 +250,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
   }
   render();
   if (action === "advance") {
-    requestAnimationFrame(() => scrollCheckpointToToolbar());
+    requestAnimationFrame(() => scrollCheckpointToLearningStep());
   }
   if (action === "quick-pass" || action === "decision" || action === "save-explanation-decision") {
     requestAnimationFrame(() => checkpointPanel.scrollTo({ top: 0, behavior: "smooth" }));
@@ -260,16 +260,20 @@ async function handleClick(event: MouseEvent): Promise<void> {
   }
 }
 
-function scrollCheckpointToToolbar(): void {
+function scrollCheckpointToLearningStep(): void {
   const toolbar = checkpointPanel.querySelector<HTMLElement>(".review-toolbar");
-  if (!toolbar) {
+  const learningStep = checkpointPanel.querySelector<HTMLElement>(".step-count");
+  if (!toolbar || !learningStep) {
     checkpointPanel.scrollTo({ top: 0, behavior: "smooth" });
     return;
   }
   const panelBox = checkpointPanel.getBoundingClientRect();
-  const toolbarBox = toolbar.getBoundingClientRect();
+  const learningStepBox = learningStep.getBoundingClientRect();
   checkpointPanel.scrollTo({
-    top: Math.max(0, checkpointPanel.scrollTop + toolbarBox.top - panelBox.top),
+    top: Math.max(
+      0,
+      checkpointPanel.scrollTop + learningStepBox.top - panelBox.top - toolbar.offsetHeight - 12,
+    ),
     behavior: "smooth",
   });
 }
