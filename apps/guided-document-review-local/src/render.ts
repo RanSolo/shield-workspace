@@ -8,7 +8,12 @@ import type {
 } from "@shield/guided-document-review";
 
 import type { RevisionPromptChange } from "@shield/guided-document-review";
-import { renderMarkdownSections, renderedMarkdownText, type CompletedSourceMarker } from "./markdown.js";
+import {
+  renderMarkdownSections,
+  renderedMarkdownText,
+  type CompletedSourceMarker,
+  type SourceRevisionPreview,
+} from "./markdown.js";
 
 export interface ReviewView {
   readonly source: SourceDocument;
@@ -120,6 +125,7 @@ export function renderSource(
   sourceQuote: string,
   speechSupported: boolean,
   completedMarkers: readonly CompletedSourceMarker[] = [],
+  revisionPreview?: SourceRevisionPreview,
 ): void {
   const renderedPassage = renderedMarkdownText(sourceQuote);
   const actions = element("div", "source-actions");
@@ -133,7 +139,7 @@ export function renderSource(
     element("h2", "source-title", source.title),
     element("p", "source-quote-label", renderedPassage ? `Exact passage: “${renderedPassage}”` : "Exact passage: unresolved"),
     actions,
-    renderMarkdownSections(excerpt, checkpointId, stepId, sourceQuote, completedMarkers),
+    renderMarkdownSections(excerpt, checkpointId, stepId, sourceQuote, completedMarkers, revisionPreview),
   );
 }
 

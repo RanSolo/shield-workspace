@@ -9,12 +9,17 @@ export interface CompletedSourceMarker {
   readonly status: "passed" | "revised";
 }
 
+export interface SourceRevisionPreview {
+  readonly replacement: string;
+}
+
 export function renderMarkdownSections(
   source: string,
   checkpointId: string,
   stepId: string,
   sourceQuote: string,
   completedMarkers: readonly CompletedSourceMarker[] = [],
+  revisionPreview?: SourceRevisionPreview,
 ): HTMLElement {
   const staging = document.createElement("div");
   staging.innerHTML = markdownToSafeHtml(source);
@@ -37,7 +42,15 @@ export function renderMarkdownSections(
   const renderedPassage = renderedMarkdownText(sourceQuote);
   const marker = locateRenderedPassage(staging, renderedPassage);
   if (marker.state === "resolved") {
-    highlightRenderedBlocks(staging, marker.start, marker.end, checkpointId, stepId, "source-highlight");
+    const activeBlocks = highlightRenderedBlocks(
+      staging,
+      marker.start,
+      marker.end,
+      checkpointId,
+      stepId,
+      "source-highlight",
+    );
+    if (revisionPreview?.replacement.trim()) renderRevisionDiff(activeBlocks, revisionPreview.replacement.trim());
   }
 
   const article = document.createElement("article");
@@ -146,7 +159,7 @@ function highlightRenderedBlocks(
   checkpointId: string,
   stepId: string,
   className: "source-highlight" | "source-passed" | "source-revised",
-): void {
+): readonly HTMLElement[] {
   const projection = projectTextNodes(root);
   const blocks = new Set<HTMLElement>();
 
@@ -163,6 +176,21 @@ function highlightRenderedBlocks(
     block.classList.add(className);
     block.dataset.checkpointId = checkpointId;
     block.dataset.stepId = stepId;
+  });
+  return [...blocks];
+}
+
+function renderRevisionDiff(blocks: readonly HTMLElement[], replacement: string): void {
+  blocks.forEach((block) => {
+    const removed = document.createElement("div");
+    removed.className = "source-diff__removed";
+    while (block.firstChild) removed.append(block.firstChild);
+
+    const added = document.createElement("div");
+    added.className = "source-diff__added";
+    added.textContent = replacement;
+    block.classList.add("source-diff");
+    block.append(removed, added);
   });
 }
 

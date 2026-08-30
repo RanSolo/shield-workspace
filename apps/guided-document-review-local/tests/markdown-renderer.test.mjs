@@ -22,12 +22,12 @@ test.after(async () => {
   await rm(testDirectory, { recursive: true, force: true });
 });
 
-function render(source, sourceQuote, completedMarkers = []) {
+function render(source, sourceQuote, completedMarkers = [], revisionPreview) {
   const dom = new JSDOM("<!doctype html><html><body></body></html>");
   globalThis.document = dom.window.document;
   globalThis.Node = dom.window.Node;
   globalThis.NodeFilter = dom.window.NodeFilter;
-  return renderMarkdownSections(source, "checkpoint-1", "step-1", sourceQuote, completedMarkers);
+  return renderMarkdownSections(source, "checkpoint-1", "step-1", sourceQuote, completedMarkers, revisionPreview);
 }
 
 test("highlights a rendered heading block and keeps its stable source identity", () => {
@@ -40,6 +40,20 @@ test("highlights a rendered heading block and keeps its stable source identity",
   assert.equal(marker.textContent, "Heading");
   assert.equal(marker.dataset.checkpointId, "checkpoint-1");
   assert.equal(marker.dataset.stepId, "step-1");
+});
+
+test("renders an active numbered revision as a red removal and green addition", () => {
+  const article = render(
+    "1. **Stable lanes are first-class.** The path remains stable.",
+    "**Stable lanes are first-class.**",
+    [],
+    { replacement: "**Stable lanes are operationally ready.** The environment remains ready." },
+  );
+
+  const item = article.querySelector("li.source-highlight.source-diff");
+  assert.ok(item);
+  assert.match(item.querySelector(".source-diff__removed")?.textContent ?? "", /Stable lanes are first-class/u);
+  assert.match(item.querySelector(".source-diff__added")?.textContent ?? "", /operationally ready/u);
 });
 
 test("shows passed, revised, and active numbered principles as distinct block highlights", () => {

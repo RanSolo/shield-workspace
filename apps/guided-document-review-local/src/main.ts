@@ -296,6 +296,7 @@ function render(): void {
     step.sourceQuote,
     speech.supported,
     completedSourceMarkers(),
+    currentRevisionPreview(step),
   );
   scrollSourceToHighlight();
   syncReviewViewport();
@@ -596,6 +597,7 @@ function saveTextDraft(event: Event): void {
         },
       },
     });
+    if (input.id === "replacement-text") refreshSourceRevisionPreview();
   }
 }
 
@@ -691,8 +693,38 @@ function updateReplacementOriginal(event: Event): void {
     step.sourceQuote,
     speech.supported,
     completedSourceMarkers(),
+    currentRevisionPreview(step),
   );
   scrollSourceToHighlight();
+}
+
+function currentRevisionPreview(step: LearningStep): { replacement: string } | undefined {
+  if (!state || !revisionEditorOpen) return undefined;
+  const checkpointId = activeCheckpoint().checkpointId;
+  const answer = state.session.answers[checkpointId];
+  const draft = readTextDrafts().replacements[checkpointId];
+  const replacement = draft
+    ? draft.replacement
+    : answer.replacement?.replacement ?? step.priorReview?.replacement ?? "";
+  return replacement.trim() ? { replacement } : undefined;
+}
+
+function refreshSourceRevisionPreview(): void {
+  if (!state || !revisionEditorOpen) return;
+  const checkpoint = activeCheckpoint();
+  const step = visibleStep();
+  const excerpt = findSourceExcerpt(state.source, step.sourceQuote);
+  renderSource(
+    sourcePanel,
+    state.source,
+    excerpt,
+    checkpoint.checkpointId,
+    step.stepId,
+    step.sourceQuote,
+    speech.supported,
+    completedSourceMarkers(),
+    currentRevisionPreview(step),
+  );
 }
 
 function completedSourceMarkers(): readonly {
