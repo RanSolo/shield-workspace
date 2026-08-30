@@ -12,6 +12,7 @@ import {
   findSourceExcerpt,
   recordDecision,
   recordExplanation,
+  recordStepDisposition,
   returnToPreviousPhase,
   startReviewSession,
   type CheckpointSet,
@@ -22,6 +23,7 @@ import {
   type ReviewPhase,
   type ReviewSession,
   type SourceDocument,
+  type StepDisposition,
 } from "@shield/guided-document-review";
 
 import { renderCheckpoint, renderCompletion, renderJourney, renderSource, renderStats } from "./render.js";
@@ -188,28 +190,10 @@ async function handleClick(event: MouseEvent): Promise<void> {
   const expected = expectation(checkpoint.checkpointId, state.session.phase === "learn" ? step.stepId : undefined);
   let result;
   if (action === "advance") result = advancePhase(state.session, state.checkpointSet, expected, clock);
-  if (action === "quick-pass" || action === "quick-revise") {
-    const oriented = state.session.phase === "orient"
-      ? advancePhase(state.session, state.checkpointSet, expected, clock)
-      : { ok: true as const, session: state.session };
-    const ready = oriented.ok && oriented.session.phase === "learn"
-      ? advancePhase(
-          oriented.session,
-          state.checkpointSet,
-          replayExpectation(oriented.session, checkpoint.checkpointId, step.stepId),
-          clock,
-        )
-      : oriented;
-    result = action === "quick-pass" && ready.ok
-      ? recordDecision(
-          ready.session,
-          state.checkpointSet,
-          replayExpectation(ready.session, checkpoint.checkpointId),
-          { decision: "approve" },
-          clock,
-        )
-      : ready;
-  }
+  if (action === "step-disposition") result = recordStepDisposition(state.session, state.checkpointSet, expected, {
+    disposition: button.dataset.value as StepDisposition,
+    ...(button.dataset.value === "revise" ? { replacement: replacementInput(step.stepId) } : {}),
+  }, clock);
   if (action === "back") result = returnToPreviousPhase(state.session, state.checkpointSet, expected, clock);
   if (action === "decision") {
     result = recordDecision(state.session, state.checkpointSet, expected, {
@@ -217,46 +201,28 @@ async function handleClick(event: MouseEvent): Promise<void> {
       replacement: button.dataset.value === "revise" ? replacementInput() : undefined,
     }, clock);
   }
-  if (action === "save-explanation-decision") {
-    const explanationResult = recordExplanation(
-      state.session,
-      state.checkpointSet,
-      expected,
-      valueOf("explanation"),
-      clock,
-    );
-    result = explanationResult.ok
-      ? recordDecision(explanationResult.session, state.checkpointSet, replayExpectation(explanationResult.session, checkpoint.checkpointId), {
-          decision: button.dataset.value as ReviewDecision,
-          replacement: button.dataset.value === "revise" ? replacementInput() : undefined,
-        }, clock)
-      : explanationResult;
-  }
+  if (action === "save-explanation") result = recordExplanation(state.session, state.checkpointSet, expected, valueOf("explanation"), clock);
   if (!result) return;
   if (!result.ok) {
     state = { ...state, message: result.message };
   } else {
-    if (action === "save-explanation-decision") {
+    if (action === "save-explanation") {
       clearExplanationDraft(checkpoint.checkpointId);
     }
-    if (action === "decision" || action === "save-explanation-decision") clearReplacementDraft(checkpoint.checkpointId);
+    if (action === "decision" || action === "step-disposition") clearReplacementDraft(checkpoint.checkpointId);
     state = { ...state, session: result.session, message: null };
-    if (result.session.phase !== "decide") {
+    if (action === "step-disposition" || result.session.phase !== "decide") {
       replacementPreviewStepId = null;
       revisionEditorOpen = false;
     }
-    if (action === "quick-revise") revisionEditorOpen = true;
     saveDraft();
   }
   render();
   if (action === "advance") {
     requestAnimationFrame(() => scrollCheckpointToLearningStep());
   }
-  if (action === "quick-pass" || action === "decision" || action === "save-explanation-decision") {
+  if (action === "step-disposition" || action === "decision" || action === "save-explanation") {
     requestAnimationFrame(() => checkpointPanel.scrollTo({ top: 0, behavior: "smooth" }));
-  }
-  if (action === "quick-revise") {
-    requestAnimationFrame(() => checkpointPanel.scrollTo({ top: checkpointScrollTop, behavior: "auto" }));
   }
 }
 
@@ -442,7 +408,12 @@ async function readDraft(
   if (raw) {
     try {
       const decoded = await decodeReviewSession(JSON.parse(raw), source, set);
-      exact = decoded.ok ? withoutConfidenceStop(decoded.session) : null;
+      if (decoded.ok) {
+        exact = withoutConfidenceStop(decoded.session);
+        if ("migrated" in decoded && decoded.migrated) {
+          localStorage.setItem(storageKey(source, set), JSON.stringify(exact));
+        }
+      }
     } catch {
       exact = null;
     }
@@ -494,40 +465,28 @@ async function replayCompletedPrefix(
       explanation?: unknown;
       decision?: unknown;
       replacement?: unknown;
+      replacements?: unknown;
+      stepDispositions?: unknown;
     } | undefined;
     const stepIds = checkpoint.learningSteps.map(({ stepId }) => stepId);
-    if (!answer || !Array.isArray(answer.revealedStepIds) ||
-        answer.revealedStepIds.join("|") !== stepIds.join("|") ||
-        (checkpoint.reviewMode !== "disposition" && typeof answer.explanation !== "string") ||
-        !["understand", "question", "revise", "approve"].includes(answer.decision as string)) break;
+    if (!answer || !["understand", "question", "revise", "approve"].includes(answer.decision as string)) break;
+    const priorDispositions = stepDispositionInputs(checkpoint, answer);
+    if (!priorDispositions || (checkpoint.reviewMode !== "disposition" && typeof answer.explanation !== "string")) break;
 
     let result = advancePhase(session, set, replayExpectation(session, checkpoint.checkpointId), clock);
     if (!result.ok) break;
     session = result.session;
-    for (const step of checkpoint.learningSteps) {
-      result = advancePhase(session, set, replayExpectation(session, checkpoint.checkpointId, step.stepId), clock);
-      if (!result.ok) return session;
-      session = result.session;
-    }
-    if (checkpoint.reviewMode !== "disposition") {
-      result = recordExplanation(
-        session,
-        set,
-        replayExpectation(session, checkpoint.checkpointId),
-        answer.explanation as string,
-        clock,
-      );
+    for (const input of priorDispositions) {
+      result = recordStepDisposition(session, set, replayExpectation(session, checkpoint.checkpointId, input.stepId), input, clock);
       if (!result.ok) break;
       session = result.session;
     }
-    result = recordDecision(session, set, replayExpectation(session, checkpoint.checkpointId), {
-      decision: answer.decision as ReviewDecision,
-      ...(answer.decision === "revise" && isReplacementInput(answer.replacement)
-        ? { replacement: answer.replacement }
-        : {}),
-    }, clock);
-    if (!result.ok) break;
-    session = result.session;
+    if (!result?.ok) break;
+    if (checkpoint.reviewMode !== "disposition") {
+      result = recordExplanation(session, set, replayExpectation(session, checkpoint.checkpointId), answer.explanation as string, clock);
+      if (!result.ok) break;
+      session = result.session;
+    }
   }
   return session;
 }
@@ -547,6 +506,29 @@ function isReplacementInput(value: unknown): value is { stepId: string; replacem
   const candidate = value as { stepId?: unknown; replacement?: unknown; rationale?: unknown };
   return typeof candidate.stepId === "string" && typeof candidate.replacement === "string" &&
     (candidate.rationale === null || candidate.rationale === undefined || typeof candidate.rationale === "string");
+}
+
+function stepDispositionInputs(
+  checkpoint: ReviewCheckpoint,
+  answer: { decision?: unknown; replacement?: unknown; stepDispositions?: unknown },
+): { stepId: string; disposition: StepDisposition; replacement?: { stepId: string; replacement: string; rationale?: string } }[] | null {
+  if (Array.isArray(answer.stepDispositions) && answer.stepDispositions.length === checkpoint.learningSteps.length) {
+    const values = answer.stepDispositions.map((entry, index) => {
+      if (!entry || typeof entry !== "object") return null;
+      const candidate = entry as { stepId?: unknown; disposition?: unknown; replacement?: unknown };
+      if (candidate.stepId !== checkpoint.learningSteps[index].stepId || !["pass", "revise"].includes(candidate.disposition as string)) return null;
+      const input = { stepId: candidate.stepId, disposition: candidate.disposition as StepDisposition };
+      if (candidate.disposition === "revise" && isReplacementInput(candidate.replacement)) return { ...input, replacement: candidate.replacement };
+      return candidate.disposition === "pass" ? input : null;
+    });
+    return values.every((value): value is { stepId: string; disposition: StepDisposition; replacement?: { stepId: string; replacement: string; rationale?: string } } => value !== null)
+      ? values : null;
+  }
+  if (!["understand", "question", "revise", "approve"].includes(answer.decision as string)) return null;
+  return checkpoint.learningSteps.map((step) => {
+    const replacement = answer.decision === "revise" && isReplacementInput(answer.replacement) && answer.replacement.stepId === step.stepId ? answer.replacement : undefined;
+    return { stepId: step.stepId, disposition: replacement ? "revise" : "pass", ...(replacement ? { replacement } : {}) };
+  });
 }
 
 function reviewProgress(session: ReviewSession | null): number {
@@ -602,14 +584,15 @@ function saveTextDraft(event: Event): void {
     writeTextDrafts({ ...drafts, explanations: { ...drafts.explanations, [checkpointId]: input.value } });
   }
   if (input.id === "replacement-text" || input.id === "replacement-rationale") {
-    const prior = drafts.replacements[checkpointId] ?? { stepId: valueOf("replacement-step"), replacement: "", rationale: "" };
+    const stepId = activeStep().stepId;
+    const prior = drafts.replacements[checkpointId] ?? { stepId, replacement: "", rationale: "" };
     writeTextDrafts({
       ...drafts,
       replacements: {
         ...drafts.replacements,
         [checkpointId]: {
           ...prior,
-          stepId: valueOf("replacement-step"),
+          stepId,
           ...(input.id === "replacement-text" ? { replacement: input.value } : { rationale: input.value }),
         },
       },
@@ -627,7 +610,7 @@ function restoreTextDraft(checkpoint: ReviewCheckpoint): void {
     explanation.value = drafts.explanations[checkpoint.checkpointId];
   }
   const replacement = drafts.replacements[checkpoint.checkpointId];
-  if (!answer.replacement && replacement) {
+  if (replacement) {
     replacementPreviewStepId = replacement.stepId;
     const replacementStep = document.getElementById("replacement-step") as HTMLSelectElement | null;
     const replacementText = document.getElementById("replacement-text") as HTMLTextAreaElement | null;
@@ -678,9 +661,9 @@ function expectation(checkpointId: string, stepId?: string): ExpectedTransition 
   return { eventId: crypto.randomUUID(), checkpointId, ...(stepId ? { stepId } : {}), phase: state.session.phase, revision: state.session.revision };
 }
 
-function replacementInput() {
+function replacementInput(stepId?: string) {
   return {
-    stepId: valueOf("replacement-step"),
+    stepId: stepId ?? valueOf("replacement-step"),
     replacement: valueOf("replacement-text"),
     rationale: valueOf("replacement-rationale"),
   };
@@ -722,7 +705,8 @@ function currentRevisionPreview(step: LearningStep): { replacement: string } | u
   const draft = readTextDrafts().replacements[checkpointId];
   const replacement = draft
     ? draft.replacement
-    : answer.replacement?.replacement ?? step.priorReview?.replacement ?? "";
+    : answer.stepDispositions.find(({ stepId }) => stepId === step.stepId)?.replacement?.replacement
+      ?? answer.replacement?.replacement ?? step.priorReview?.replacement ?? "";
   return replacement.trim() ? { replacement } : undefined;
 }
 
@@ -752,19 +736,18 @@ function completedSourceMarkers(): readonly {
   replacement?: string;
 }[] {
   if (!state) return [];
-  return state.checkpointSet.checkpoints.flatMap((checkpoint) => {
-    const decision = state?.session.answers[checkpoint.checkpointId]?.decision;
-    return decision === "approve" || decision === "revise"
-      ? checkpoint.learningSteps.map((step) => ({
-          checkpointId: checkpoint.checkpointId,
-          stepId: step.stepId,
-          sourceQuote: step.sourceQuote,
-          status: decision === "approve" ? "passed" as const : "revised" as const,
-          ...(decision === "revise" && state?.session.answers[checkpoint.checkpointId]?.replacement
-            ? { replacement: state.session.answers[checkpoint.checkpointId].replacement?.replacement }
-            : {}),
-        }))
-      : [];
+  const current = state;
+  return current.checkpointSet.checkpoints.flatMap((checkpoint) => {
+    const answer = current.session.answers[checkpoint.checkpointId];
+    return checkpoint.learningSteps.flatMap((step) => {
+      const disposition = answer.stepDispositions.find(({ stepId }) => stepId === step.stepId);
+      if (disposition?.disposition === "pass") return [{ checkpointId: checkpoint.checkpointId, stepId: step.stepId, sourceQuote: step.sourceQuote, status: "passed" as const }];
+      if (disposition?.disposition === "revise" && disposition.replacement) return [{ checkpointId: checkpoint.checkpointId, stepId: step.stepId, sourceQuote: step.sourceQuote, status: "revised" as const, replacement: disposition.replacement.replacement }];
+      if ((answer.decision === "approve" || answer.decision === "revise") && !answer.stepDispositions.some(({ disposition: value }) => value !== null)) {
+        return [{ checkpointId: checkpoint.checkpointId, stepId: step.stepId, sourceQuote: step.sourceQuote, status: answer.decision === "approve" ? "passed" as const : "revised" as const, ...(answer.decision === "revise" && answer.replacement ? { replacement: answer.replacement.replacement } : {}) }];
+      }
+      return [];
+    });
   });
 }
 

@@ -89,8 +89,7 @@ export function renderCheckpoint(container: HTMLElement, view: ReviewView, speec
   }
   container.append(header);
   if (view.message) container.append(element("p", "message message--warning", view.message));
-  if (view.session.phase === "orient" && quickReview) renderQuickDisposition(container, view);
-  if (view.session.phase === "orient" && !quickReview) renderOrient(container, view);
+  if (view.session.phase === "orient") renderOrient(container, view);
   if (view.session.phase === "learn") renderLearn(container, view);
   if (view.session.phase === "explain_back") renderExplain(container, view);
   if (view.session.phase === "decide") renderDecision(container, view);
@@ -212,9 +211,7 @@ function renderLearn(container: HTMLElement, view: ReviewView): void {
     learningReveal(view.step.explanation, view.step.whyItMatters),
   );
   if (view.step.priorReview) container.append(priorReviewCard(view.step.priorReview));
-  container.append(view.checkpoint.reviewMode === "disposition"
-    ? quickDispositionToolbar()
-    : actionButton("Continue to the next step", "advance", "primary"));
+  renderStepDispositionControls(container, view);
 }
 
 function priorReviewCard(prior: NonNullable<LearningStep["priorReview"]>): HTMLElement {
@@ -253,8 +250,43 @@ function renderExplain(container: HTMLElement, view: ReviewView): void {
     textarea,
     draftStatus(),
   );
-  renderDecisionControls(container, view, "save-explanation-decision");
+  container.append(actionButton("Save reflection and continue", "save-explanation", "primary"));
   textarea.focus();
+}
+
+function renderStepDispositionControls(container: HTMLElement, view: ReviewView): void {
+  const toolbar = element("div", "decision-toolbar");
+  const pass = actionButton("✓ Looks right / PASS", "step-disposition", "success");
+  pass.dataset.value = "pass";
+  const revise = actionButton(view.revisionEditorOpen ? "Close revision" : "✎ Revise", view.revisionEditorOpen ? "hide-revision" : "show-revision", "secondary");
+  toolbar.append(pass, revise);
+  container.append(toolbar);
+  if (!view.revisionEditorOpen) {
+    container.append(element("p", "fine-print", "PASS records this exact learning passage as correct for this review."));
+    return;
+  }
+  const saved = view.session.answers[view.checkpoint.checkpointId].stepDispositions.find(({ stepId }) => stepId === view.step.stepId);
+  const original = element("p", "replacement-original", `Original passage (locked): ${view.step.sourceQuote}`);
+  original.id = "replacement-original";
+  const replacementLabel = element("label", "field-label", "Desired replacement for this passage");
+  replacementLabel.htmlFor = "replacement-text";
+  const replacementText = document.createElement("textarea");
+  replacementText.id = "replacement-text";
+  replacementText.rows = 4;
+  replacementText.placeholder = "Write the complete replacement text for the locked passage.";
+  replacementText.value = saved?.replacement?.replacement ?? view.step.priorReview?.replacement ?? "";
+  replacementLabel.append(replacementText);
+  const rationaleLabel = element("label", "field-label", "Optional rationale");
+  rationaleLabel.htmlFor = "replacement-rationale";
+  const rationale = document.createElement("textarea");
+  rationale.id = "replacement-rationale";
+  rationale.rows = 3;
+  rationale.placeholder = "Why would this replacement help?";
+  rationale.value = saved?.replacement?.rationale ?? (view.step.priorReview?.disposition === "revise" ? view.step.priorReview.note : "");
+  rationaleLabel.append(rationale);
+  const save = actionButton("Save Revise disposition", "step-disposition", "primary");
+  save.dataset.value = "revise";
+  container.append(original, replacementLabel, rationaleLabel, draftStatus(), save);
 }
 
 function learningRecap(checkpoint: ReviewCheckpoint): HTMLElement {

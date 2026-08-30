@@ -12,8 +12,15 @@ export function collectReplacementRequests(
   session: Pick<ReviewSession, "answers">,
 ): readonly RevisionPromptChange[] {
   return checkpointSet.checkpoints.flatMap((checkpoint) => {
-    const replacement = session.answers[checkpoint.checkpointId]?.replacement;
-    return replacement ? [{ checkpointId: checkpoint.checkpointId, checkpointTitle: checkpoint.title, replacement }] : [];
+    const answer = session.answers[checkpoint.checkpointId];
+    const replacements = answer?.replacements?.length
+      ? answer.replacements
+      : answer?.replacement ? [answer.replacement] : [];
+    return replacements.map((replacement) => ({
+      checkpointId: checkpoint.checkpointId,
+      checkpointTitle: checkpoint.title,
+      replacement,
+    }));
   });
 }
 

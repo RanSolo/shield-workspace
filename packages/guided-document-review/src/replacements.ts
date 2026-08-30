@@ -4,7 +4,15 @@ export function applyConfirmedReplacements(
   sourceText: string,
   replacements: readonly ReplacementRequest[],
 ): string {
+  const originals = new Set<string>();
   const located = replacements.map((replacement) => {
+    if (!replacement.original.trim() || !replacement.replacement.trim() || replacement.replacement === replacement.original) {
+      throw new TypeError("Confirmed replacements must contain changed, non-empty text.");
+    }
+    if (originals.has(replacement.original)) {
+      throw new TypeError("Confirmed replacements must not repeat an original passage.");
+    }
+    originals.add(replacement.original);
     const start = sourceText.indexOf(replacement.original);
     if (start < 0 || sourceText.indexOf(replacement.original, start + 1) >= 0) {
       throw new TypeError(`Replacement original must occur exactly once: ${replacement.original}`);

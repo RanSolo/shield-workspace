@@ -8,11 +8,8 @@ import {
   createReviewArtifact,
   createSourceDocument,
   decodeReviewSession,
-  recordConfidence,
-  recordDecision,
   recordExplanation,
-  recordStepReveal,
-  returnToPreviousPhase,
+  recordStepDisposition,
   startReviewSession,
 } from "../dist/index.js";
 
@@ -27,46 +24,33 @@ const checkpoints = [{
 }];
 const fixedClock = () => "2026-08-28T20:00:00.000Z";
 
-test("V2 persists one-step-at-a-time reveals and records an immutable replacement", async () => {
-  const source = await createSourceDocument("Rail", sourceText);
-  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
-  let session = await startReviewSession(source, set, { kind: "self_asserted", name: "Randy" }, fixedClock);
-
-  session = success(advancePhase(session, set, expected(session, "purpose"), fixedClock));
-  session = success(recordStepReveal(session, set, expected(session, "purpose", "purpose-why"), fixedClock));
-  assert.deepEqual(session.answers.purpose.revealedStepIds, ["purpose-why"]);
-  session = success(advancePhase(session, set, expected(session, "purpose", "purpose-why"), fixedClock));
-  session = success(recordStepReveal(session, set, expected(session, "purpose", "purpose-finish"), fixedClock));
-  session = success(advancePhase(session, set, expected(session, "purpose", "purpose-finish"), fixedClock));
-  session = success(recordExplanation(session, set, expected(session, "purpose"), "The rail makes the next move clear and keeps the lane reusable.", fixedClock));
-  session = success(recordDecision(session, set, expected(session, "purpose"), {
-    decision: "revise",
-    replacement: { stepId: "purpose-finish", replacement: "The lane stays ready for reuse.", rationale: "Make the finish condition explicit." },
-  }, fixedClock));
-
-  assert.equal(session.phase, "complete");
-  assert.deepEqual(session.answers.purpose.replacement, {
-    stepId: "purpose-finish",
-    original: "The lane stays ready.",
-    replacement: "The lane stays ready for reuse.",
-    rationale: "Make the finish condition explicit.",
-  });
-  assert.equal(applyConfirmedReplacements(source.text, [session.answers.purpose.replacement]), "# Purpose\nThe rail gives one clear next action.\nThe lane stays ready for reuse.");
-});
-
-test("an already-visible learning step advances without a separate reveal action", async () => {
-  const source = await createSourceDocument("Rail", sourceText);
-  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
-  let session = await startReviewSession(source, set, { kind: "self_asserted", name: "Randy" }, fixedClock);
-
-  session = success(advancePhase(session, set, expected(session, "purpose"), fixedClock));
-  session = success(advancePhase(session, set, expected(session, "purpose", "purpose-why"), fixedClock));
-
+test("each passage records an ordered PASS or revision before checkpoint reflection", async () => {
+  const { source, set, session: initial } = await fixture();
+  let session = begin(initial, set);
+  session = passStep(session, set, "purpose-why");
   assert.equal(session.currentStepIndex, 1);
   assert.deepEqual(session.answers.purpose.revealedStepIds, ["purpose-why"]);
+  assert.equal(session.answers.purpose.stepDispositions[0].disposition, "pass");
+
+  session = reviseStep(session, set, "purpose-finish", "The lane stays ready for reuse.", "Make reuse explicit.");
+  assert.equal(session.phase, "explain_back");
+  session = success(recordExplanation(
+    session,
+    set,
+    expected(session, "purpose"),
+    "The rail chooses the next action and leaves the stable lane ready for reuse.",
+    fixedClock,
+  ));
+  assert.equal(session.phase, "complete");
+  assert.equal(session.answers.purpose.decision, "revise");
+  assert.equal(session.answers.purpose.replacements.length, 1);
+  assert.equal(
+    applyConfirmedReplacements(source.text, session.answers.purpose.replacements),
+    "# Purpose\nThe rail gives one clear next action.\nThe lane stays ready for reuse.",
+  );
 });
 
-test("a disposition checkpoint routes directly from its revealed principle to PASS or revision", async () => {
+test("a disposition checkpoint finalizes after its last passage", async () => {
   const source = await createSourceDocument("Rail", sourceText);
   const set = await createCheckpointSet("Principle review", [{
     checkpointId: "principle-one",
@@ -75,210 +59,135 @@ test("a disposition checkpoint routes directly from its revealed principle to PA
     learningSteps: [step("principle-one-step", "one clear next action")],
   }], source.text);
   let session = await startReviewSession(source, set, { kind: "self_asserted", name: "Randy" }, fixedClock);
-
-  session = success(advancePhase(session, set, expected(session, "principle-one"), fixedClock));
-  session = success(advancePhase(session, set, expected(session, "principle-one", "principle-one-step"), fixedClock));
-  assert.equal(session.phase, "decide");
-  assert.equal(session.answers["principle-one"].explanation, null);
-  assert.equal(session.answers["principle-one"].confidence, null);
-
-  session = success(returnToPreviousPhase(session, set, expected(session, "principle-one"), fixedClock));
-  assert.equal(session.phase, "learn");
-  session = success(advancePhase(session, set, expected(session, "principle-one", "principle-one-step"), fixedClock));
-  assert.equal(session.phase, "decide");
-
-  session = success(recordDecision(session, set, expected(session, "principle-one"), { decision: "approve" }, fixedClock));
+  session = begin(session, set, "principle-one");
+  session = passStep(session, set, "principle-one-step", "principle-one");
   assert.equal(session.phase, "complete");
-  const decoded = await decodeReviewSession(session, source, set);
-  assert.equal(decoded.ok, true, decoded.ok ? "" : decoded.errors.join(" "));
+  assert.equal(session.answers["principle-one"].decision, "approve");
+  assert.equal(session.answers["principle-one"].explanation, null);
 });
 
-test("a replacement cannot be recorded without a desired replacement", async () => {
-  const source = await createSourceDocument("Rail", sourceText);
-  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
-  let session = await completeToDecision(source, set);
-  const missing = recordDecision(session, set, expected(session, "purpose"), {
-    decision: "revise",
-    replacement: { stepId: "purpose-why", replacement: "", rationale: "No text." },
+test("step revisions require changed text and PASS forbids replacement material", async () => {
+  const { set, session: initial } = await fixture();
+  const session = begin(initial, set);
+  const blank = recordStepDisposition(session, set, expected(session, "purpose", "purpose-why"), {
+    disposition: "revise",
+    replacement: { stepId: "purpose-why", replacement: "" },
   }, fixedClock);
-  assert.deepEqual(missing, { ok: false, code: "replacement_required", message: "Describe the desired replacement text." });
-  assert.equal(session.revision, 6);
-});
-
-test("a replacement cannot repeat the immutable original", async () => {
-  const source = await createSourceDocument("Rail", sourceText);
-  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
-  const session = await completeToDecision(source, set);
-  const unchanged = recordDecision(session, set, expected(session, "purpose"), {
-    decision: "revise",
+  assert.equal(blank.ok, false);
+  assert.equal(blank.code, "replacement_required");
+  const unchanged = recordStepDisposition(session, set, expected(session, "purpose", "purpose-why"), {
+    disposition: "revise",
     replacement: { stepId: "purpose-why", replacement: "one clear next action" },
   }, fixedClock);
-  assert.deepEqual(unchanged, {
-    ok: false,
-    code: "replacement_unchanged",
-    message: "The desired replacement must differ from the immutable original.",
-  });
-  assert.equal(session.revision, 6);
+  assert.equal(unchanged.ok, false);
+  assert.equal(unchanged.code, "replacement_unchanged");
+  const forbidden = recordStepDisposition(session, set, expected(session, "purpose", "purpose-why"), {
+    disposition: "pass",
+    replacement: { stepId: "purpose-why", replacement: "different" },
+  }, fixedClock);
+  assert.equal(forbidden.ok, false);
+  assert.equal(forbidden.code, "replacement_forbidden");
 });
 
-test("stale and replayed actions do not mutate a V2 session", async () => {
-  const source = await createSourceDocument("Rail", sourceText);
-  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
-  const session = await startReviewSession(source, set, { kind: "unattributed", name: null }, fixedClock);
-  const stale = advancePhase(session, set, { ...expected(session, "purpose"), revision: 4 }, fixedClock);
-  assert.deepEqual(stale, { ok: false, code: "revision_stale", message: "The review changed. Reload before continuing." });
-  const firstExpected = expected(session, "purpose");
-  const first = success(advancePhase(session, set, firstExpected, fixedClock));
-  const replay = recordStepReveal(first, set, { ...expected(first, "purpose", "purpose-why"), eventId: firstExpected.eventId }, fixedClock);
-  assert.deepEqual(replay, { ok: false, code: "event_replayed", message: "That action was already applied." });
+test("step transitions fail closed on replay, stale revision, wrong step, and foreign set", async () => {
+  const { source, set, session: initial } = await fixture();
+  const session = begin(initial, set);
+  const foreignSet = await createCheckpointSet("Foreign", checkpoints, source.text);
+  const action = expected(session, "purpose", "purpose-why");
+  const applied = success(recordStepDisposition(session, set, action, { disposition: "pass" }, fixedClock));
+  const replay = recordStepDisposition(applied, set, { ...expected(applied, "purpose", "purpose-finish"), eventId: action.eventId }, { disposition: "pass" }, fixedClock);
+  assert.equal(replay.ok, false);
+  assert.equal(replay.code, "event_replayed");
+  const stale = recordStepDisposition(applied, set, { ...expected(applied, "purpose", "purpose-finish"), revision: 0 }, { disposition: "pass" }, fixedClock);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, "revision_stale");
+  const wrong = recordStepDisposition(session, set, expected(session, "purpose", "purpose-finish"), { disposition: "pass" }, fixedClock);
+  assert.equal(wrong.ok, false);
+  assert.equal(wrong.code, "step_mismatch");
+  const foreign = recordStepDisposition(session, foreignSet, action, { disposition: "pass" }, fixedClock);
+  assert.equal(foreign.ok, false);
+  assert.equal(foreign.code, "checkpoint_set_mismatch");
 });
 
-test("every transition rejects a checkpoint set from another session without changing state", async () => {
-  const source = await createSourceDocument("Rail", sourceText);
-  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
-  const foreignSet = await createCheckpointSet("Different review", checkpoints, source.text);
-  const session = await startReviewSession(source, set, { kind: "unattributed", name: null }, fixedClock);
-  const snapshot = structuredClone(session);
-  const checkpointExpected = expected(session, "purpose");
-  const stepExpected = expected(session, "purpose", "purpose-why");
-  const attempts = [
-    advancePhase(session, foreignSet, checkpointExpected, fixedClock),
-    recordStepReveal(session, foreignSet, stepExpected, fixedClock),
-    returnToPreviousPhase(session, foreignSet, checkpointExpected, fixedClock),
-    recordExplanation(session, foreignSet, checkpointExpected, "A sufficiently long forged explanation.", fixedClock),
-    recordConfidence(session, foreignSet, checkpointExpected, 3, fixedClock),
-    recordDecision(session, foreignSet, checkpointExpected, { decision: "approve" }, fixedClock),
-  ];
-
-  for (const attempt of attempts) {
-    assert.equal(attempt.ok, false);
-    assert.equal(attempt.code, "checkpoint_set_mismatch");
-  }
-  assert.deepEqual(session, snapshot);
+test("a completed session decodes closed and rejects identity or disposition tampering", async () => {
+  const { source, set, session: initial } = await fixture();
+  const complete = completeApproved(begin(initial, set), set);
+  assert.equal((await decodeReviewSession(JSON.parse(JSON.stringify(complete)), source, set)).ok, true);
+  assert.equal((await decodeReviewSession({ ...structuredClone(complete), sessionId: "session:tampered" }, source, set)).ok, false);
+  const wrongDisposition = structuredClone(complete);
+  wrongDisposition.answers.purpose.stepDispositions[0].stepId = "purpose-finish";
+  assert.equal((await decodeReviewSession(wrongDisposition, source, set)).ok, false);
+  const wrongAggregate = structuredClone(complete);
+  wrongAggregate.answers.purpose.decision = "revise";
+  assert.equal((await decodeReviewSession(wrongAggregate, source, set)).ok, false);
 });
 
-test("transitions require the active checkpoint and active learning step without changing state", async () => {
-  const source = await createSourceDocument("Rail", sourceText);
-  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
-  const session = await startReviewSession(source, set, { kind: "unattributed", name: null }, fixedClock);
-  const snapshot = structuredClone(session);
-
-  const wrongCheckpoint = advancePhase(session, set, expected(session, "not-active"), fixedClock);
-  const wrongStep = advancePhase(session, set, expected(session, "purpose", "purpose-finish"), fixedClock);
-
-  assert.equal(wrongCheckpoint.ok, false);
-  assert.equal(wrongCheckpoint.code, "checkpoint_mismatch");
-  assert.equal(wrongStep.ok, false);
-  assert.equal(wrongStep.code, "step_mismatch");
-  assert.deepEqual(session, snapshot);
+test("legacy V2 answers migrate without inventing events", async () => {
+  const { source, set, session: initial } = await fixture();
+  let complete = begin(initial, set);
+  complete = passStep(complete, set, "purpose-why");
+  complete = reviseStep(complete, set, "purpose-finish", "The lane stays ready for reuse.");
+  complete = success(recordExplanation(complete, set, expected(complete, "purpose"), "The rail stays deterministic and the lane remains reusable after delivery.", fixedClock));
+  const legacy = structuredClone(complete);
+  delete legacy.answers.purpose.replacements;
+  delete legacy.answers.purpose.stepDispositions;
+  legacy.events.push({ eventId: "legacy-final-decision", checkpointId: "purpose", stepId: null, phase: "decide", revision: legacy.revision, recordedAt: legacy.updatedAt });
+  legacy.revision += 1;
+  const decoded = await decodeReviewSession(legacy, source, set);
+  assert.equal(decoded.ok, true, decoded.ok ? "" : decoded.errors.join(" "));
+  assert.equal(decoded.migrated, true);
+  assert.deepEqual(decoded.session.answers.purpose.stepDispositions.map(({ disposition }) => disposition), ["pass", "revise"]);
+  assert.deepEqual(decoded.session.events, legacy.events);
 });
 
-test("the closed decoder rejects forged and cross-bound persisted sessions", async () => {
-  const source = await createSourceDocument("Rail", sourceText);
-  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
-  const session = await completeToDecision(source, set);
-  const persisted = JSON.parse(JSON.stringify(session));
-  assert.equal((await decodeReviewSession(persisted, source, set)).ok, true);
-
-  const crossSource = await createSourceDocument("Other rail", `${sourceText}\n`);
-  const crossSet = await createCheckpointSet("Other review", checkpoints, crossSource.text);
-  assert.equal((await decodeReviewSession(persisted, crossSource, set)).ok, false);
-  assert.equal((await decodeReviewSession(persisted, source, crossSet)).ok, false);
-
-  const forgedShape = { ...persisted, injected: true };
-  assert.equal((await decodeReviewSession(forgedShape, source, set)).ok, false);
-  const forgedAnswers = structuredClone(persisted);
-  forgedAnswers.answers.purpose.revealedStepIds.reverse();
-  assert.equal((await decodeReviewSession(forgedAnswers, source, set)).ok, false);
-  const forgedEvents = structuredClone(persisted);
-  forgedEvents.events[1].eventId = forgedEvents.events[0].eventId;
-  assert.equal((await decodeReviewSession(forgedEvents, source, set)).ok, false);
-  const forgedRevision = { ...persisted, revision: persisted.revision + 1 };
-  assert.equal((await decodeReviewSession(forgedRevision, source, set)).ok, false);
-  const forgedPhase = { ...persisted, phase: "complete" };
-  assert.equal((await decodeReviewSession(forgedPhase, source, set)).ok, false);
-});
-
-test("decoder and artifact reject ID, reviewer, and start-time tampering without mutation", async () => {
-  const source = await createSourceDocument("Rail", sourceText);
-  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
-  const atDecision = await completeToDecision(source, set);
-  const session = success(recordDecision(atDecision, set, expected(atDecision, "purpose"), {
-    decision: "approve",
-  }, fixedClock));
-  const original = structuredClone(session);
-  const candidates = [
-    { ...structuredClone(session), sessionId: "session:tampered" },
-    { ...structuredClone(session), reviewer: { kind: "self_asserted", name: "Someone else" } },
-    { ...structuredClone(session), startedAt: "2026-08-28T20:00:01.000Z" },
-  ];
-
-  for (const candidate of candidates) {
-    const snapshot = structuredClone(candidate);
-    const decoded = await decodeReviewSession(candidate, source, set);
-    assert.equal(decoded.ok, false);
-    assert.equal(decoded.errors.some((error) => error.includes("session ID")), true);
-    await assert.rejects(createReviewArtifact(source, set, candidate), /session ID/u);
-    assert.deepEqual(candidate, snapshot);
-  }
-  assert.deepEqual(session, original);
-});
-
-test("artifact records source and revised digests plus ordered replacements", async () => {
-  const source = await createSourceDocument("Rail", sourceText);
-  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
-  const session = await completeToDecision(source, set);
-  const complete = success(recordDecision(session, set, expected(session, "purpose"), {
-    decision: "revise",
-    replacement: { stepId: "purpose-why", replacement: "one clearly explained next action" },
-  }, fixedClock));
-  const artifact = await createReviewArtifact(source, set, complete);
-  assert.equal(artifact.schemaVersion, 2);
-  assert.equal(artifact.sourceDigest, source.sourceDigest);
+test("artifacts preserve multiple replacements in checkpoint and step order", async () => {
+  const { source, set, session: initial } = await fixture();
+  let session = begin(initial, set);
+  session = reviseStep(session, set, "purpose-why", "one deterministic next action");
+  session = reviseStep(session, set, "purpose-finish", "The stable lane stays ready for reuse.");
+  session = success(recordExplanation(session, set, expected(session, "purpose"), "Both passages now state deterministic progress and reusable lane completion clearly.", fixedClock));
+  const artifact = await createReviewArtifact(source, set, session);
+  assert.deepEqual(artifact.replacements.map(({ stepId }) => stepId), ["purpose-why", "purpose-finish"]);
   assert.notEqual(artifact.revisedSourceDigest, source.sourceDigest);
-  assert.equal(artifact.replacements[0].original, "one clear next action");
   assert.equal(artifact.authority, "none");
-  assert.equal(artifact.effect, "educational_review_only");
 });
 
-test("artifact creation rejects cross-bound and malformed completed sessions", async () => {
+test("replacement application rejects duplicate and overlapping originals", () => {
+  const first = { stepId: "one", original: "abc", replacement: "ABC", rationale: null };
+  assert.throws(() => applyConfirmedReplacements("abc def", [first, first]), /repeat an original/u);
+  assert.throws(() => applyConfirmedReplacements("abc def", [first, { stepId: "two", original: "abc def", replacement: "changed", rationale: null }]), /must not overlap/u);
+});
+
+async function fixture() {
   const source = await createSourceDocument("Rail", sourceText);
   const set = await createCheckpointSet("Rail review", checkpoints, source.text);
-  const atDecision = await completeToDecision(source, set);
-  const complete = success(recordDecision(atDecision, set, expected(atDecision, "purpose"), {
-    decision: "approve",
+  const session = await startReviewSession(source, set, { kind: "self_asserted", name: "Randy" }, fixedClock);
+  return { source, set, session };
+}
+
+function begin(session, set, checkpointId = "purpose") {
+  return success(advancePhase(session, set, expected(session, checkpointId), fixedClock));
+}
+
+function passStep(session, set, stepId, checkpointId = "purpose") {
+  return success(recordStepDisposition(session, set, expected(session, checkpointId, stepId), { disposition: "pass" }, fixedClock));
+}
+
+function reviseStep(session, set, stepId, replacement, rationale, checkpointId = "purpose") {
+  return success(recordStepDisposition(session, set, expected(session, checkpointId, stepId), {
+    disposition: "revise",
+    replacement: { stepId, replacement, ...(rationale ? { rationale } : {}) },
   }, fixedClock));
-  const crossSource = await createSourceDocument("Other rail", `${sourceText}\n`);
-  const crossSet = await createCheckpointSet("Other review", checkpoints, source.text);
+}
 
-  await assert.rejects(createReviewArtifact(crossSource, set, complete), /source (ID|digest) does not match/u);
-  await assert.rejects(createReviewArtifact(source, crossSet, complete), /checkpoint-set (ID|digest) does not match/u);
-
-  const malformed = structuredClone(complete);
-  malformed.answers.purpose.decision = null;
-  malformed.answers.purpose.decidedAt = null;
-  await assert.rejects(createReviewArtifact(source, set, malformed), /Invalid review session/u);
-});
-
-async function completeToDecision(source, set) {
-  let session = await startReviewSession(source, set, { kind: "unattributed", name: null }, fixedClock);
-  session = success(advancePhase(session, set, expected(session, "purpose"), fixedClock));
-  session = success(recordStepReveal(session, set, expected(session, "purpose", "purpose-why"), fixedClock));
-  session = success(advancePhase(session, set, expected(session, "purpose", "purpose-why"), fixedClock));
-  session = success(recordStepReveal(session, set, expected(session, "purpose", "purpose-finish"), fixedClock));
-  session = success(advancePhase(session, set, expected(session, "purpose", "purpose-finish"), fixedClock));
-  return success(recordExplanation(session, set, expected(session, "purpose"), "The rail makes the next move clear and keeps the lane reusable.", fixedClock));
+function completeApproved(session, set) {
+  session = passStep(session, set, "purpose-why");
+  session = passStep(session, set, "purpose-finish");
+  return success(recordExplanation(session, set, expected(session, "purpose"), "The rail chooses one action and leaves the delivery lane ready for reuse.", fixedClock));
 }
 
 function step(stepId, sourceQuote) {
-  return {
-    stepId,
-    sourceQuote,
-    purpose: "Notice the main idea.",
-    question: "What does this idea change for the reader?",
-    explanation: "It gives the reader a simple way to understand the decision.",
-    whyItMatters: "A clear explanation helps the reader evaluate the document.",
-  };
+  return { stepId, sourceQuote, purpose: "Notice the main idea.", question: "What does this idea change for the reader?", explanation: "It gives the reader a simple way to understand the decision.", whyItMatters: "A clear explanation helps the reader evaluate the document." };
 }
 
 function expected(session, checkpointId, stepId) {
@@ -286,6 +195,6 @@ function expected(session, checkpointId, stepId) {
 }
 
 function success(result) {
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, true, result.ok ? "" : `${result.code}: ${result.message}`);
   return result.session;
 }

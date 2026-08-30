@@ -21,14 +21,31 @@ export interface ReplacementRequestInput {
   readonly rationale?: string;
 }
 
+export type StepDisposition = "pass" | "revise";
+
+export interface StepDispositionRecord {
+  readonly stepId: string;
+  readonly disposition: StepDisposition | null;
+  readonly replacement: ReplacementRequest | null;
+  readonly decidedAt: string | null;
+}
+
 export interface CheckpointAnswer {
   readonly checkpointId: string;
   readonly revealedStepIds: readonly string[];
   readonly explanation: string | null;
   readonly confidence: 1 | 2 | 3 | 4 | 5 | null;
   readonly decision: ReviewDecision | null;
+  /** The legacy checkpoint-level replacement. New sessions use replacements. */
   readonly replacement: ReplacementRequest | null;
+  readonly replacements: readonly ReplacementRequest[];
+  readonly stepDispositions: readonly StepDispositionRecord[];
   readonly decidedAt: string | null;
+}
+
+export interface StepDispositionInput {
+  readonly disposition: StepDisposition;
+  readonly replacement?: ReplacementRequestInput;
 }
 
 export interface ReviewDispositionInput {
@@ -113,6 +130,13 @@ export async function startReviewSession(
     confidence: null,
     decision: null,
     replacement: null,
+    replacements: [],
+    stepDispositions: checkpoint.learningSteps.map(({ stepId }) => ({
+      stepId,
+      disposition: null,
+      replacement: null,
+      decidedAt: null,
+    })),
     decidedAt: null,
   }]));
   return {
@@ -143,23 +167,71 @@ export function advancePhase(
   const check = checkTransition(session, checkpointSet, expected, undefined, session.phase === "learn");
   if (check) return check;
   if (session.phase === "orient") return changed(session, expected, { phase: "learn" }, clock);
-  if (session.phase !== "learn") return invalid("phase_complete", "This checkpoint needs a decision before it can advance.");
-  const step = activeStep(checkpointSet, session);
-  if (!step || expected.stepId !== step.stepId) return invalid("step_mismatch", "That learning step is not active.");
-  const answer = session.answers[expected.checkpointId];
-  const reveal = answer.revealedStepIds.includes(step.stepId) ? {} : {
-    answers: updateAnswer(session, expected.checkpointId, {
-      revealedStepIds: [...answer.revealedStepIds, step.stepId],
-    }),
-  };
-  if (session.currentStepIndex < checkpointSet.checkpoints[session.currentCheckpointIndex].learningSteps.length - 1) {
-    return changed(session, expected, { ...reveal, currentStepIndex: session.currentStepIndex + 1 }, clock);
-  }
+  return invalid("step_disposition_required", "Choose Looks right or Revise for the active learning passage.");
+}
+
+export function recordStepDisposition(
+  session: ReviewSession,
+  checkpointSet: CheckpointSet,
+  expected: ExpectedTransition,
+  input: StepDispositionInput,
+  clock: Clock,
+): SessionResult {
+  const check = checkTransition(session, checkpointSet, expected, "learn", true);
+  if (check) return check;
   const checkpoint = checkpointSet.checkpoints[session.currentCheckpointIndex];
-  return changed(session, expected, {
-    ...reveal,
-    phase: checkpoint.reviewMode === "disposition" ? "decide" : "explain_back",
-  }, clock);
+  const step = activeStep(checkpointSet, session);
+  const answer = session.answers[expected.checkpointId];
+  if (!checkpoint || !step || !answer || expected.stepId !== step.stepId) {
+    return invalid("step_mismatch", "That learning step is not active.");
+  }
+  if (answer.revealedStepIds.length !== session.currentStepIndex ||
+      answer.stepDispositions.some((entry, index) => index < session.currentStepIndex && entry.disposition === null) ||
+      answer.stepDispositions[session.currentStepIndex]?.disposition !== null) {
+    return invalid("step_order", "Learning passages must be disposed in their original order.");
+  }
+  if (input.disposition !== "pass" && input.disposition !== "revise") {
+    return invalid("disposition_invalid", "Choose PASS or Revise for the active learning passage.");
+  }
+  const replacement = input.replacement ? createReplacement(checkpointSet, session, input.replacement) : null;
+  if (replacement && !replacement.ok) return replacement;
+  if (input.disposition === "pass" && input.replacement) {
+    return invalid("replacement_forbidden", "PASS cannot include a replacement request.");
+  }
+  if (input.disposition === "revise" && !replacement) {
+    return invalid("replacement_required", "Provide a desired replacement before choosing Revise.");
+  }
+  const decidedAt = validTime(clock());
+  const disposition: StepDispositionRecord = {
+    stepId: step.stepId,
+    disposition: input.disposition,
+    replacement: replacement?.ok ? replacement.value : null,
+    decidedAt,
+  };
+  const stepDispositions = answer.stepDispositions.map((entry, index) =>
+    index === session.currentStepIndex ? disposition : entry,
+  );
+  const revealedStepIds = [...answer.revealedStepIds, step.stepId];
+  const finalStep = session.currentStepIndex === checkpoint.learningSteps.length - 1;
+  const revised = stepDispositions.filter((entry) => entry.disposition === "revise")
+    .map((entry) => entry.replacement)
+    .filter((entry): entry is ReplacementRequest => entry !== null);
+  const final = finalStep && checkpoint.reviewMode === "disposition";
+  return changedAt(session, expected, {
+    phase: final ? nextPhase(session, checkpointSet) : finalStep ? "explain_back" : "learn",
+    currentCheckpointIndex: final ? nextCheckpointIndex(session, checkpointSet) : session.currentCheckpointIndex,
+    currentStepIndex: final ? 0 : finalStep ? session.currentStepIndex : session.currentStepIndex + 1,
+    answers: updateAnswer(session, expected.checkpointId, {
+      revealedStepIds,
+      stepDispositions,
+      replacements: revised,
+      replacement: revised[0] ?? null,
+      ...(final ? {
+        decision: revised.length ? "revise" : "approve",
+        decidedAt,
+      } : {}),
+    }),
+  }, decidedAt);
 }
 
 export function recordStepReveal(
@@ -170,15 +242,8 @@ export function recordStepReveal(
 ): SessionResult {
   const check = checkTransition(session, checkpointSet, expected, "learn", true);
   if (check) return check;
-  const step = activeStep(checkpointSet, session);
-  if (!step || expected.stepId !== step.stepId) return invalid("step_mismatch", "That learning step is not active.");
-  const answer = session.answers[expected.checkpointId];
-  if (answer.revealedStepIds.includes(step.stepId)) return invalid("step_replayed", "That learning step is already revealed.");
-  return changed(session, expected, {
-    answers: updateAnswer(session, expected.checkpointId, {
-      revealedStepIds: [...answer.revealedStepIds, step.stepId],
-    }),
-  }, clock);
+  void clock;
+  return invalid("step_disposition_required", "A learning passage is revealed and disposed in one atomic transition.");
 }
 
 export function returnToPreviousPhase(
@@ -195,10 +260,7 @@ export function returnToPreviousPhase(
   if (session.phase === "orient") return invalid("phase_at_start", "This checkpoint is already at its first step.");
   if (session.phase === "learn") return changed(session, expected, { phase: "orient" }, clock);
   if (session.phase === "explain_back") {
-    return changed(session, expected, {
-      phase: "learn",
-      currentStepIndex: checkpointSet.checkpoints[session.currentCheckpointIndex].learningSteps.length - 1,
-    }, clock);
+    return changed(session, expected, { phase: "learn", currentStepIndex: checkpointSet.checkpoints[session.currentCheckpointIndex].learningSteps.length - 1 }, clock);
   }
   if (session.phase === "confidence") return changed(session, expected, { phase: "explain_back" }, clock);
   if (session.phase === "decide") {
@@ -220,10 +282,26 @@ export function recordExplanation(
   const check = checkTransition(session, checkpointSet, expected, "explain_back");
   if (check) return check;
   if (explanation.trim().length < 20) return invalid("explanation_short", "Explain the idea in at least 20 characters.");
-  return changed(session, expected, {
-    phase: "decide",
-    answers: updateAnswer(session, expected.checkpointId, { explanation: explanation.trim() }),
-  }, clock);
+  const checkpoint = checkpointSet.checkpoints[session.currentCheckpointIndex];
+  const answer = session.answers[expected.checkpointId];
+  if (!checkpoint || !answer || answer.stepDispositions.some((entry) => entry.disposition === null)) {
+    return invalid("step_disposition_required", "Dispose every learning passage before reflecting.");
+  }
+  const replacements = revisedReplacements(answer.stepDispositions);
+  const recordedAt = validTime(clock());
+  const final = session.currentCheckpointIndex === checkpointSet.checkpoints.length - 1;
+  return changedAt(session, expected, {
+    phase: final ? "complete" : "orient",
+    currentCheckpointIndex: final ? session.currentCheckpointIndex : session.currentCheckpointIndex + 1,
+    currentStepIndex: 0,
+    answers: updateAnswer(session, expected.checkpointId, {
+      explanation: explanation.trim(),
+      decision: replacements.length ? "revise" : "approve",
+      replacement: replacements[0] ?? null,
+      replacements,
+      decidedAt: recordedAt,
+    }),
+  }, recordedAt);
 }
 
 export function recordConfidence(
@@ -308,13 +386,37 @@ function activeStep(checkpointSet: CheckpointSet, session: ReviewSession) {
   return checkpointSet.checkpoints[session.currentCheckpointIndex]?.learningSteps[session.currentStepIndex];
 }
 
+function revisedReplacements(dispositions: readonly StepDispositionRecord[]): ReplacementRequest[] {
+  return dispositions.filter((entry) => entry.disposition === "revise")
+    .map((entry) => entry.replacement)
+    .filter((entry): entry is ReplacementRequest => entry !== null);
+}
+
+function nextPhase(session: ReviewSession, checkpointSet: CheckpointSet): ReviewPhase {
+  return session.currentCheckpointIndex === checkpointSet.checkpoints.length - 1 ? "complete" : "orient";
+}
+
+function nextCheckpointIndex(session: ReviewSession, checkpointSet: CheckpointSet): number {
+  return session.currentCheckpointIndex === checkpointSet.checkpoints.length - 1
+    ? session.currentCheckpointIndex
+    : session.currentCheckpointIndex + 1;
+}
+
 function changed(
   session: ReviewSession,
   expected: ExpectedTransition,
   changes: Partial<ReviewSession>,
   clock: Clock,
 ): SessionResult {
-  const recordedAt = validTime(clock());
+  return changedAt(session, expected, changes, validTime(clock()));
+}
+
+function changedAt(
+  session: ReviewSession,
+  expected: ExpectedTransition,
+  changes: Partial<ReviewSession>,
+  recordedAt: string,
+): SessionResult {
   const event: ReviewEvent = { ...expected, stepId: expected.stepId ?? null, recordedAt };
   return { ok: true, session: {
     ...session,
