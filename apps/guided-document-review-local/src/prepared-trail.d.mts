@@ -20,3 +20,6 @@ export type PreparedTrailPacket =
 
 export function decodePreparedTrailResponse(value: unknown, expectedSlug: string): PreparedTrailPacket;
 export function isPreparedReviewBinding(value: unknown): value is PreparedReviewBinding;
+export function reviewerIdentityFromOperatorEntry(value: unknown):
+  | Readonly<{ kind: "self_asserted"; name: string }>
+  | Readonly<{ kind: "unattributed"; name: null }>;

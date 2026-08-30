@@ -17,6 +17,13 @@ export function isPreparedReviewBinding(value) {
     /^[0-9a-f]{40}$/u.test(value.headRevision ?? "");
 }
 
+export function reviewerIdentityFromOperatorEntry(value) {
+  const name = typeof value === "string" ? value.trim() : "";
+  return name
+    ? { kind: "self_asserted", name }
+    : { kind: "unattributed", name: null };
+}
+
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

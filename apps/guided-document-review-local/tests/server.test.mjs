@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import { promisify } from "node:util";
 import { loadPreparedTrail, resolvePublicPath } from "../scripts/server.mjs";
 import {
   compilePullRequestReview,
@@ -10,6 +12,8 @@ import {
   renderPullRequestReviewMarkdown,
   sha256Text,
 } from "@shield/guided-pr-review";
+
+const executeFile = promisify(execFile);
 
 test("local server rejects traversal paths", () => {
   const root = "/tmp/document-trail/dist";
@@ -41,6 +45,23 @@ test("prepared trail manifest loads one closed local packet", async () => {
   }
 });
 
+test("every shipped schema-1 manifest loads only tracked repository-relative sources", async () => {
+  const reviewKits = new URL("../review-kits/", import.meta.url);
+  const workspace = new URL("../../../", import.meta.url);
+  for (const name of (await readdir(reviewKits)).filter((item) => item.endsWith(".trail.json"))) {
+    const manifest = JSON.parse(await readFile(new URL(name, reviewKits), "utf8"));
+    if (manifest.schemaVersion !== 1) continue;
+    for (const source of [manifest.documentPath, manifest.checkpointPath]) {
+      assert.equal(isAbsolute(source), false, `${name} must use repository-relative sources`);
+      const path = resolve(reviewKits.pathname, source);
+      assert.ok(path.startsWith(resolve(reviewKits.pathname)));
+      await readFile(path);
+      await executeFile("git", ["ls-files", "--error-unmatch", relative(workspace.pathname, path)], { cwd: workspace.pathname });
+    }
+    assert.equal((await loadPreparedTrail(reviewKits.pathname, manifest.slug)).schemaVersion, 1);
+  }
+});
+
 test("prepared PR trail binds projections to the packet and blocks a stale live head", async () => {
   const root = await mkdtemp(join(tmpdir(), "document-trail-bound-"));
   try {
@@ -61,8 +82,12 @@ test("prepared PR trail binds projections to the packet and blocks a stale live 
     }, [{
       criterionId: "issue-12-ac-1",
       explanation: "The observed file is the bounded implementation.",
-      anchors: [{ kind: "file", path: "index.ts" }],
-      openGaps: [],
+      evidence: {
+        commitment: { state: "available", anchors: [{ kind: "pull_request", field: "head_revision" }] },
+        changedFileOrDiff: { state: "available", anchors: [{ kind: "file", path: "index.ts" }] },
+        reportedValidation: { state: "unavailable", reason: "No validation was observed." },
+        openGap: { state: "available", items: [] }
+      },
       reviewQuestion: "Does the file satisfy the criterion?",
     }]);
     const documentText = renderPullRequestReviewMarkdown(packet);

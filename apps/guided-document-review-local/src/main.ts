@@ -33,6 +33,7 @@ import { sampleCheckpoints, sampleDocument } from "./sample-review.js";
 import { createSpeechControls } from "./speech.js";
 import {
   decodePreparedTrailResponse,
+  reviewerIdentityFromOperatorEntry,
   type PreparedReviewBinding,
 } from "./prepared-trail.mjs";
 
@@ -100,7 +101,7 @@ async function loadPreparedTrailFromLocation(): Promise<void> {
       packet.title,
       packet.documentText,
       packet.checkpoints,
-      packet.reviewerName,
+      "",
       packet.schemaVersion === 2 ? packet.reviewBinding : null,
       packet.schemaVersion === 2 ? packet.slug : null,
     );
@@ -139,7 +140,7 @@ async function beginReview(title: string, text: string, checkpoints: unknown, na
   if (preparedReview && preparedTrailSlug) await assertPreparedReviewCurrent(preparedTrailSlug, preparedReview);
   const source = await createSourceDocument(title, text);
   const checkpointSet = await createCheckpointSet(`${title} learning trail`, checkpoints, text);
-  const reviewer = name ? { kind: "self_asserted" as const, name } : { kind: "unattributed" as const, name: null };
+  const reviewer = reviewerIdentityFromOperatorEntry(name);
   const saved = await readDraft(source, checkpointSet, reviewer);
   const session = saved ?? await startReviewSession(source, checkpointSet, reviewer, clock);
   state = { source, checkpointSet, session, message: saved ? "Your saved V2 trail was restored." : null, preparedReview, preparedTrailSlug };
@@ -485,7 +486,7 @@ async function readDraft(
     try {
       const decoded = await decodeReviewSession(JSON.parse(raw), source, set);
       if (decoded.ok) {
-        exact = withoutConfidenceStop(decoded.session);
+        exact = Object.freeze({ ...withoutConfidenceStop(decoded.session), reviewer });
         if ("migrated" in decoded && decoded.migrated) {
           localStorage.setItem(storageKey(source, set), JSON.stringify(exact));
         }

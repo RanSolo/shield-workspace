@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodePreparedTrailResponse } from "../src/prepared-trail.mjs";
+import { decodePreparedTrailResponse, reviewerIdentityFromOperatorEntry } from "../src/prepared-trail.mjs";
 
 const legacy = {
   schemaVersion: 1,
@@ -26,4 +26,11 @@ test("prepared-trail client accepts legacy schema 1 and requires binding for sch
     decodePreparedTrailResponse({ ...legacy, schemaVersion: 2, reviewBinding: binding }, legacy.slug).reviewBinding,
     binding,
   );
+});
+
+test("prepared manifest reviewerName is presentation-only and operator assertion is explicit", () => {
+  const prepared = decodePreparedTrailResponse(legacy, legacy.slug);
+  assert.equal(prepared.reviewerName, "Randy");
+  assert.deepEqual(reviewerIdentityFromOperatorEntry(""), { kind: "unattributed", name: null });
+  assert.deepEqual(reviewerIdentityFromOperatorEntry("  Randy  "), { kind: "self_asserted", name: "Randy" });
 });

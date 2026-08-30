@@ -25,7 +25,9 @@ export interface ValidationObservation {
   readonly status: "passed" | "failed" | "pending" | "unknown";
   readonly conclusion: string | null;
   readonly details: string | null;
-  readonly headRevision: string;
+  readonly verification: "github_check" | "unverified";
+  readonly revisionBinding: "observed_pr_head" | "claim_exact_sha" | "none";
+  readonly headRevision: string | null;
 }
 
 export interface PullRequestSnapshot {
@@ -90,23 +92,46 @@ export type EvidenceAnchor =
       provenance: EvidenceProvenance;
     }>;
 
+export type EvidenceSlotInput =
+  | Readonly<{ state: "available"; anchors: readonly EvidenceAnchorInput[] }>
+  | Readonly<{ state: "unavailable"; reason: string }>;
+
+export type OpenGapSlotInput =
+  | Readonly<{ state: "available"; items: readonly string[] }>
+  | Readonly<{ state: "unavailable"; reason: string }>;
+
 export interface CriterionCoverageInput {
   readonly criterionId: string;
   readonly explanation: string;
-  readonly anchors: readonly EvidenceAnchorInput[];
-  readonly openGaps: readonly string[];
+  readonly evidence: Readonly<{
+    commitment: EvidenceSlotInput;
+    changedFileOrDiff: EvidenceSlotInput;
+    reportedValidation: EvidenceSlotInput;
+    openGap: OpenGapSlotInput;
+  }>;
   readonly reviewQuestion: string;
 }
+
+export type EvidenceSlot =
+  | Readonly<{ state: "available"; anchors: readonly EvidenceAnchor[] }>
+  | Readonly<{ state: "unavailable"; reason: string }>;
+
+export type OpenGapSlot =
+  | Readonly<{ state: "available"; items: readonly string[] }>
+  | Readonly<{ state: "unavailable"; reason: string }>;
 
 export interface CriterionReview {
   readonly criterion: AcceptanceCriterion;
   readonly guidance: Readonly<{
     explanation: string;
-    openGaps: readonly string[];
     reviewQuestion: string;
   }>;
-  readonly anchors: readonly EvidenceAnchor[];
-  readonly files: readonly PullRequestFile[];
+  readonly evidence: Readonly<{
+    commitment: EvidenceSlot;
+    changedFileOrDiff: EvidenceSlot;
+    reportedValidation: EvidenceSlot;
+    openGap: OpenGapSlot;
+  }>;
 }
 
 export interface PullRequestReviewPacket {
@@ -174,23 +199,42 @@ export async function compilePullRequestReview(
     suppliedIds.add(entry.criterionId);
     requireText(entry.explanation, `${entry.criterionId} explanation`);
     requireText(entry.reviewQuestion, `${entry.criterionId} review question`);
-    if (!Array.isArray(entry.anchors) || entry.anchors.length === 0) {
-      throw new TypeError(`${entry.criterionId} requires typed evidence anchors.`);
-    }
-    const anchors = entry.anchors.map((anchor) => resolveAnchor(anchor, snapshot, filesByPath, issuesByNumber, validationsById, entry.criterionId));
+    if (!entry.evidence || typeof entry.evidence !== "object") throw new TypeError(`${entry.criterionId} requires canonical evidence slots.`);
+    const resolve = (slot: EvidenceSlotInput, label: string, allowed: readonly EvidenceAnchorInput["kind"][]): EvidenceSlot => {
+      if (!slot || slot.state === "unavailable") {
+        requireText(slot?.reason, `${entry.criterionId} ${label} unavailable reason`);
+        return Object.freeze({ state: "unavailable" as const, reason: slot.reason.trim() });
+      }
+      if (slot.state !== "available" || !Array.isArray(slot.anchors) || slot.anchors.length === 0) {
+        throw new TypeError(`${entry.criterionId} ${label} requires typed evidence anchors or unavailable-with-reason.`);
+      }
+      const anchors = slot.anchors.map((anchor) => {
+        if (!allowed.includes(anchor.kind)) throw new TypeError(`${entry.criterionId} ${label} contains an invalid anchor kind.`);
+        return resolveAnchor(anchor, snapshot, filesByPath, issuesByNumber, validationsById, entry.criterionId);
+      });
+      return Object.freeze({ state: "available" as const, anchors: Object.freeze(anchors) });
+    };
+    const openGap = entry.evidence.openGap;
+    let openGapSlot: OpenGapSlot;
+    if (!openGap || openGap.state === "unavailable") {
+      requireText(openGap?.reason, `${entry.criterionId} open-gap unavailable reason`);
+      openGapSlot = Object.freeze({ state: "unavailable", reason: openGap.reason.trim() });
+    } else if (openGap.state === "available" && Array.isArray(openGap.items)) {
+      openGapSlot = Object.freeze({ state: "available", items: Object.freeze(openGap.items.map((item) => item.trim()).filter(Boolean)) });
+    } else throw new TypeError(`${entry.criterionId} open-gap slot is malformed.`);
     const criterion = criteria.find((candidate) => candidate.criterionId === entry.criterionId)!;
-    const files = anchors
-      .filter((anchor): anchor is Extract<EvidenceAnchor, { kind: "file" }> => anchor.kind === "file")
-      .map((anchor) => anchor.file);
     return Object.freeze({
       criterion,
       guidance: Object.freeze({
         explanation: entry.explanation.trim(),
-        openGaps: Object.freeze(entry.openGaps.map((item) => item.trim()).filter(Boolean)),
         reviewQuestion: entry.reviewQuestion.trim(),
       }),
-      anchors: Object.freeze(anchors),
-      files: Object.freeze(files.map((file) => Object.freeze({ ...file }))),
+      evidence: Object.freeze({
+        commitment: resolve(entry.evidence.commitment, "commitment", ["pull_request", "issue", "pr_body"]),
+        changedFileOrDiff: resolve(entry.evidence.changedFileOrDiff, "changed-file/diff", ["file"]),
+        reportedValidation: resolve(entry.evidence.reportedValidation, "reported-validation", ["validation"]),
+        openGap: openGapSlot,
+      }),
     });
   });
 
@@ -272,23 +316,27 @@ export function renderPullRequestReviewMarkdown(packet: PullRequestReviewPacket)
       "",
       quote,
       "",
-      "### Authored guidance",
+      "### Commitment",
       "",
-      review.guidance.explanation,
+      ...formatEvidenceSlot(review.evidence.commitment),
       "",
-      "### Observed evidence anchors",
+      "### Changed-file / diff evidence",
       "",
-      ...review.anchors.map(formatAnchor),
+      ...formatEvidenceSlot(review.evidence.changedFileOrDiff),
       "",
-      "### Changed-file evidence",
+      "### Reported validation",
       "",
-      ...(review.files.length
-        ? review.files.map((file) => `- \`${file.path}\` — +${file.additions} / -${file.deletions} (${file.changeType.toLowerCase()})`)
-        : ["- No changed file is claimed as direct evidence for this criterion."]),
+      ...formatEvidenceSlot(review.evidence.reportedValidation),
       "",
       "### Open gaps",
       "",
-      ...(review.guidance.openGaps.length ? review.guidance.openGaps.map((item) => `- ${item}`) : ["- None identified in the authored guidance."]),
+      ...(review.evidence.openGap.state === "available"
+        ? (review.evidence.openGap.items.length ? review.evidence.openGap.items.map((item) => `- ${item}`) : ["- None identified."])
+        : [`- Unavailable: ${review.evidence.openGap.reason}`]),
+      "",
+      "### Authored guidance",
+      "",
+      review.guidance.explanation,
       "",
       "### Review question",
       "",
@@ -369,6 +417,9 @@ function resolveAnchor(
   }
   const validation = validationsById.get(input.validationId);
   if (!validation) throw new TypeError(`${criterionId} references validation ${input.validationId} that was not observed.`);
+  if (validation.headRevision === null || validation.revisionBinding === "none") {
+    throw new TypeError(`${criterionId} references a revision-unbound validation.`);
+  }
   if (validation.headRevision !== snapshot.headRevision) throw new TypeError(`${criterionId} references validation for a different PR head.`);
   return Object.freeze({ kind: input.kind, validation: Object.freeze({ ...validation }), provenance: provenance("validation") });
 }
@@ -378,7 +429,11 @@ function formatAnchor(anchor: EvidenceAnchor): string {
   if (anchor.kind === "issue") return `- Issue #${anchor.provenance.issueNumber} field \`${anchor.field}\`: observed from the linked issue`;
   if (anchor.kind === "file") return `- File \`${anchor.file.path}\`: +${anchor.file.additions} / -${anchor.file.deletions} (${anchor.file.changeType.toLowerCase()}) at ${anchor.provenance.headRevision}`;
   if (anchor.kind === "pr_body") return `- PR-body excerpt: ${anchor.excerpt}`;
-  return `- Validation \`${anchor.validation.name}\`: ${anchor.validation.status} at ${anchor.validation.headRevision}`;
+  return `- Validation \`${anchor.validation.name}\`: ${anchor.validation.status} at ${anchor.validation.headRevision} (${anchor.validation.verification})`;
+}
+
+function formatEvidenceSlot(slot: EvidenceSlot): string[] {
+  return slot.state === "available" ? slot.anchors.map(formatAnchor) : [`- Unavailable: ${slot.reason}`];
 }
 
 function criterionQuote(index: number, text: string): string {
@@ -406,7 +461,20 @@ function validateSnapshot(snapshot: PullRequestSnapshot): void {
   for (const validation of snapshot.validations) {
     requireText(validation.validationId, "validation ID");
     requireText(validation.name, "validation name");
-    requireRevision(validation.headRevision, "validation head revision");
+    if (!["github_check", "unverified"].includes(validation.verification)) throw new TypeError("Invalid validation verification.");
+    if (!["observed_pr_head", "claim_exact_sha", "none"].includes(validation.revisionBinding)) throw new TypeError("Invalid validation revision binding.");
+    if (validation.verification === "github_check" && validation.revisionBinding !== "observed_pr_head") {
+      throw new TypeError("GitHub check validation must bind to the observed PR head.");
+    }
+    if (validation.verification === "unverified" && validation.revisionBinding === "observed_pr_head") {
+      throw new TypeError("Unverified validation cannot bind implicitly to the observed PR head.");
+    }
+    if (validation.headRevision === null) {
+      if (validation.revisionBinding !== "none") throw new TypeError("Revision-bound validation is missing its head revision.");
+    } else {
+      if (validation.revisionBinding === "none") throw new TypeError("Revision-unbound validation cannot carry a head revision.");
+      requireRevision(validation.headRevision, "validation head revision");
+    }
     if (validationIds.has(validation.validationId)) throw new TypeError(`Duplicate validation ${validation.validationId}.`);
     validationIds.add(validation.validationId);
   }

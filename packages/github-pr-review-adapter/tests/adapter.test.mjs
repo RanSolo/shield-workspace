@@ -1,47 +1,46 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  observeGitHubPullRequest,
-  parseGitHubPullRequestUrl,
-  readGitHubPullRequestHead,
-} from "../dist/index.js";
+import * as adapter from "../dist/index.js";
+const { observeGitHubPullRequest, parseGitHubPullRequestUrl, readGitHubPullRequestHead } = adapter;
 
-const head = "b".repeat(40);
-
-test("GitHub adapter parses PR URLs and performs only read commands", async () => {
-  const calls = [];
-  const run = async (args) => {
-    calls.push([...args]);
-    if (args[0] === "pr" && args.some((arg) => arg.includes("headRefOid"))) {
-      return JSON.stringify({
-        number: 13,
-        title: "Deliver the change",
-        body: "## Validation\n\nFocused tests passed.",
-        url: "https://github.com/example/repo/pull/13",
-        baseRefOid: "a".repeat(40),
-        headRefOid: head,
-        files: [{ path: "index.ts", additions: 2, deletions: 1, changeType: "MODIFIED" }],
-        closingIssuesReferences: [{ number: 12 }],
-        statusCheckRollup: [{ name: "checks", conclusion: "SUCCESS" }],
-      });
-    }
-    return JSON.stringify({ number: 12, title: "Issue", body: "- [ ] Works", url: "https://github.com/example/repo/issues/12", updatedAt: "2026-08-30T00:00:00Z" });
-  };
-  assert.deepEqual(parseGitHubPullRequestUrl("https://github.com/example/repo/pull/13"), { repository: "example/repo", number: 13 });
-  const snapshot = await observeGitHubPullRequest("https://github.com/example/repo/pull/13", { run, now: () => "2026-08-30T00:00:00Z" });
-  assert.equal(snapshot.headRevision, head);
-  assert.equal(snapshot.validations[0].headRevision, head);
-  assert.equal(calls.every((args) => args[0] === "pr" || args[0] === "issue"), true);
-  assert.equal(calls.some((args) => args.some((arg) => /comment|approve|merge|label|create|edit|close/u.test(arg))), false);
+const a = "a".repeat(40);
+const b = "b".repeat(40);
+const body = "## Validation\n\n- npm exec nx test guided-pr-review\n";
+const clientFor = (head) => ({
+  viewPullRequest: async () => ({
+    number: 13, title: "Deliver", body, url: "https://github.com/example/repo/pull/13",
+    baseRefOid: a, headRefOid: head, files: [], closingIssuesReferences: [{ number: 12 }],
+    statusCheckRollup: [{ name: "checks", conclusion: "SUCCESS" }],
+  }),
+  viewIssue: async () => ({ number: 12, title: "Issue", body: "- [ ] Works", url: "https://github.com/example/repo/issues/12", updatedAt: "2026-08-30T00:00:00Z" }),
+  readPullRequestHead: async () => ({ headRefOid: head }),
 });
 
-test("adapter reads a live head without writing", async () => {
-  const calls = [];
-  const live = await readGitHubPullRequestHead("example/repo", 13, {
-    run: async (args) => { calls.push([...args]); return JSON.stringify({ headRefOid: head }); },
-  });
-  assert.equal(live, head);
-  assert.deepEqual(calls[0].slice(0, 4), ["pr", "view", "13", "--repo"]);
+test("adapter observes PR, issue, and checks through semantic read client", async () => {
+  assert.equal("createGhCommandRunner" in adapter, false);
+  assert.deepEqual(parseGitHubPullRequestUrl("https://github.com/example/repo/pull/13"), { repository: "example/repo", number: 13 });
+  const snapshot = await observeGitHubPullRequest("https://github.com/example/repo/pull/13", { client: clientFor(b), now: () => "2026-08-30T00:00:00Z" });
+  assert.equal(snapshot.validations[0].verification, "github_check");
+  assert.equal(snapshot.validations[0].headRevision, b);
+  assert.equal(await readGitHubPullRequestHead("example/repo", 13, { client: clientFor(b) }), b);
+});
+
+test("unchanged PR-body validation remains unverified and revision-unbound across A to B", async () => {
+  const atA = await observeGitHubPullRequest({ repository: "example/repo", number: 13 }, { client: clientFor(a) });
+  const atB = await observeGitHubPullRequest({ repository: "example/repo", number: 13 }, { client: clientFor(b) });
+  for (const observed of [atA, atB]) {
+    const claim = observed.validations.find((item) => item.validationId === "pr-body-validation:1");
+    assert.deepEqual({ verification: claim.verification, revisionBinding: claim.revisionBinding, headRevision: claim.headRevision },
+      { verification: "unverified", revisionBinding: "none", headRevision: null });
+  }
+});
+
+test("PR-body claim binds only when it carries one validated exact SHA", async () => {
+  const client = clientFor(b);
+  client.viewPullRequest = async () => ({ ...(await clientFor(b).viewPullRequest()), body: `## Validation\n\n- validated exact SHA ${a}\n` });
+  const snapshot = await observeGitHubPullRequest({ repository: "example/repo", number: 13 }, { client });
+  assert.equal(snapshot.validations[1].revisionBinding, "claim_exact_sha");
+  assert.equal(snapshot.validations[1].headRevision, a);
 });
 
 test("adapter rejects non-GitHub and non-PR URLs", () => {

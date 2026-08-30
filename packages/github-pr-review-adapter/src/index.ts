@@ -1,5 +1,4 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { githubReadFields, runGitHubReadCommand } from "./github-read-runner.js";
 
 export interface GitHubPullRequestUrl {
   readonly repository: string;
@@ -19,7 +18,9 @@ export interface GitHubValidationObservation {
   readonly status: "passed" | "failed" | "pending" | "unknown";
   readonly conclusion: string | null;
   readonly details: string | null;
-  readonly headRevision: string;
+  readonly verification: "github_check" | "unverified";
+  readonly revisionBinding: "observed_pr_head" | "claim_exact_sha" | "none";
+  readonly headRevision: string | null;
 }
 
 export interface GitHubPullRequestObservation {
@@ -43,11 +44,11 @@ export interface GitHubPullRequestObservation {
   readonly observedAt: string;
 }
 
-export interface GitHubCommandRunner {
-  (args: readonly string[]): Promise<string>;
+export interface GitHubReadClient {
+  viewPullRequest(repository: string, number: number): Promise<unknown>;
+  viewIssue(repository: string, number: number): Promise<unknown>;
+  readPullRequestHead(repository: string, number: number): Promise<unknown>;
 }
-
-const executeFile = promisify(execFile);
 
 export function parseGitHubPullRequestUrl(value: string): GitHubPullRequestUrl {
   const url = new URL(value);
@@ -59,25 +60,29 @@ export function parseGitHubPullRequestUrl(value: string): GitHubPullRequestUrl {
   return { repository: `${match[1]}/${match[2]}`, number: Number(match[3]) };
 }
 
-export function createGhCommandRunner(): GitHubCommandRunner {
-  return async (args) => (await executeFile("gh", [...args], { maxBuffer: 10 * 1024 * 1024 })).stdout;
+function createGitHubReadClient(): GitHubReadClient {
+  return {
+    viewPullRequest: async (repository, number) => json(await runGitHubReadCommand([
+      "pr", "view", String(number), "--repo", repository, "--json", githubReadFields.pr,
+    ])),
+    viewIssue: async (repository, number) => json(await runGitHubReadCommand([
+      "issue", "view", String(number), "--repo", repository, "--json", githubReadFields.issue,
+    ])),
+    readPullRequestHead: async (repository, number) => json(await runGitHubReadCommand([
+      "pr", "view", String(number), "--repo", repository, "--json", githubReadFields.head,
+    ])),
+  };
 }
 
 export async function observeGitHubPullRequest(
   value: string | GitHubPullRequestUrl,
-  options: Readonly<{ run?: GitHubCommandRunner; now?: () => string }> = {},
+  options: Readonly<{ client?: GitHubReadClient; now?: () => string }> = {},
 ): Promise<GitHubPullRequestObservation> {
   const pullRequest = typeof value === "string" ? parseGitHubPullRequestUrl(value) : value;
-  const run = options.run ?? createGhCommandRunner();
-  const observed = await json<GitHubPrJson>(await run([
-    "pr", "view", String(pullRequest.number), "--repo", pullRequest.repository,
-    "--json", "number,title,body,url,baseRefOid,headRefOid,files,closingIssuesReferences,statusCheckRollup",
-  ]));
+  const client = options.client ?? createGitHubReadClient();
+  const observed = await asJson<GitHubPrJson>(await client.viewPullRequest(pullRequest.repository, pullRequest.number));
   const linkedIssues = await Promise.all((observed.closingIssuesReferences ?? []).map(async (reference) =>
-    json<GitHubIssueJson>(await run([
-      "issue", "view", String(reference.number), "--repo", pullRequest.repository,
-      "--json", "number,title,body,url,updatedAt",
-    ]))));
+    asJson<GitHubIssueJson>(await client.viewIssue(pullRequest.repository, reference.number))));
   const validations = [
     ...(observed.statusCheckRollup ?? []).map((check) => ({
     validationId: `check:${check.name ?? check.context ?? "unnamed"}`,
@@ -85,9 +90,11 @@ export async function observeGitHubPullRequest(
     status: checkStatus(check),
     conclusion: check.conclusion ?? null,
     details: check.detailsUrl ?? null,
+    verification: "github_check" as const,
+    revisionBinding: "observed_pr_head" as const,
     headRevision: observed.headRefOid,
     })),
-    ...reportedBodyValidations(observed.body, observed.headRefOid),
+    ...reportedBodyValidations(observed.body),
   ];
   return {
     schemaVersion: 1,
@@ -105,7 +112,7 @@ export async function observeGitHubPullRequest(
   };
 }
 
-function reportedBodyValidations(body: string, headRevision: string): GitHubValidationObservation[] {
+function reportedBodyValidations(body: string): GitHubValidationObservation[] {
   const section = body.match(/^##\s+Validation\s*$([\s\S]*?)(?=^##\s+|$(?![\s\S]))/imu)?.[1] ?? "";
   return [...section.matchAll(/^\s*-\s+(.+?)\s*$/gmu)].map((match, index) => ({
     validationId: `pr-body-validation:${index + 1}`,
@@ -113,19 +120,19 @@ function reportedBodyValidations(body: string, headRevision: string): GitHubVali
     status: "unknown" as const,
     conclusion: null,
     details: match[1],
-    headRevision,
+    verification: "unverified" as const,
+    revisionBinding: exactRevision(match[1]) ? "claim_exact_sha" as const : "none" as const,
+    headRevision: exactRevision(match[1]),
   }));
 }
 
 export async function readGitHubPullRequestHead(
   repository: string,
   number: number,
-  options: Readonly<{ run?: GitHubCommandRunner }> = {},
+  options: Readonly<{ client?: GitHubReadClient }> = {},
 ): Promise<string> {
-  const run = options.run ?? createGhCommandRunner();
-  const observed = await json<{ headRefOid: string }>(await run([
-    "pr", "view", String(number), "--repo", repository, "--json", "headRefOid",
-  ]));
+  const client = options.client ?? createGitHubReadClient();
+  const observed = await asJson<{ headRefOid: string }>(await client.readPullRequestHead(repository, number));
   return observed.headRefOid;
 }
 
@@ -139,6 +146,16 @@ function checkStatus(check: GitHubStatusCheck): GitHubValidationObservation["sta
 
 async function json<T>(text: string): Promise<T> {
   return JSON.parse(text) as T;
+}
+
+async function asJson<T>(value: unknown): Promise<T> {
+  return typeof value === "string" ? json<T>(value) : value as T;
+}
+
+function exactRevision(claim: string): string | null {
+  if (!/\bvalidat(?:e|ed|ion)\b/iu.test(claim)) return null;
+  const revisions = claim.match(/\b[0-9a-f]{40}\b/gu) ?? [];
+  return revisions.length === 1 ? revisions[0] : null;
 }
 
 interface GitHubPrJson {
