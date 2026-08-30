@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadPreparedTrail, resolvePublicPath } from "../scripts/server.mjs";
@@ -33,4 +33,13 @@ test("prepared trail manifest loads one closed local packet", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("Mission Rail learning steps use focused passages instead of heading-only anchors", async () => {
+  const packetPath = new URL("../review-kits/mission-rail-v2-checkpoints.json", import.meta.url);
+  const checkpoints = JSON.parse(await readFile(packetPath, "utf8"));
+  const headingAnchors = checkpoints.flatMap((checkpoint) => checkpoint.learningSteps)
+    .filter((step) => /^#{1,6}\s/u.test(step.sourceQuote));
+
+  assert.deepEqual(headingAnchors, []);
 });

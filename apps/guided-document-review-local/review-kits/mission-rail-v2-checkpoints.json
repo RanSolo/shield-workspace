@@ -421,7 +421,7 @@
     "learningSteps": [
       {
         "stepId": "mission-store",
-        "sourceQuote": "### `@shield/mission-store`",
+        "sourceQuote": "Owns closed event codecs, snapshots, deterministic replay, optimistic sequence\nchecks, and evidence references. It stores and replays facts; it does not decide\nthe next action and performs no I/O. The first host adapter may persist these\nevents as repository-local JSONL and canonical JSON. No database is required\nfor V1.",
         "purpose": "Understand what deterministic history owns.",
         "question": "What should the store record without deciding?",
         "explanation": "The store validates, saves, and replays events and observations. It preserves facts; the rail still decides the next action.",
@@ -437,7 +437,7 @@
       },
       {
         "stepId": "lane-lifecycle",
-        "sourceQuote": "### `@shield/lane-lifecycle`",
+        "sourceQuote": "- `reconcile` preserves Alpha/Bravo/Charlie paths, proves the delivered branch\n  is published, merged, or archived, clears mission-local state, moves to the\n  selected exact base, installs current policy, and emits a fresh receipt.",
         "purpose": "Understand stable lanes as reusable workspace identities.",
         "question": "What does lane lifecycle manage that the store does not?",
         "explanation": "Lane lifecycle assigns stable Alpha, Bravo, and Charlie paths, reconciles completed work, and returns a clean lane to ready.",
@@ -451,7 +451,7 @@
     "learningSteps": [
       {
         "stepId": "mission-host",
-        "sourceQuote": "### `@shield/mission-host`",
+        "sourceQuote": "Owns side effects and observations: Git, filesystem, GitHub, issue adapters,\nagent dispatch, model/runtime identity, signing, clocks, and process execution.\nIt implements ports defined by the rail and lane libraries. Host failures do\nnot change pure state until a durable result is recorded.",
         "purpose": "Locate real-world effects at the host boundary.",
         "question": "Which work belongs in the host rather than the pure rail?",
         "explanation": "The host performs Git, filesystem, process, GitHub, dispatch, model, clock, and signing effects. It reports results back to pure contracts.",
@@ -459,7 +459,7 @@
       },
       {
         "stepId": "mission-projection",
-        "sourceQuote": "### `@shield/mission-projection`",
+        "sourceQuote": "Owns the pure read model consumed by terminal status, CLI, and Mission Control.\nIt converts validated rail and lane events into stable views:\nmission phase, lane state, exact revision, active seat/run, blocker class,\nhuman gate, validation state, publication state, and one recommended action.\nIt cannot write journals, grant authority, dispatch agents, or perform effects.",
         "purpose": "Understand projection as a readable status view.",
         "question": "What should Mission Control display, and what must it never do?",
         "explanation": "Projection converts validated facts into phase, lane, blocker, gate, and next-action views. It must not write journals, dispatch agents, or mutate state.",
@@ -473,7 +473,7 @@
     "learningSteps": [
       {
         "stepId": "seat-model",
-        "sourceQuote": "## Seat and autonomy model",
+        "sourceQuote": "The seat contracts remain useful independently of the current runtime:\n\n- Hill owns issue scope, sequencing, lane assignment, and exception routing.\n- Daisy gathers missing repository and issue evidence without mutation.\n- Fury reviews exact plans and implementation conformance.\n- May owns bounded implementation.\n- Mack validates the exact candidate through the smallest sufficient Nx graph.\n- Coulson, Fitz, and Simmons remain human seats and are never simulated.",
         "purpose": "Understand why responsibilities are assigned to seats.",
         "question": "How do seat contracts divide judgment and execution?",
         "explanation": "Hill sequences, Daisy gathers evidence, Fury reviews, May implements, and Mack validates. The runtime may change, but each responsibility stays recognizable.",
@@ -495,7 +495,7 @@
     "learningSteps": [
       {
         "stepId": "factory-program",
-        "sourceQuote": "## Factory construction program",
+        "sourceQuote": "Factory receives the architecture and issue graph as a bounded Mission rather\nthan a single open-ended rewrite prompt.",
         "purpose": "See the architecture as a bounded construction mission.",
         "question": "What does Factory receive instead of an open-ended rewrite prompt?",
         "explanation": "Factory receives an architecture, dependency graph, owned paths, milestones, effects, and validation envelope. Teams can then build one bounded rail.",
@@ -517,7 +517,7 @@
     "learningSteps": [
       {
         "stepId": "issue-packet",
-        "sourceQuote": "### Factory executable issue packet",
+        "sourceQuote": "Every issue contains these headings:\n\n```text\nOutcome\nArchitecture source and exact base\nDepends on\nOwned paths\nInputs and reusable legacy sources\nRequired behavior\nExplicit exclusions\nFactory execution notes\nNx validation commands\nRequired artifacts\nTerminal handoff\n```",
         "purpose": "Understand the minimum shape of an executable issue.",
         "question": "What must a fresh team receive before it starts?",
         "explanation": "The issue packet names the outcome, exact base, dependencies, owned paths, required behavior, exclusions, validation, artifacts, and handoff.",
@@ -525,7 +525,7 @@
       },
       {
         "stepId": "issue-headings",
-        "sourceQuote": "Every issue contains these headings:",
+        "sourceQuote": "`Factory execution notes` name the preferred mode, feature/milestone, safe\nautonomy envelope, allowed parallelism, and specialist Droid handoffs. The\npacket must remain executable by another host; Factory-specific settings are\nadvice, not product contracts.",
         "purpose": "Recognize the packet as a repeatable interface.",
         "question": "Why make issue sections consistent across hosts?",
         "explanation": "Consistent headings let another team or host find scope, inputs, commands, and proof in the same places.",
@@ -539,7 +539,7 @@
     "learningSteps": [
       {
         "stepId": "executor-portability",
-        "sourceQuote": "## Executor portability",
+        "sourceQuote": "Repository task packets are the source of truth. They contain objective,\nowned paths, exact base, inputs, exclusions, expected outputs, validation\ntargets, and terminal handoff. They do not depend on chat history.",
         "purpose": "Separate task meaning from the host that runs it.",
         "question": "What should remain invariant across Codex, Copilot, Factory, and local models?",
         "explanation": "The task packet remains the source of truth: objective, owned paths, exact base, exclusions, inputs, validation, and handoff. Only the executor changes.",
@@ -555,7 +555,7 @@
       },
       {
         "stepId": "legacy-protocol",
-        "sourceQuote": "## Legacy audit and extraction protocol",
+        "sourceQuote": "Every candidate behavior receives one disposition before migration:\n\n| Disposition | Meaning |\n| --- | --- |\n| keep | Proven invariant required by the new happy path. |\n| simplify | Correct protection or behavior with excessive machinery. |\n| replace | Required capability whose implementation boundary is defective. |\n| drop | Legacy or threat-model behavior no longer aligned with the product. |\n| defer | Valuable behavior not required for the first complete flight. |",
         "purpose": "Use old code selectively rather than copying it blindly.",
         "question": "What should happen before legacy behavior moves into the new rail?",
         "explanation": "Each old behavior gets a keep, simplify, replace, drop, or defer decision. Only the smallest proven invariant is extracted into the new boundary.",
@@ -569,10 +569,10 @@
     "learningSteps": [
       {
         "stepId": "delivery-sequence",
-        "sourceQuote": "## Delivery sequence",
+        "sourceQuote": "- Implement the minimal mission state, events, `next` union, and table-driven\n  happy-path tests.\n- Implement the closed Guided Review plan/code/QA contract and static adapters.\n- Prove no host imports, deterministic transitions, exact review binding, and\n  property/mutation coverage of the critical state kernel.",
         "purpose": "Understand why construction order matters.",
-        "question": "Why build identity and pure decisions before host composition?",
-        "explanation": "The sequence establishes stable identity and deterministic rules before adding storage, lanes, effects, projection, and a CLI.",
+        "question": "What must the pure rail prove before host composition begins?",
+        "explanation": "The pure rail must prove its state model, next-action rules, Guided Review contract, deterministic transitions, exact review binding, and critical test coverage before effects are connected.",
         "whyItMatters": "Early boundaries reduce later rework and expose risky assumptions sooner."
       },
       {
@@ -591,7 +591,7 @@
     "learningSteps": [
       {
         "stepId": "flight-criteria",
-        "sourceQuote": "## First-flight acceptance criteria",
+        "sourceQuote": "- A cold Hill can begin a named issue without composing JSON.\n- The system always identifies the current phase and one legal next action.\n- Plan and implementation reviews bind to exact revisions.\n- One meaningful implementation approval authorizes the bounded work.\n- One Epic Wheels Up authorizes cycling through the accepted Track-Layer issue\n  graph and bounded corrections through draft PRs without per-issue PINs.\n- May and Mack use focused or affected Nx targets with cache enabled.\n- Draft PR publication requires no redundant PIN after bounded implementation\n  publication was approved.\n- No successful mission ends with unique commits only in a local lane.\n- Alpha/Bravo/Charlie can accept another mission without changing paths or\n  deleting installed dependencies.\n- The same task packet can be executed by a Codex seat or Factory Droid while\n  preserving actual runtime identity.\n- Guided QA visibly demonstrates the exact candidate working in a real proving\n  scenario. A checklist, mocked unit test, or prose claim alone cannot PASS.\n- QA evidence records setup, action, expected result, observed result, retained\n  artifact references, operator disposition, and exact candidate revision.\n- Legacy SHIELD remains runnable until an explicitly reviewed migration removes\n  it.",
         "purpose": "Turn the architecture into observable acceptance evidence.",
         "question": "What would count as proof that the first flight is real?",
         "explanation": "The criteria require a cold start, one legal next action, exact review binding, visible QA, draft publication, and a stable lane that can accept another mission.",
