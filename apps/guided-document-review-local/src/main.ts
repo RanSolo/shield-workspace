@@ -50,6 +50,7 @@ let trailMotionTimer: number | null = null;
 let sceneryScene: "a" | "b" = "a";
 let trailWasComplete = false;
 let replacementPreviewStepId: string | null = null;
+let revisionEditorOpen = false;
 
 const setupPanel = required("setup-panel");
 const reviewPanel = required("review-panel");
@@ -135,6 +136,7 @@ async function beginReview(title: string, text: string, checkpoints: unknown, na
   lastTrailPercent = null;
   trailWasComplete = false;
   revisionPacketConfirmed = false;
+  revisionEditorOpen = false;
   setupPanel.hidden = true;
   reviewPanel.hidden = false;
   render();
@@ -167,6 +169,11 @@ async function handleClick(event: MouseEvent): Promise<void> {
     return;
   }
   if (!state || state.session.phase === "complete") return;
+  if (action === "show-revision" || action === "hide-revision") {
+    revisionEditorOpen = action === "show-revision";
+    render();
+    return;
+  }
 
   const checkpoint = activeCheckpoint();
   const step = visibleStep();
@@ -199,7 +206,10 @@ async function handleClick(event: MouseEvent): Promise<void> {
     if (action === "save-explanation") clearExplanationDraft(checkpoint.checkpointId);
     if (action === "decision") clearReplacementDraft(checkpoint.checkpointId);
     state = { ...state, session: result.session, message: null };
-    if (result.session.phase !== "decide") replacementPreviewStepId = null;
+    if (result.session.phase !== "decide") {
+      replacementPreviewStepId = null;
+      revisionEditorOpen = false;
+    }
     saveDraft();
   }
   render();
@@ -229,7 +239,7 @@ function render(): void {
   checkpointPanel.hidden = false;
   sourcePanel.hidden = false;
   completionPanel.hidden = true;
-  renderCheckpoint(checkpointPanel, { ...state, checkpoint, step, excerpt }, speech.supported);
+  renderCheckpoint(checkpointPanel, { ...state, checkpoint, step, excerpt, revisionEditorOpen }, speech.supported);
   restoreTextDraft(checkpoint);
   renderSource(sourcePanel, state.source, excerpt, checkpoint.checkpointId, step.stepId, step.sourceQuote, speech.supported);
   scrollSourceToHighlight();
@@ -336,6 +346,7 @@ function restart(): void {
   }
   state = null;
   revisionPacketConfirmed = false;
+  revisionEditorOpen = false;
   reviewPanel.hidden = true;
   setupPanel.hidden = false;
   showSetupMessage("");

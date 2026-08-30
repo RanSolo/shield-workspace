@@ -402,7 +402,16 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .learning-recap__question { margin: 0 0 6px; color: var(--gold); font-size: 1rem; }
 .learning-recap__answer { margin: 0; color: #dce5e2; font-size: .94rem; }
 .revision-note { margin: 22px 0; padding-top: 4px; border-top: 1px dashed var(--line); }
-.confidence-grid, .decision-grid, .completion-actions, .speech-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+.confidence-grid, .completion-actions, .speech-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+.decision-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 16px 0 22px;
+  padding: 10px 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+.decision-toolbar .button { padding: 7px 12px; font-size: .8rem; }
 .speech-actions { margin-top: 0; }
 .confidence-grid .button { min-width: 50px; }
 

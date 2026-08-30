@@ -18,6 +18,7 @@ export interface ReviewView {
   readonly step: LearningStep;
   readonly excerpt: string;
   readonly message: string | null;
+  readonly revisionEditorOpen: boolean;
 }
 
 export function renderJourney(
@@ -200,7 +201,20 @@ function renderConfidence(container: HTMLElement): void {
 }
 
 function renderDecision(container: HTMLElement, view: ReviewView): void {
-  container.append(element("p", "prompt", "What is your educational disposition on this checkpoint?"));
+  container.append(element("p", "prompt", "What should happen with this checkpoint?"));
+  const toolbar = element("div", "decision-toolbar");
+  const approve = actionButton("✓ Looks right", "decision", "success");
+  approve.dataset.value = "approve";
+  toolbar.append(
+    approve,
+    actionButton(view.revisionEditorOpen ? "Close revision" : "✎ Revise document", view.revisionEditorOpen ? "hide-revision" : "show-revision", "secondary"),
+  );
+  container.append(toolbar);
+  if (!view.revisionEditorOpen) {
+    container.append(element("p", "fine-print", "“Looks right” is educational/document approval only. It does not authorize implementation, publication, merge, or release."));
+    return;
+  }
+
   const replacement = view.session.answers[view.checkpoint.checkpointId].replacement;
   const stepSelect = document.createElement("select");
   stepSelect.id = "replacement-step";
@@ -240,19 +254,9 @@ function renderDecision(container: HTMLElement, view: ReviewView): void {
     rationaleLabel,
     draftStatus(),
   );
-  const group = element("div", "decision-grid");
-  const decisions: readonly [ReviewDecision, string][] = [
-    ["understand", "I understand"],
-    ["question", "I have a question"],
-    ["revise", "Needs revision"],
-    ["approve", "Looks right to me"],
-  ];
-  decisions.forEach(([value, label]) => {
-    const button = actionButton(label, "decision", value === "approve" || value === "understand" ? "success" : "secondary");
-    button.dataset.value = value;
-    group.append(button);
-  });
-  container.append(group, element("p", "fine-print", "“Looks right” is educational/document approval only. It does not authorize implementation, publication, merge, or release."));
+  const save = actionButton("Save requested change", "decision", "primary");
+  save.dataset.value = "revise";
+  container.append(save, element("p", "fine-print", "The requested change is recorded for the changes-only review at the end of the trail."));
 }
 
 function actionButton(label: string, action: string, style: string): HTMLButtonElement {
