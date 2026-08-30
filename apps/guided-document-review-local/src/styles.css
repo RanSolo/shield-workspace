@@ -368,7 +368,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .learning-card__copy, .prompt { font-size: 1.12rem; }
 .learning-question { display: block; width: 100%; margin: 8px 0 20px; color: var(--ink); background: var(--panel-raised); border-color: #52656c; border-radius: 12px; text-align: left; }
 .learning-question:hover, .learning-question:focus-visible { border-color: var(--gold); color: var(--ink); transform: none; }
-.review-layout.source-emphasis .source-highlight {
+.source-highlight.source-highlight--emphasis {
   background: var(--gold);
   color: #07100e;
   box-shadow: 0 0 0 4px #f1b84b55, 0 0 24px #f1b84b55;

@@ -26,6 +26,12 @@ export function renderMarkdownSections(source: string, highlight = ""): HTMLElem
 }
 
 function highlightFirstExactText(root: HTMLElement, phrase: string): void {
+  if (highlightTextNode(root, phrase)) return;
+  const renderedPhrase = renderedText(phrase);
+  if (renderedPhrase && renderedPhrase !== phrase) highlightTextNode(root, renderedPhrase);
+}
+
+function highlightTextNode(root: HTMLElement, phrase: string): boolean {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let node: Node | null;
   while ((node = walker.nextNode())) {
@@ -38,8 +44,15 @@ function highlightFirstExactText(root: HTMLElement, phrase: string): void {
     const remainder = (node as Text).splitText(index);
     remainder.parentNode?.insertBefore(mark, remainder);
     remainder.nodeValue = remainder.nodeValue?.slice(phrase.length) ?? "";
-    return;
+    return true;
   }
+  return false;
+}
+
+function renderedText(markdown: string): string {
+  const staging = document.createElement("div");
+  staging.innerHTML = markdownToSafeHtml(markdown);
+  return staging.textContent?.trim() ?? "";
 }
 
 function sourceSection(anchor: string): HTMLElement {

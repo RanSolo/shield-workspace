@@ -197,11 +197,11 @@ function render(): void {
 }
 
 function wireLearningHighlight(): void {
-  reviewPanel.classList.remove("source-emphasis");
   const question = checkpointPanel.querySelector<HTMLElement>(".learning-question");
+  const sourceMarks = sourcePanel.querySelectorAll<HTMLElement>(".source-highlight");
   if (!question) return;
-  const emphasize = (): void => reviewPanel.classList.add("source-emphasis");
-  const relax = (): void => reviewPanel.classList.remove("source-emphasis");
+  const emphasize = (): void => sourceMarks.forEach((mark) => mark.classList.add("source-highlight--emphasis"));
+  const relax = (): void => sourceMarks.forEach((mark) => mark.classList.remove("source-highlight--emphasis"));
   question.addEventListener("mouseenter", emphasize);
   question.addEventListener("mouseleave", relax);
   question.addEventListener("focus", emphasize);
