@@ -213,6 +213,9 @@ async function handleClick(event: MouseEvent): Promise<void> {
     saveDraft();
   }
   render();
+  if (action === "advance") {
+    requestAnimationFrame(() => checkpointPanel.scrollTo({ top: 0, behavior: "smooth" }));
+  }
 }
 
 function render(): void {
