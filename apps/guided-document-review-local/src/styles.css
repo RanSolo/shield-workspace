@@ -424,7 +424,15 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 }
 .source-actions .button { padding: 6px 11px; font-size: .76rem; }
 .source-markdown { color: #d3dcda; overflow-wrap: anywhere; }
-.source-highlight { padding: 2px 4px; border: 1px solid var(--gold); border-radius: 4px; background: #f1b84b44; color: var(--ink); }
+.source-highlight {
+  margin-inline: -10px;
+  padding: 10px;
+  border: 1px solid var(--gold);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: #f1b84b2b;
+  color: var(--ink);
+}
 .source-section + .source-section { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
 .source-section > :is(h1, h2, h3, h4, h5, h6) {
   margin: 0 0 14px;

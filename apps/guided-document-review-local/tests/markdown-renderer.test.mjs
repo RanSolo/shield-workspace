@@ -30,32 +30,32 @@ function render(source, sourceQuote) {
   return renderMarkdownSections(source, "checkpoint-1", "step-1", sourceQuote);
 }
 
-test("marks a rendered heading and keeps its stable source identity", () => {
+test("highlights a rendered heading block and keeps its stable source identity", () => {
   const article = render("## Heading\n\nBody", "## Heading");
 
   assert.equal(article.dataset.sourceMarkerState, "resolved");
   assert.equal(article.querySelector("section")?.dataset.sourceAnchor, "heading");
-  const marker = article.querySelector("h2 .source-highlight");
+  const marker = article.querySelector("h2.source-highlight");
   assert.ok(marker);
   assert.equal(marker.textContent, "Heading");
   assert.equal(marker.dataset.checkpointId, "checkpoint-1");
   assert.equal(marker.dataset.stepId, "step-1");
 });
 
-test("marks a passage across inline text nodes without flattening semantics", () => {
+test("highlights one paragraph across inline text nodes without flattening semantics", () => {
   const article = render(
     "This has **bold** and *italic* plus `code`.",
     "**bold** and *italic* plus `code`",
   );
 
   assert.equal(article.dataset.sourceMarkerState, "resolved");
-  assert.deepEqual(
-    [...article.querySelectorAll(".source-highlight")].map((mark) => mark.textContent),
-    ["bold", " and ", "italic", " plus ", "code"],
-  );
-  assert.ok(article.querySelector("strong > .source-highlight"));
-  assert.ok(article.querySelector("em > .source-highlight"));
-  assert.ok(article.querySelector("code > .source-highlight"));
+  const marker = article.querySelector("p.source-highlight");
+  assert.ok(marker);
+  assert.equal(article.querySelectorAll(".source-highlight").length, 1);
+  assert.equal(marker.textContent, "This has bold and italic plus code.");
+  assert.ok(marker.querySelector("strong"));
+  assert.ok(marker.querySelector("em"));
+  assert.ok(marker.querySelector("code"));
 });
 
 test("does not mark an ambiguous duplicate and reports the state", () => {

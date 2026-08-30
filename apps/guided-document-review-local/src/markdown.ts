@@ -14,7 +14,7 @@ export function renderMarkdownSections(
   const renderedPassage = renderedMarkdownText(sourceQuote);
   const marker = locateRenderedPassage(staging, renderedPassage);
   if (marker.state === "resolved") {
-    wrapRenderedPassage(staging, marker.start, marker.end, checkpointId, stepId);
+    highlightRenderedBlocks(staging, marker.start, marker.end, checkpointId, stepId);
   }
 
   const article = document.createElement("article");
@@ -116,25 +116,23 @@ function findOccurrences(text: string, phrase: string): number[] {
   return occurrences;
 }
 
-function wrapRenderedPassage(root: HTMLElement, start: number, end: number, checkpointId: string, stepId: string): void {
+function highlightRenderedBlocks(root: HTMLElement, start: number, end: number, checkpointId: string, stepId: string): void {
   const projection = projectTextNodes(root);
+  const blocks = new Set<HTMLElement>();
+
   projection.nodes.forEach(({ node, start: nodeStart, end: nodeEnd }) => {
     const fragmentStart = Math.max(start, nodeStart);
     const fragmentEnd = Math.min(end, nodeEnd);
-    if (fragmentStart >= fragmentEnd || !node.parentNode) return;
+    if (fragmentStart >= fragmentEnd) return;
 
-    const localStart = fragmentStart - nodeStart;
-    const localEnd = fragmentEnd - nodeStart;
-    let selected = node;
-    if (localStart > 0) selected = node.splitText(localStart);
-    if (localEnd < selected.length) selected.splitText(localEnd - localStart);
+    const block = node.parentElement?.closest<HTMLElement>("p, li, h1, h2, h3, h4, h5, h6, pre, blockquote");
+    if (block && root.contains(block)) blocks.add(block);
+  });
 
-    const marker = document.createElement("mark");
-    marker.className = "source-highlight";
-    marker.dataset.checkpointId = checkpointId;
-    marker.dataset.stepId = stepId;
-    selected.parentNode?.insertBefore(marker, selected);
-    marker.append(selected);
+  blocks.forEach((block) => {
+    block.classList.add("source-highlight");
+    block.dataset.checkpointId = checkpointId;
+    block.dataset.stepId = stepId;
   });
 }
 
