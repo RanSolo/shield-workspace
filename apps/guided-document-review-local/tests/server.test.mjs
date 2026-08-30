@@ -43,3 +43,16 @@ test("Mission Rail learning steps use focused passages instead of heading-only a
 
   assert.deepEqual(headingAnchors, []);
 });
+
+test("trail header carries the complete learning promise inside the progress scene", async () => {
+  const indexPath = new URL("../src/index.html", import.meta.url);
+  const index = await readFile(indexPath, "utf8");
+  const readAt = index.indexOf(">Read it<");
+  const explainAt = index.indexOf(">Explain it<");
+  const ownAt = index.indexOf(">Own it<");
+
+  assert.ok(readAt >= 0);
+  assert.ok(readAt < explainAt);
+  assert.ok(explainAt < ownAt);
+  assert.match(index, /trail-progress__stages/u);
+});

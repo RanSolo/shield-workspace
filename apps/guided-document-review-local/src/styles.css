@@ -22,18 +22,39 @@ button { cursor: pointer; }
 [hidden] { display: none !important; }
 
 .app-shell { width: min(1440px, 100%); margin: 0 auto; padding: 24px; }
-.topbar { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding: 8px 0 26px; border-bottom: 1px solid var(--line); }
-.topbar h1 { margin: 0; font: 800 clamp(1.8rem, 4vw, 3.2rem)/1 Georgia, serif; letter-spacing: -.04em; }
-.brand-line { display: flex; align-items: center; gap: clamp(18px, 3vw, 42px); }
+.topbar { display: block; padding: 8px 0 26px; border-bottom: 1px solid var(--line); }
+.topbar > div { width: 100%; min-width: 0; }
+.topbar h1 { margin: 0; font: 800 clamp(1.8rem, 4vw, 3.2rem)/1 Georgia, serif; letter-spacing: -.04em; white-space: nowrap; }
+.brand-line { display: grid; grid-template-columns: max-content minmax(280px, 1fr); align-items: end; gap: clamp(18px, 3vw, 42px); }
 .trail-progress {
   --trail-progress: 0;
   position: relative;
-  width: clamp(150px, 24vw, 340px);
-  height: 72px;
+  width: 100%;
+  height: 78px;
   overflow: hidden;
   border-radius: 12px;
   transition: background 500ms ease;
 }
+.trail-progress__stages {
+  position: absolute;
+  z-index: 6;
+  top: 5px;
+  right: 8px;
+  left: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-items: center;
+  color: #fff7df;
+  font-size: clamp(.58rem, .9vw, .72rem);
+  font-weight: 900;
+  letter-spacing: .08em;
+  line-height: 1;
+  text-transform: uppercase;
+  text-shadow: 0 1px 5px #071014, 0 1px 2px #071014;
+  pointer-events: none;
+}
+.trail-progress__stages b:nth-child(2) { text-align: center; }
+.trail-progress__stages b:last-child { text-align: right; }
 .trail-progress.time-day {
   background: linear-gradient(180deg, #3d82aa 0%, #83bdcf 61%, #b8d6c5 100%);
 }
@@ -129,9 +150,9 @@ button { cursor: pointer; }
 .trail-progress__scenery {
   position: absolute;
   z-index: 0;
-  right: -120px;
+  right: -125px;
   bottom: 12px;
-  width: 460px;
+  width: calc(100% + 250px);
   height: 34px;
   opacity: 0;
   translate: 125px 0;
@@ -140,16 +161,20 @@ button { cursor: pointer; }
   content: "";
   position: absolute;
   z-index: 0;
-  right: -15px;
+  right: 0;
   bottom: -7px;
-  width: 195px;
-  height: 25px;
-  border-radius: 55% 65% 0 0;
-  background: #274c3a;
-  box-shadow: -145px 5px 0 5px #315844, -285px 2px 0 2px #234536;
+  width: 100%;
+  height: 30px;
+  opacity: .86;
+  background:
+    radial-gradient(110px 27px at 8% 100%, #315844 0 99%, transparent 100%),
+    radial-gradient(145px 31px at 30% 105%, #234536 0 99%, transparent 100%),
+    radial-gradient(120px 28px at 53% 100%, #315844 0 99%, transparent 100%),
+    radial-gradient(155px 33px at 76% 108%, #274c3a 0 99%, transparent 100%),
+    radial-gradient(125px 29px at 96% 101%, #315844 0 99%, transparent 100%);
 }
 .trail-progress.scene-a .scenery--a,
-.trail-progress.scene-b .scenery--b { opacity: .58; translate: 0; }
+.trail-progress.scene-b .scenery--b { opacity: 1; translate: 0; }
 .trail-progress.travel-to-b .scenery--a,
 .trail-progress.travel-to-a .scenery--b { animation: trail-scenery-out 5s linear forwards; }
 .trail-progress.travel-to-b .scenery--b,
@@ -179,29 +204,30 @@ button { cursor: pointer; }
 .trail-progress__scenery .barn {
   right: 205px;
   bottom: 0;
-  width: 29px;
-  height: 19px;
+  width: 39px;
+  height: 25px;
+  opacity: 1;
   border-radius: 2px;
   background: #93472f;
-  box-shadow: inset 0 -3px #62301f;
+  box-shadow: inset 0 -4px #62301f;
 }
 .trail-progress__scenery.scenery--b .barn { right: 62px; }
 .trail-progress__scenery .barn::before {
   content: "";
   position: absolute;
-  top: -9px;
-  left: -4px;
-  border-right: 18px solid transparent;
-  border-bottom: 11px solid #c7784d;
-  border-left: 18px solid transparent;
+  top: -12px;
+  left: -5px;
+  border-right: 24px solid transparent;
+  border-bottom: 14px solid #c7784d;
+  border-left: 24px solid transparent;
 }
 .trail-progress__scenery .barn::after {
   content: "";
   position: absolute;
-  right: 8px;
+  right: 10px;
   bottom: 0;
-  width: 8px;
-  height: 12px;
+  width: 11px;
+  height: 16px;
   border: 1px solid #dba472;
   background: #4e2b20;
 }
@@ -275,7 +301,8 @@ button { cursor: pointer; }
   bottom: 5px;
   width: 136px;
   height: 48px;
-  transform: translateX(calc(var(--trail-progress) * -1%));
+  /* Track progress by the wagon body so it reaches the right edge at 100%. */
+  transform: translateX(calc(var(--trail-progress) * -.485%));
   transition: left 650ms cubic-bezier(.22, .8, .3, 1), transform 650ms cubic-bezier(.22, .8, .3, 1);
 }
 .trail-progress__caravan::before {
@@ -474,14 +501,22 @@ button { cursor: pointer; }
 .trail-progress__team i b::after {
   content: "";
   position: absolute;
-  top: 1px;
-  width: 12px;
-  height: 7px;
+  top: 2px;
+  width: 13px;
+  height: 8px;
   border-top: 2px solid #fff0bd;
-  border-radius: 50%;
+  border-radius: 65% 65% 0 0;
 }
-.trail-progress__team i b::before { left: 0; rotate: -24deg; }
-.trail-progress__team i b::after { right: 0; rotate: 24deg; }
+.trail-progress__team i b::before {
+  left: -1px;
+  transform-origin: right top;
+  rotate: 22deg;
+}
+.trail-progress__team i b::after {
+  right: -2px;
+  transform-origin: left top;
+  rotate: -30deg;
+}
 @keyframes wagon-wheel-turn { to { rotate: 1turn; } }
 @keyframes ox-team-bob { to { translate: 0 -2px; } }
 @keyframes trail-ties-roll { to { background-position-x: -25px; } }
@@ -517,12 +552,12 @@ button { cursor: pointer; }
   100% { opacity: .9; transform: translate(50px, 68px) rotate(210deg); }
 }
 @keyframes trail-scenery-out {
-  from { opacity: .58; translate: 0; }
+  from { opacity: 1; translate: 0; }
   to { opacity: 0; translate: -125px 0; }
 }
 @keyframes trail-scenery-in {
   from { opacity: 0; translate: 125px 0; }
-  to { opacity: .58; translate: 0; }
+  to { opacity: 1; translate: 0; }
 }
 @keyframes trail-sun-rise {
   0% { right: -24px; top: 37px; opacity: 0; }
@@ -548,7 +583,6 @@ button { cursor: pointer; }
   100% { opacity: 0; translate: -245px 52px; }
 }
 .brand-kicker, .eyebrow { margin: 0 0 8px; color: var(--gold); font-size: .72rem; font-weight: 900; letter-spacing: .16em; text-transform: uppercase; }
-.topbar__promise { margin: 0; color: var(--teal); font-weight: 800; }
 
 .setup { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; padding-top: 34px; }
 .hero, .custom-review, .checkpoint-panel, .source-panel, .trail-sidebar, .completion-panel {
@@ -823,8 +857,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 }
 @media (max-width: 680px) {
   .app-shell { padding: 16px; }
-  .topbar, .field-grid { display: block; }
-  .topbar__promise { margin-top: 12px; }
+  .field-grid { display: block; }
   .brand-line { display: block; }
   .trail-progress { width: 100%; margin-top: 10px; }
   .review-layout { display: block; }
