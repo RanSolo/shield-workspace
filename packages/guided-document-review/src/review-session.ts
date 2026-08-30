@@ -146,13 +146,16 @@ export function advancePhase(
   if (session.phase !== "learn") return invalid("phase_complete", "This checkpoint needs a decision before it can advance.");
   const step = activeStep(checkpointSet, session);
   if (!step || expected.stepId !== step.stepId) return invalid("step_mismatch", "That learning step is not active.");
-  if (!session.answers[expected.checkpointId].revealedStepIds.includes(step.stepId)) {
-    return invalid("step_not_revealed", "Reveal the learning step before continuing.");
-  }
+  const answer = session.answers[expected.checkpointId];
+  const reveal = answer.revealedStepIds.includes(step.stepId) ? {} : {
+    answers: updateAnswer(session, expected.checkpointId, {
+      revealedStepIds: [...answer.revealedStepIds, step.stepId],
+    }),
+  };
   if (session.currentStepIndex < checkpointSet.checkpoints[session.currentCheckpointIndex].learningSteps.length - 1) {
-    return changed(session, expected, { currentStepIndex: session.currentStepIndex + 1 }, clock);
+    return changed(session, expected, { ...reveal, currentStepIndex: session.currentStepIndex + 1 }, clock);
   }
-  return changed(session, expected, { phase: "explain_back" }, clock);
+  return changed(session, expected, { ...reveal, phase: "explain_back" }, clock);
 }
 
 export function recordStepReveal(

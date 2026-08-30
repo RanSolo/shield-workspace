@@ -55,6 +55,18 @@ test("V2 persists one-step-at-a-time reveals and records an immutable replacemen
   assert.equal(applyConfirmedReplacements(source.text, [session.answers.purpose.replacement]), "# Purpose\nThe rail gives one clear next action.\nThe lane stays ready for reuse.");
 });
 
+test("an already-visible learning step advances without a separate reveal action", async () => {
+  const source = await createSourceDocument("Rail", sourceText);
+  const set = await createCheckpointSet("Rail review", checkpoints, source.text);
+  let session = await startReviewSession(source, set, { kind: "self_asserted", name: "Randy" }, fixedClock);
+
+  session = success(advancePhase(session, set, expected(session, "purpose"), fixedClock));
+  session = success(advancePhase(session, set, expected(session, "purpose", "purpose-why"), fixedClock));
+
+  assert.equal(session.currentStepIndex, 1);
+  assert.deepEqual(session.answers.purpose.revealedStepIds, ["purpose-why"]);
+});
+
 test("a replacement cannot be recorded without a desired replacement", async () => {
   const source = await createSourceDocument("Rail", sourceText);
   const set = await createCheckpointSet("Rail review", checkpoints, source.text);

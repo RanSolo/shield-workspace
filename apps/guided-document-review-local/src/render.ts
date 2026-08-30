@@ -138,21 +138,14 @@ function renderOrient(container: HTMLElement, view: ReviewView): void {
 }
 
 function renderLearn(container: HTMLElement, view: ReviewView): void {
-  const answer = view.session.answers[view.checkpoint.checkpointId];
-  const revealed = answer.revealedStepIds.includes(view.step.stepId);
-  const question = actionButton(view.step.question, "reveal-step", "quiet");
-  question.classList.add("learning-question");
-  question.setAttribute("aria-expanded", String(revealed));
   container.append(
     element("p", "step-count", `Learning step ${view.session.currentStepIndex + 1} of ${view.checkpoint.learningSteps.length}`),
     card("Purpose", view.step.purpose),
     element("p", "eyebrow", "Question"),
-    question,
+    element("p", "learning-question learning-question--static", view.step.question),
+    learningReveal(view.step.explanation, view.step.whyItMatters),
+    actionButton("Continue to the next step", "advance", "primary"),
   );
-  if (revealed) {
-    container.append(learningReveal(view.step.explanation, view.step.whyItMatters));
-    container.append(actionButton("Continue to the next step", "advance", "primary"));
-  }
 }
 
 function learningReveal(explanation: string, whyItMatters: string): HTMLElement {

@@ -13,7 +13,6 @@ import {
   recordConfidence,
   recordDecision,
   recordExplanation,
-  recordStepReveal,
   returnToPreviousPhase,
   startReviewSession,
   type CheckpointSet,
@@ -174,7 +173,6 @@ async function handleClick(event: MouseEvent): Promise<void> {
   let result;
   if (action === "advance") result = advancePhase(state.session, state.checkpointSet, expected, clock);
   if (action === "back") result = returnToPreviousPhase(state.session, state.checkpointSet, expected, clock);
-  if (action === "reveal-step") result = recordStepReveal(state.session, state.checkpointSet, expected, clock);
   if (action === "save-explanation") {
     result = recordExplanation(state.session, state.checkpointSet, expected, valueOf("explanation"), clock);
   }
