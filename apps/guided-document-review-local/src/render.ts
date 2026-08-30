@@ -84,7 +84,9 @@ export function renderCheckpoint(container: HTMLElement, view: ReviewView, speec
       ? `Principle ${principleIndex + 1} of ${principleCheckpoints.length}`
       : `Checkpoint ${view.session.currentCheckpointIndex + 1} of ${view.checkpointSet.checkpoints.length}`),
   );
-  if (speechSupported) container.append(speechActions("Read", "read-checkpoint"));
+  if (speechSupported || view.session.phase !== "orient") {
+    container.append(checkpointToolbar(speechSupported, view.session.phase !== "orient"));
+  }
   container.append(header);
   if (view.message) container.append(element("p", "message message--warning", view.message));
   if (view.session.phase === "orient" && quickReview) renderQuickDisposition(container, view);
@@ -93,7 +95,6 @@ export function renderCheckpoint(container: HTMLElement, view: ReviewView, speec
   if (view.session.phase === "explain_back") renderExplain(container, view);
   if (view.session.phase === "confidence") renderConfidence(container);
   if (view.session.phase === "decide") renderDecision(container, view);
-  if (view.session.phase !== "orient") container.append(actionButton("← Back", "back", "quiet"));
 }
 
 function renderQuickDisposition(container: HTMLElement, view: ReviewView): void {
@@ -369,9 +370,12 @@ function actionButton(label: string, action: string, style: string): HTMLButtonE
   return button;
 }
 
-function speechActions(label: string, action: string): HTMLElement {
+function checkpointToolbar(speechSupported: boolean, showBack: boolean): HTMLElement {
   const actions = reviewToolbar();
-  actions.append(actionButton(`▶ ${label}`, action, "secondary"), actionButton("■ Stop", "stop-reading", "quiet"));
+  if (speechSupported) {
+    actions.append(actionButton("▶ Read", "read-checkpoint", "secondary"), actionButton("■ Stop", "stop-reading", "quiet"));
+  }
+  if (showBack) actions.append(actionButton("← Back", "back", "quiet"));
   return actions;
 }
 
