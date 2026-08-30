@@ -169,7 +169,7 @@ function renderExplain(container: HTMLElement, view: ReviewView): void {
   textarea.rows = 7;
   textarea.placeholder = "What does this mean, why does it matter, and what would you challenge?";
   textarea.value = view.session.answers[view.checkpoint.checkpointId].explanation ?? "";
-  container.append(label, textarea, actionButton("Lock in my explanation", "save-explanation", "primary"));
+  container.append(label, textarea, draftStatus(), actionButton("Lock in my explanation", "save-explanation", "primary"));
   textarea.focus();
 }
 
@@ -238,6 +238,7 @@ function renderDecision(container: HTMLElement, view: ReviewView): void {
     original,
     replacementLabel,
     rationaleLabel,
+    draftStatus(),
   );
   const group = element("div", "decision-grid");
   const decisions: readonly [ReviewDecision, string][] = [
@@ -273,6 +274,13 @@ function card(label: string, body: string): HTMLElement {
   const section = element("section", "learning-card");
   section.append(element("p", "eyebrow", label), element("p", "learning-card__copy", body));
   return section;
+}
+
+function draftStatus(): HTMLElement {
+  const status = element("p", "hint draft-status", "Drafts save locally as you type.");
+  status.id = "draft-status";
+  status.setAttribute("role", "status");
+  return status;
 }
 
 function stat(label: string, value: string): HTMLElement {

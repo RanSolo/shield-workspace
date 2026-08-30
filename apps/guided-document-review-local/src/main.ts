@@ -36,7 +36,13 @@ interface AppState {
   message: string | null;
 }
 
+interface TextDrafts {
+  readonly explanations: Record<string, string>;
+  readonly replacements: Record<string, { stepId: string; replacement: string; rationale: string }>;
+}
+
 const storagePrefix = "document-trail:v2:";
+const textDraftPrefix = "document-trail:text-drafts:";
 let state: AppState | null = null;
 let revisionPacketConfirmed = false;
 let lastTrailPercent: number | null = null;
@@ -61,6 +67,7 @@ window.addEventListener("resize", () => syncReviewViewport());
 
 document.addEventListener("click", (event) => void handleClick(event));
 document.addEventListener("change", (event) => updateReplacementOriginal(event));
+document.addEventListener("input", (event) => saveTextDraft(event));
 required("start-sample").addEventListener("click", () => void startSample());
 required("start-custom").addEventListener("click", () => void startCustom());
 required("copy-ai-prompt").addEventListener("click", () => void copyAiPrompt());
@@ -189,6 +196,8 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (!result.ok) {
     state = { ...state, message: result.message };
   } else {
+    if (action === "save-explanation") clearExplanationDraft(checkpoint.checkpointId);
+    if (action === "decision") clearReplacementDraft(checkpoint.checkpointId);
     state = { ...state, session: result.session, message: null };
     if (result.session.phase !== "decide") replacementPreviewStepId = null;
     saveDraft();
@@ -211,12 +220,17 @@ function render(): void {
     return;
   }
   const checkpoint = activeCheckpoint();
+  if (state.session.phase === "decide" && !replacementPreviewStepId) {
+    const draftStepId = readTextDrafts().replacements[checkpoint.checkpointId]?.stepId;
+    if (checkpoint.learningSteps.some((step) => step.stepId === draftStepId)) replacementPreviewStepId = draftStepId ?? null;
+  }
   const step = visibleStep();
   const excerpt = findSourceExcerpt(state.source, step.sourceQuote);
   checkpointPanel.hidden = false;
   sourcePanel.hidden = false;
   completionPanel.hidden = true;
   renderCheckpoint(checkpointPanel, { ...state, checkpoint, step, excerpt }, speech.supported);
+  restoreTextDraft(checkpoint);
   renderSource(sourcePanel, state.source, excerpt, checkpoint.checkpointId, step.stepId, step.sourceQuote, speech.supported);
   scrollSourceToHighlight();
   syncReviewViewport();
@@ -316,7 +330,10 @@ function download(filename: string, content: string, type: string): void {
 }
 
 function restart(): void {
-  if (state) localStorage.removeItem(storageKey(state.source, state.checkpointSet));
+  if (state) {
+    localStorage.removeItem(storageKey(state.source, state.checkpointSet));
+    localStorage.removeItem(textDraftKey(state.source));
+  }
   state = null;
   revisionPacketConfirmed = false;
   reviewPanel.hidden = true;
@@ -342,6 +359,89 @@ function saveDraft(): void {
 
 function storageKey(source: SourceDocument, set: CheckpointSet): string {
   return `${storagePrefix}${source.sourceDigest}:${set.checkpointSetDigest}`;
+}
+
+function textDraftKey(source: SourceDocument): string {
+  return `${textDraftPrefix}${source.sourceDigest}`;
+}
+
+function readTextDrafts(): TextDrafts {
+  if (!state) return { explanations: {}, replacements: {} };
+  try {
+    const parsed = JSON.parse(localStorage.getItem(textDraftKey(state.source)) ?? "null") as Partial<TextDrafts> | null;
+    return {
+      explanations: parsed?.explanations && typeof parsed.explanations === "object" ? parsed.explanations : {},
+      replacements: parsed?.replacements && typeof parsed.replacements === "object" ? parsed.replacements : {},
+    };
+  } catch {
+    return { explanations: {}, replacements: {} };
+  }
+}
+
+function writeTextDrafts(drafts: TextDrafts): void {
+  if (!state) return;
+  localStorage.setItem(textDraftKey(state.source), JSON.stringify(drafts));
+  const status = document.getElementById("draft-status");
+  if (status) status.textContent = "Draft saved locally.";
+}
+
+function saveTextDraft(event: Event): void {
+  if (!state || state.session.phase === "complete") return;
+  const input = event.target as HTMLTextAreaElement;
+  if (!(input instanceof HTMLTextAreaElement)) return;
+  const checkpointId = activeCheckpoint().checkpointId;
+  const drafts = readTextDrafts();
+  if (input.id === "explanation") {
+    writeTextDrafts({ ...drafts, explanations: { ...drafts.explanations, [checkpointId]: input.value } });
+  }
+  if (input.id === "replacement-text" || input.id === "replacement-rationale") {
+    const prior = drafts.replacements[checkpointId] ?? { stepId: valueOf("replacement-step"), replacement: "", rationale: "" };
+    writeTextDrafts({
+      ...drafts,
+      replacements: {
+        ...drafts.replacements,
+        [checkpointId]: {
+          ...prior,
+          stepId: valueOf("replacement-step"),
+          ...(input.id === "replacement-text" ? { replacement: input.value } : { rationale: input.value }),
+        },
+      },
+    });
+  }
+}
+
+function restoreTextDraft(checkpoint: ReviewCheckpoint): void {
+  if (!state) return;
+  const answer = state.session.answers[checkpoint.checkpointId];
+  const drafts = readTextDrafts();
+  const explanation = document.getElementById("explanation") as HTMLTextAreaElement | null;
+  if (explanation && !answer.explanation && drafts.explanations[checkpoint.checkpointId]) {
+    explanation.value = drafts.explanations[checkpoint.checkpointId];
+  }
+  const replacement = drafts.replacements[checkpoint.checkpointId];
+  if (!answer.replacement && replacement) {
+    setValue("replacement-step", replacement.stepId);
+    setValue("replacement-text", replacement.replacement);
+    setValue("replacement-rationale", replacement.rationale);
+    replacementPreviewStepId = replacement.stepId;
+    const step = checkpoint.learningSteps.find((candidate) => candidate.stepId === replacement.stepId);
+    const original = document.getElementById("replacement-original");
+    if (step && original) original.textContent = `Original passage (locked): ${step.sourceQuote}`;
+  }
+}
+
+function clearExplanationDraft(checkpointId: string): void {
+  const drafts = readTextDrafts();
+  const explanations = { ...drafts.explanations };
+  delete explanations[checkpointId];
+  writeTextDrafts({ ...drafts, explanations });
+}
+
+function clearReplacementDraft(checkpointId: string): void {
+  const drafts = readTextDrafts();
+  const replacements = { ...drafts.replacements };
+  delete replacements[checkpointId];
+  writeTextDrafts({ ...drafts, replacements });
 }
 
 function activeCheckpoint(): ReviewCheckpoint {
@@ -382,6 +482,12 @@ function updateReplacementOriginal(event: Event): void {
   const original = document.getElementById("replacement-original");
   if (!step) return;
   replacementPreviewStepId = step.stepId;
+  const drafts = readTextDrafts();
+  const prior = drafts.replacements[activeCheckpoint().checkpointId] ?? { replacement: "", rationale: "", stepId: step.stepId };
+  writeTextDrafts({
+    ...drafts,
+    replacements: { ...drafts.replacements, [activeCheckpoint().checkpointId]: { ...prior, stepId: step.stepId } },
+  });
   if (original) original.textContent = `Original passage (locked): ${step.sourceQuote}`;
   const excerpt = findSourceExcerpt(state.source, step.sourceQuote);
   renderSource(sourcePanel, state.source, excerpt, activeCheckpoint().checkpointId, step.stepId, step.sourceQuote, speech.supported);
