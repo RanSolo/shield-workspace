@@ -146,15 +146,24 @@ function renderLearn(container: HTMLElement, view: ReviewView): void {
   container.append(
     element("p", "step-count", `Learning step ${view.session.currentStepIndex + 1} of ${view.checkpoint.learningSteps.length}`),
     card("Purpose", view.step.purpose),
-    element("p", "eyebrow", "Question · read the highlighted passage, then click to reveal"),
+    element("p", "eyebrow", "Question"),
     question,
   );
   if (revealed) {
-    container.append(card("Explanation", view.step.explanation), card("Why it matters", view.step.whyItMatters));
+    container.append(learningReveal(view.step.explanation, view.step.whyItMatters));
     container.append(actionButton("Continue to the next step", "advance", "primary"));
-  } else {
-    container.append(element("p", "hint", "Click the question after reading the highlighted source passage."));
   }
+}
+
+function learningReveal(explanation: string, whyItMatters: string): HTMLElement {
+  const section = element("section", "learning-card learning-reveal");
+  section.append(
+    element("p", "eyebrow", "Explanation"),
+    element("p", "learning-card__copy", explanation),
+    element("p", "eyebrow learning-reveal__why-label", "Why it matters"),
+    element("p", "learning-card__copy", whyItMatters),
+  );
+  return section;
 }
 
 function renderExplain(container: HTMLElement, view: ReviewView): void {

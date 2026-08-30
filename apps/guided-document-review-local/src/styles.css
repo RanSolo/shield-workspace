@@ -394,6 +394,7 @@ summary { color: var(--teal); cursor: pointer; font-weight: 800; }
 .step-count, .source-quote-label { color: var(--teal); font-size: .86rem; font-weight: 800; }
 .learning-card { margin: 28px 0; padding: 22px; border-left: 4px solid var(--orange); background: var(--panel-raised); border-radius: 0 12px 12px 0; }
 .learning-card__copy, .prompt { font-size: 1.12rem; }
+.learning-reveal__why-label { margin-top: 22px; }
 .learning-question { display: block; width: 100%; margin: 8px 0 20px; color: var(--ink); background: var(--panel-raised); border-color: #52656c; border-radius: 12px; text-align: left; }
 .learning-question:hover, .learning-question:focus-visible { border-color: var(--gold); color: var(--ink); transform: none; }
 .learning-recap { margin: 20px 0 28px; }
