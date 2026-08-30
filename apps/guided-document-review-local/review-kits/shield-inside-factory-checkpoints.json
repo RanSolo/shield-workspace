@@ -1,0 +1,134 @@
+[
+  {
+    "checkpointId": "factory-and-shield",
+    "title": "Factory machinery and SHIELD meaning",
+    "learningSteps": [
+      {
+        "stepId": "division-of-labor",
+        "sourceQuote": "**Factory supplies the machinery; SHIELD supplies the operating model.**",
+        "purpose": "Separate the execution host from the portable delivery rules.",
+        "question": "What does Factory provide, and what must remain owned by SHIELD?",
+        "explanation": "Factory supplies sessions, Droids, tools, parallel execution, and host context. SHIELD owns the portable meaning of seats, scope, effects, reviews, evidence, and delivery.",
+        "whyItMatters": "This prevents SHIELD from wrapping Factory while keeping the workflow portable to another host."
+      },
+      {
+        "stepId": "portable-not-identical",
+        "sourceQuote": "same product meaning should survive when Factory, Codex, Copilot, or a local\nmodel executes the work, even though each host has different capabilities and\nadapters.",
+        "purpose": "Distinguish portable semantics from identical host behavior.",
+        "question": "What should remain the same when the AI host changes?",
+        "explanation": "The task, seat, authority, evidence, and delivery contracts remain stable. Tool availability and execution mechanics may differ and must be recorded honestly.",
+        "whyItMatters": "Portability should preserve meaning without pretending every host has the same powers."
+      }
+    ]
+  },
+  {
+    "checkpointId": "installation-layers",
+    "title": "What gets installed in a repository",
+    "learningSteps": [
+      {
+        "stepId": "four-layers",
+        "sourceQuote": "SHIELD arrives as ordinary repository content in layers:",
+        "purpose": "See installation as a small stack of repository-owned contracts and adapters.",
+        "question": "What are the four layers, and which layer turns instructions into executable rails?",
+        "explanation": "Seat instructions define responsibilities, host adapters connect the runtime, machine contracts bind packets, and the rail packages enforce transitions and effects in software.",
+        "whyItMatters": "The layers let SHIELD start as understandable repository guidance and become deterministic without belonging to one vendor."
+      },
+      {
+        "stepId": "git-like-installation",
+        "sourceQuote": "The installation is therefore closer to Git than to one AI chat",
+        "purpose": "Understand where the durable operating model lives.",
+        "question": "Why is the Git comparison useful, and where might it be misleading?",
+        "explanation": "The configuration and contracts travel with the repository instead of one conversation. Unlike Git, SHIELD still needs host adapters and installed packages before every behavior is enforceable.",
+        "whyItMatters": "This is the promise you can make to another team without overstating today's installation experience."
+      }
+    ]
+  },
+  {
+    "checkpointId": "hill-parent-chat",
+    "title": "This chat occupies Hill",
+    "learningSteps": [
+      {
+        "stepId": "seat-versus-executor",
+        "sourceQuote": "The persistent parent Factory chat occupies the **Hill seat**.",
+        "purpose": "Keep role identity separate from runtime identity.",
+        "question": "What changes when a different model occupies Hill, and what must not change?",
+        "explanation": "The executor and model identity change. Hill's scope, sequencing, exception, and bookkeeping responsibilities remain the same and are recorded separately.",
+        "whyItMatters": "A seat-first design keeps governance recognizable while models and products evolve."
+      },
+      {
+        "stepId": "hill-boundary",
+        "sourceQuote": "Hill does not implement, review its\nown plan, validate its own work, or simulate a human decision.",
+        "purpose": "Prevent the persistent coordinator from absorbing every responsibility.",
+        "question": "Which responsibilities stay outside Hill even when this parent chat has the broadest context?",
+        "explanation": "May implements, Fury independently reviews, Mack validates, and humans make consequential human decisions. Hill keeps the work moving and routes exceptions.",
+        "whyItMatters": "Broad context is useful only when independent checks remain independent."
+      }
+    ]
+  },
+  {
+    "checkpointId": "specialists-and-humans",
+    "title": "Fresh specialists and meaningful human gates",
+    "learningSteps": [
+      {
+        "stepId": "bounded-specialists",
+        "sourceQuote": "Hill dispatches fresh-context specialist Droids with bounded packets:",
+        "purpose": "Understand how specialists receive enough context without inheriting the whole conversation.",
+        "question": "What must a specialist packet contain so Daisy, Fury, May, or Mack can work independently?",
+        "explanation": "The packet carries the exact objective, revision, paths, effects, evidence, validation, and handoff appropriate to that seat.",
+        "whyItMatters": "Bounded packets make fresh context an advantage instead of a source of rediscovery."
+      },
+      {
+        "stepId": "human-boundary",
+        "sourceQuote": "Coulson, Fitz, and Simmons remain human seats and are never spawned or\nsimulated.",
+        "purpose": "Locate real human authority without turning every transition into a gate.",
+        "question": "What should reach a human, and what should continue automatically?",
+        "explanation": "Consequential authority, acceptance, and excluded effects reach the accountable person. Routine in-envelope mechanics and correctable failures advance through software and bounded agent judgment.",
+        "whyItMatters": "The human remains in control without becoming the team's packet courier."
+      }
+    ]
+  },
+  {
+    "checkpointId": "track-layer-day",
+    "title": "How one Track-Layer construction run moves",
+    "learningSteps": [
+      {
+        "stepId": "epic-wheels-up",
+        "sourceQuote": "Epic Wheels Up records one human GO for the accepted construction graph and\n   envelope.",
+        "purpose": "Understand what one program-level GO authorizes.",
+        "question": "What can proceed after Epic Wheels Up, and which changes still require amendment?",
+        "explanation": "Accepted features and bounded corrections may continue through draft publication. Changes to the promised outcome, graph, paths, milestones, host or autonomy, budget, material risk, or effect envelope require a recorded amendment.",
+        "whyItMatters": "One meaningful GO creates autonomy without becoming unlimited authority."
+      },
+      {
+        "stepId": "ordinary-versus-track-layer",
+        "sourceQuote": "Epic Wheels Up is the Track-Layer construction pattern.",
+        "purpose": "Avoid applying construction-program authority to ordinary product delivery.",
+        "question": "Why must Track-Layer and ordinary delivery remain distinct?",
+        "explanation": "Track-Layer builds a frozen architecture graph under one program envelope. Ordinary delivery follows a lighter issue rail and receives only the authority appropriate to that issue.",
+        "whyItMatters": "The distinction keeps the fast construction pattern from silently broadening everyday authority."
+      }
+    ]
+  },
+  {
+    "checkpointId": "real-versus-planned",
+    "title": "What exists today",
+    "learningSteps": [
+      {
+        "stepId": "current-reality",
+        "sourceQuote": "Today, the architecture, manifest, repository seat instructions, and legacy\nSHIELD implementation are real.",
+        "purpose": "Separate current evidence from planned construction outputs.",
+        "question": "Which SHIELD-inside-Factory pieces can be demonstrated now, and which begin with MR-000?",
+        "explanation": "The architecture, manifest, seat guidance, and legacy implementation exist now. Factory Droids, the packet verifier, new quality targets, and Mission Rail packages are still construction work.",
+        "whyItMatters": "An honest boundary makes the roadmap credible and prevents a written contract from being demonstrated as finished software."
+      },
+      {
+        "stepId": "instruction-to-machine",
+        "sourceQuote": "The rebuild moves enforcement from agent memory into\nsmall, testable software contracts.",
+        "purpose": "Name the concrete outcome of the rebuild.",
+        "question": "What changes when SHIELD moves from contract-by-instruction to contract-by-machine?",
+        "explanation": "Agents no longer have to remember or hand-compose the next legal operation. Small libraries derive, validate, record, and project the workflow deterministically.",
+        "whyItMatters": "This is the difference between a promising team convention and a reusable product rail."
+      }
+    ]
+  }
+]

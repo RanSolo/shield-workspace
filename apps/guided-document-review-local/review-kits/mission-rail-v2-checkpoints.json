@@ -1,0 +1,610 @@
+[
+  {
+    "checkpointId": "problem-and-objective",
+    "title": "The problem and the promised outcome",
+    "learningSteps": [
+      {
+        "stepId": "problem-failure",
+        "sourceQuote": "The current repository contains valuable behavior, but delivery mechanics and\ngovernance evolved together inside `@shield/team-system`. This produced three\noperational failures:",
+        "purpose": "Name the delivery problem before choosing a solution.",
+        "question": "What underlying condition produced the current delivery failures?",
+        "explanation": "This section describes a useful system trapped inside delivery and governance mechanics that grew together. The problem is the way work is composed and recovered, not a lack of individual safety checks.",
+        "whyItMatters": "A precise problem keeps the replacement from recreating the same friction."
+      },
+      {
+        "stepId": "problem-composition",
+        "sourceQuote": "The failure is primarily lifecycle composition, not a lack of individual\nguards. Adding more guards to the existing composition does not establish a\nsmall, auditable happy path.",
+        "purpose": "Separate lifecycle design from isolated safeguards.",
+        "question": "Why would adding another guard fail to fix the main problem?",
+        "explanation": "A guard can catch one mistake, but it cannot make a tangled sequence easy to audit. The rail needs a small path that composes the right steps.",
+        "whyItMatters": "This prevents more ceremony from being mistaken for better governance."
+      }
+    ]
+  },
+  {
+    "checkpointId": "principle-1-next-operation",
+    "title": "Principle 1 · One deterministic next operation",
+    "learningSteps": [
+      {
+        "stepId": "principle-1-next-operation",
+        "sourceQuote": "**One deterministic next operation.**",
+        "purpose": "Make routine progress predictable without pretending every novel situation is knowable.",
+        "question": "Where should deterministic progression end and recorded judgment begin?",
+        "explanation": "The Rail should choose one next operation whenever the facts determine it. When novelty leaves no safe deterministic answer, it should gather evidence and route a bounded judgment rather than invent certainty.",
+        "whyItMatters": "Predictable defaults create speed; an explicit judgment seam keeps novelty from becoming either improvisation or permanent blockage.",
+        "priorReview": {
+          "disposition": "revise",
+          "note": "The deterministic happy path is non-negotiable, but novelty needs a bounded judgment junction. The Rail should gather the evidence, bring Hill and Fury together, record their decision, and continue instead of treating every unknown as terminal.",
+          "replacement": "**One deterministic next operation.** Given durable mission state and a fresh observation, the Rail returns exactly one automatic action, human gate, external blocker, terminal result, or closed recovery instruction. When novelty leaves no safe deterministic answer, it gathers the relevant evidence and routes a bounded judgment to Hill and Fury; their recorded decision produces a deterministic successor that rejoins the Rail."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-2-derived-authority",
+    "title": "Principle 2 · No caller-authored authority packets",
+    "learningSteps": [
+      {
+        "stepId": "principle-2-derived-authority",
+        "sourceQuote": "**No caller-authored authority packets.**",
+        "purpose": "Keep mechanical authority composition in software.",
+        "question": "Why should an agent or human never hand-compose an authority packet?",
+        "explanation": "Software can derive the exact machine payload from accepted decisions and observed state. Humans choose; agents reason; deterministic code serializes the authority contract.",
+        "whyItMatters": "This removes repeated formatting failures and prevents a typo from changing the meaning of approval.",
+        "priorReview": {
+          "disposition": "pass",
+          "note": "NN — Humans make decisions and agents reason, but software must derive the exact authority packet. We should not return to hand-authored signing JSON."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-3-readable-gates",
+    "title": "Principle 3 · Human-readable gates",
+    "learningSteps": [
+      {
+        "stepId": "principle-3-readable-gates",
+        "sourceQuote": "**Human-readable gates.**",
+        "purpose": "Reserve human attention for understandable decisions.",
+        "question": "What must a useful human gate provide?",
+        "explanation": "A gate explains the real decision, its consequences, and one copy-safe action. Protocol JSON and multiline shell fragments remain machine projections, not the human experience.",
+        "whyItMatters": "A meaningful gate lets the operator decide quickly without becoming a protocol specialist.",
+        "priorReview": {
+          "disposition": "pass",
+          "note": "NN — A real human gate must explain the decision and provide one copy-safe action. Raw protocol JSON is not the human experience."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-4-delivery",
+    "title": "Principle 4 · Completion includes delivery",
+    "learningSteps": [
+      {
+        "stepId": "principle-4-delivery",
+        "sourceQuote": "**Completion includes delivery.**",
+        "purpose": "Define completion by the delivered outcome.",
+        "question": "When is a mission actually complete?",
+        "explanation": "Implementation alone is not completion. Unique work must be merged, published, or explicitly archived so it cannot remain silently stranded in a lane.",
+        "whyItMatters": "Delivery is the destination; evidence and implementation are how the team gets there.",
+        "priorReview": {
+          "disposition": "pass",
+          "note": "NN — Delivery is the destination. Work is not complete while unique commits remain stranded in a lane."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-5-stable-lanes",
+    "title": "Principle 5 · Stable lanes are first-class",
+    "learningSteps": [
+      {
+        "stepId": "principle-5-stable-lanes",
+        "sourceQuote": "**Stable lanes are first-class.**",
+        "purpose": "Keep team workspaces predictable and reusable.",
+        "question": "What remains stable when assignments rotate?",
+        "explanation": "Alpha, Bravo, and Charlie keep stable filesystem identities while their assigned missions change. Lane lifecycle reconciles each workspace before reuse.",
+        "whyItMatters": "Stable paths reduce setup, permissions, stale context, and operator confusion.",
+        "priorReview": {
+          "disposition": "pass",
+          "note": "NN — Alpha, Bravo, and Charlie should keep stable filesystem homes while their assignments rotate."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-6-followups",
+    "title": "Principle 6 · Follow-ups do not occupy delivery lanes",
+    "learningSteps": [
+      {
+        "stepId": "principle-6-followups",
+        "sourceQuote": "**Follow-ups do not occupy delivery lanes.**",
+        "purpose": "Release delivery capacity after draft publication.",
+        "question": "Where should pull-request corrections happen?",
+        "explanation": "Review corrections use a follow-up checkout after draft publication while the stable lane reconciles and becomes available for its next mission.",
+        "whyItMatters": "A delivered draft should not keep an entire team lane parked until every review comment is resolved.",
+        "priorReview": {
+          "disposition": "pass",
+          "note": "NN — Once a draft is published, review corrections belong in a follow-up checkout so the stable delivery lane can take its next mission."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-7-trusted-host",
+    "title": "Principle 7 · Trusted-host threat model",
+    "learningSteps": [
+      {
+        "stepId": "principle-7-trusted-host",
+        "sourceQuote": "**Trusted-host threat model.**",
+        "purpose": "Set an honest and useful safety boundary.",
+        "question": "Which failures does the Rail handle, and which threat is intentionally outside its promise?",
+        "explanation": "The Rail handles ordinary drift, stale evidence, bad input, unsafe links, identity conflicts, and agent misuse. It does not complicate delivery to fight malware already running as the same trusted user.",
+        "whyItMatters": "Clear limits make safety claims testable and prevent out-of-scope hardening from overwhelming the happy path.",
+        "priorReview": {
+          "disposition": "pass",
+          "note": "Accepted — Protect against ordinary drift, stale state, malformed inputs, unsafe links, identity ambiguity, and agent misuse. Do not burden the happy path with defenses against a malicious process already running as the trusted OS user."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-8-nx",
+    "title": "Principle 8 · Nx is the execution graph",
+    "learningSteps": [
+      {
+        "stepId": "principle-8-nx",
+        "sourceQuote": "**Nx is the execution graph.**",
+        "purpose": "Use the workspace graph instead of repeatedly running everything.",
+        "question": "What should be the default validation path?",
+        "explanation": "Focused and affected Nx targets run with normal cache behavior. Direct test-runner commands remain diagnostic exceptions.",
+        "whyItMatters": "The graph makes validation faster while preserving explicit project boundaries and reproducible targets.",
+        "priorReview": {
+          "disposition": "pass",
+          "note": "NN — Nx is the default execution graph. Use focused and affected targets with normal caching; direct runner commands are diagnostic exceptions."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-9-adapters",
+    "title": "Principle 9 · Adapters preserve identity",
+    "learningSteps": [
+      {
+        "stepId": "principle-9-adapters",
+        "sourceQuote": "**Adapters preserve identity.**",
+        "purpose": "Keep SHIELD portable across AI hosts.",
+        "question": "What remains canonical when the executor changes?",
+        "explanation": "Codex, Copilot, Factory, local models, and future hosts consume the same seat and task contracts while recording the executor and model that actually performed the work.",
+        "whyItMatters": "The workflow belongs to SHIELD rather than being trapped inside one vendor or model.",
+        "priorReview": {
+          "disposition": "pass",
+          "note": "NN — The seat and task contract belongs to SHIELD, while Codex, Copilot, Factory, local models, and future hosts truthfully record the executor that performed the work."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-10-compatibility",
+    "title": "Principle 10 · Compatibility stays outside the kernel",
+    "learningSteps": [
+      {
+        "stepId": "principle-10-compatibility",
+        "sourceQuote": "**Compatibility stays outside the kernel.**",
+        "purpose": "Reuse lessons without rebuilding obsolete failures.",
+        "question": "How should legacy behavior influence the new Rail?",
+        "explanation": "Legacy behavior is evidence, not automatically a requirement. Keep genuine invariants, rebuild useful outcomes behind clean contracts, and drop recovery machinery for failures the new architecture eliminates.",
+        "whyItMatters": "The vertical happy path—not old recovery vocabulary—must design the new kernel.",
+        "priorReview": {
+          "disposition": "revise",
+          "note": "Legacy behavior is evidence, not a requirement. Preserve genuine invariants, but do not rebuild recovery paths for failures eliminated by the new architecture.",
+          "replacement": "**Compatibility stays outside the kernel.** Legacy behavior is evidence, not automatically a requirement. Preserve proven invariants and useful output vectors through adapters, but do not import legacy mission schemas, lifecycle assumptions, authority rules, or recovery machinery into the new kernel. Do not recreate recovery paths for failures eliminated by the new architecture."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-11-maintainability",
+    "title": "Principle 11 · Maintainability is executable",
+    "learningSteps": [
+      {
+        "stepId": "principle-11-maintainability",
+        "sourceQuote": "**Maintainability is executable.**",
+        "purpose": "Make code quality visible and repeatable.",
+        "question": "How should maintainability be proven without coupling the kernel to one vendor?",
+        "explanation": "Every package owns focused build, test, typecheck, lint, boundary, and code-quality targets. SonarQube can be one adapter over that evidence rather than a kernel dependency.",
+        "whyItMatters": "Quality becomes an executable property of each library instead of a subjective promise.",
+        "priorReview": {
+          "disposition": "revise",
+          "note": "Quality checks are non-negotiable, but the kernel should not be coupled to SonarQube. SonarQube can consume or extend repository-owned quality evidence as an adapter.",
+          "replacement": "**Maintainability is executable.** Every package has focused build, test, typecheck, lint, dependency-boundary, and code-quality targets from its first production change. Code-smell evidence is part of milestone completion. Vendor tools such as SonarQube integrate as adapters over that evidence rather than becoming kernel dependencies."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-12-small",
+    "title": "Principle 12 · Small is the default",
+    "learningSteps": [
+      {
+        "stepId": "principle-12-small",
+        "sourceQuote": "**Small is the default.**",
+        "purpose": "Keep the architecture navigable by humans and agents.",
+        "question": "What should happen when a component becomes difficult to understand?",
+        "explanation": "Components own one capability, modules expose narrow interfaces, and functions perform one named transformation. Size and complexity thresholds trigger a split review rather than automatic ceremony.",
+        "whyItMatters": "Small cohesive parts are easier to find, test, explain, replace, and safely parallelize.",
+        "priorReview": {
+          "disposition": "pass",
+          "note": "NN — Small cohesive libraries, narrow module interfaces, and one-purpose functions make the system easier for humans and agents to find, understand, test, and replace."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-13-velocity",
+    "title": "Principle 13 · Governance enables velocity",
+    "learningSteps": [
+      {
+        "stepId": "principle-13-velocity",
+        "sourceQuote": "**Governance enables velocity.**",
+        "purpose": "Keep the mission moving while blocking only unsafe effects.",
+        "question": "What should happen after a correctable failure?",
+        "explanation": "Fail closed on the unsafe action, then classify, repair, validate, and rejoin. Discovery may expand work inside the accepted outcome and risk envelope; material changes require direction.",
+        "whyItMatters": "Governance should help the team finish the song, not stop the performance after every recoverable mistake.",
+        "priorReview": {
+          "disposition": "revise",
+          "note": "Fail closed on the unsafe action, not the whole mission. Correctable failures should classify, repair, validate, and rejoin. Discovery can flex within the accepted outcome and risk envelope; material changes still need direction.",
+          "replacement": "**Governance enables velocity.** The default eligible transition advances automatically, and advisory evidence does not become a stop. The Rail blocks an unsafe or unauthorized effect, not the entire mission: known correctable failures classify, repair, validate, and rejoin through a deterministic switch. Discovery may expand work within the accepted outcome and risk envelope, including a bounded prerequisite branch when useful; changes to the promised outcome, material risk, or irreversible authority require recorded human direction."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-14-reference-quality",
+    "title": "Principle 14 · The rail is reference-quality software",
+    "learningSteps": [
+      {
+        "stepId": "principle-14-reference-quality",
+        "sourceQuote": "**The rail is reference-quality software.**",
+        "purpose": "Make V1 credible as an example of how the team builds.",
+        "question": "What evidence should support a reference-quality claim?",
+        "explanation": "Architecture, source, tests, static analysis, documentation, and a proving trace must meet measurable V1 criteria. A working prototype with hidden coupling is not enough.",
+        "whyItMatters": "The Rail should demonstrate the engineering standard it asks other teams to trust.",
+        "priorReview": {
+          "disposition": "revise",
+          "note": "The reference-quality claim needs measurable V1 evidence, not only a subjective statement that the result is suitable.",
+          "replacement": "**The Rail is reference-quality software.** V1 completion requires measurable evidence for architecture boundaries, focused tests, type safety, lint and code-smell thresholds, documentation, and an end-to-end proving trace. A successful prototype with hidden coupling, unexplained debt, or missing quality evidence is not V1."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "principle-15-human-steering",
+    "title": "Principle 15 · Humans can keep up",
+    "learningSteps": [
+      {
+        "stepId": "principle-15-human-steering",
+        "sourceQuote": "**Humans can keep up.**",
+        "purpose": "Give the operator a comprehensible steering surface.",
+        "question": "What must Guided Review let a human do without reading protocol transcripts?",
+        "explanation": "The reviewer can understand, question, revise, approve, or record observed QA outcomes in small source-backed sections. The view projects canonical state rather than becoming another workflow engine.",
+        "whyItMatters": "Fast agents only help when the accountable human can understand and steer their work.",
+        "priorReview": {
+          "disposition": "pass",
+          "note": "NN — Guided Review must let the accountable human understand, question, revise, approve, and record QA outcomes without reading transcripts or protocol JSON."
+        }
+      }
+    ],
+    "reviewMode": "disposition",
+    "journeyGroup": {
+      "groupId": "design-principles",
+      "title": "Design principles"
+    }
+  },
+  {
+    "checkpointId": "canonical-and-rail",
+    "title": "Identity and the pure mission rail",
+    "learningSteps": [
+      {
+        "stepId": "canonical-contract",
+        "sourceQuote": "Owns canonical JSON, deterministic digests, content IDs, closed-result helpers,\nand primitive validators. Begin by surgically extracting the proven neutral\nparts of `@shield/mission-preparation/canonical-json-v1.mts` with their tests.\nNo Git, filesystem, seat, mission-phase, or authority concepts are allowed.",
+        "purpose": "Canonical Contract identity",
+        "question": "What does canonical contract work make stable?",
+        "explanation": "This package turns equivalent data into one canonical form and gives it a deterministic digest. It does not know about Git, seats, or authority.",
+        "whyItMatters": "Stable identity lets every later decision refer to the same exact thing."
+      },
+      {
+        "stepId": "mission-rail",
+        "sourceQuote": "Owns the pure mission model and transition function. It has no filesystem,\nprocess, network, GitHub, signer, model, or clock access.",
+        "purpose": "Pure Mission Rail decisions",
+        "question": "Why should next-action calculation be separate from host effects?",
+        "explanation": "The mission rail reads durable state and observations, then returns one legal next operation. A host may perform that operation, but it must not change the rule while doing so.",
+        "whyItMatters": "Pure decisions are easier to test, replay, and move between hosts."
+      }
+    ]
+  },
+  {
+    "checkpointId": "guided-review",
+    "title": "Guided Review as the human steering surface",
+    "learningSteps": [
+      {
+        "stepId": "guided-review-contract",
+        "sourceQuote": "It projects a Fury-reviewed plan, an exact implementation diff, or executable\nQA scenarios into ordered, acceptance-criterion-aligned sections. Plan sections\nshow scope, exclusions, commands, risks, and unresolved assumptions. Code\nsections show the approved requirement, changed files, behavior, and review\nevidence. QA sections show setup, action, expected result, observed result, and\nretained evidence.",
+        "purpose": "See Guided Review as a small projection over canonical work.",
+        "question": "What should a reviewer see instead of raw agent protocol?",
+        "explanation": "Guided Review turns plan, code, and QA evidence into ordered sections with decisions and proof a person can understand.",
+        "whyItMatters": "The human can steer meaningful decisions without becoming a transcript reader."
+      },
+      {
+        "stepId": "guided-review-loss",
+        "sourceQuote": "no UI event can grant authority by itself.",
+        "purpose": "Separate the review view from durable state.",
+        "question": "Why must closing the review screen not erase the mission?",
+        "explanation": "The screen is only a view. Canonical state lives in the engine and store, so losing the view loses no fact or decision.",
+        "whyItMatters": "A useful review surface must remain safe even when the interface is interrupted."
+      }
+    ]
+  },
+  {
+    "checkpointId": "store-and-lanes",
+    "title": "Deterministic history and reusable lanes",
+    "learningSteps": [
+      {
+        "stepId": "mission-store",
+        "sourceQuote": "Owns closed event codecs, snapshots, deterministic replay, optimistic sequence\nchecks, and evidence references. It stores and replays facts; it does not decide\nthe next action and performs no I/O. The first host adapter may persist these\nevents as repository-local JSONL and canonical JSON. No database is required\nfor V1.",
+        "purpose": "Understand what deterministic history owns.",
+        "question": "What should the store record without deciding?",
+        "explanation": "The store validates, saves, and replays events and observations. It preserves facts; the rail still decides the next action.",
+        "whyItMatters": "Separating memory from policy prevents history code from becoming a hidden workflow engine."
+      },
+      {
+        "stepId": "store-no-database",
+        "sourceQuote": "adopting a database in V1.",
+        "purpose": "Recognize the smallest durable starting point.",
+        "question": "Why can the first version use repository-local event files?",
+        "explanation": "A repository-local JSONL log and canonical snapshots can record the first flight without introducing a database. A later storage system can keep the same contract.",
+        "whyItMatters": "Starting small reduces infrastructure risk while preserving replayable evidence."
+      },
+      {
+        "stepId": "lane-lifecycle",
+        "sourceQuote": "- `reconcile` preserves Alpha/Bravo/Charlie paths, proves the delivered branch\n  is published, merged, or archived, clears mission-local state, moves to the\n  selected exact base, installs current policy, and emits a fresh receipt.",
+        "purpose": "Understand stable lanes as reusable workspace identities.",
+        "question": "What does lane lifecycle manage that the store does not?",
+        "explanation": "Lane lifecycle assigns stable Alpha, Bravo, and Charlie paths, reconciles completed work, and returns a clean lane to ready.",
+        "whyItMatters": "A successful mission should leave a workspace another mission can use."
+      }
+    ]
+  },
+  {
+    "checkpointId": "effects-and-projection",
+    "title": "Effects outside, visibility inside",
+    "learningSteps": [
+      {
+        "stepId": "mission-host",
+        "sourceQuote": "Owns side effects and observations: Git, filesystem, GitHub, issue adapters,\nagent dispatch, model/runtime identity, signing, clocks, and process execution.\nIt implements ports defined by the rail and lane libraries. Host failures do\nnot change pure state until a durable result is recorded.",
+        "purpose": "Locate real-world effects at the host boundary.",
+        "question": "Which work belongs in the host rather than the pure rail?",
+        "explanation": "The host performs Git, filesystem, process, GitHub, dispatch, model, clock, and signing effects. It reports results back to pure contracts.",
+        "whyItMatters": "Keeping effects at the edge makes the core portable and predictable."
+      },
+      {
+        "stepId": "mission-projection",
+        "sourceQuote": "Owns the pure read model consumed by terminal status, CLI, and Mission Control.\nIt converts validated rail and lane events into stable views:\nmission phase, lane state, exact revision, active seat/run, blocker class,\nhuman gate, validation state, publication state, and one recommended action.\nIt cannot write journals, grant authority, dispatch agents, or perform effects.",
+        "purpose": "Understand projection as a readable status view.",
+        "question": "What should Mission Control display, and what must it never do?",
+        "explanation": "Projection converts validated facts into phase, lane, blocker, gate, and next-action views. It must not write journals, dispatch agents, or mutate state.",
+        "whyItMatters": "Readable status helps people act without creating a second workflow engine."
+      }
+    ]
+  },
+  {
+    "checkpointId": "seat-autonomy",
+    "title": "Who decides, who acts, and when work stops",
+    "learningSteps": [
+      {
+        "stepId": "seat-model",
+        "sourceQuote": "The seat contracts remain useful independently of the current runtime:\n\n- Hill owns issue scope, sequencing, lane assignment, and exception routing.\n- Daisy gathers missing repository and issue evidence without mutation.\n- Fury reviews exact plans and implementation conformance.\n- May owns bounded implementation.\n- Mack validates the exact candidate through the smallest sufficient Nx graph.\n- Coulson, Fitz, and Simmons remain human seats and are never simulated.",
+        "purpose": "Understand why responsibilities are assigned to seats.",
+        "question": "How do seat contracts divide judgment and execution?",
+        "explanation": "Hill sequences, Daisy gathers evidence, Fury reviews, May implements, and Mack validates. The runtime may change, but each responsibility stays recognizable.",
+        "whyItMatters": "Clear ownership prevents fast automation from erasing accountability."
+      },
+      {
+        "stepId": "human-gates",
+        "sourceQuote": "Humans decide only meaningful gates.",
+        "purpose": "Identify the intended human stopping points.",
+        "question": "What should happen automatically, and what should still stop for a person?",
+        "explanation": "Routine mechanical progress should advance automatically. Material scope, authorization, contradictory evidence, and excluded effects still require a human or an explicit blocker.",
+        "whyItMatters": "The system can move quickly without making people spectators at consequential decisions."
+      }
+    ]
+  },
+  {
+    "checkpointId": "factory-and-epic-go",
+    "title": "Factory construction and Epic Wheels Up",
+    "learningSteps": [
+      {
+        "stepId": "factory-program",
+        "sourceQuote": "Factory receives the architecture and issue graph as a bounded Mission rather\nthan a single open-ended rewrite prompt.",
+        "purpose": "See the architecture as a bounded construction mission.",
+        "question": "What does Factory receive instead of an open-ended rewrite prompt?",
+        "explanation": "Factory receives an architecture, dependency graph, owned paths, milestones, effects, and validation envelope. Teams can then build one bounded rail.",
+        "whyItMatters": "Bounded inputs turn a large rewrite into work that can be assigned and checked."
+      },
+      {
+        "stepId": "factory-go",
+        "sourceQuote": "Human GO approves the Factory Mission plan and selected autonomy level.",
+        "purpose": "Understand the human GO decision.",
+        "question": "What does the human approve before autonomous construction starts?",
+        "explanation": "The human approves the rendered mission plan and its autonomy level. That decision starts the bounded construction work; it does not authorize unrelated effects.",
+        "whyItMatters": "A clear starting gate gives autonomy a known boundary."
+      }
+    ]
+  },
+  {
+    "checkpointId": "executable-issue-packet",
+    "title": "Issues as executable construction packets",
+    "learningSteps": [
+      {
+        "stepId": "issue-packet",
+        "sourceQuote": "Every issue contains these headings:\n\n```text\nOutcome\nArchitecture source and exact base\nDepends on\nOwned paths\nInputs and reusable legacy sources\nRequired behavior\nExplicit exclusions\nFactory execution notes\nNx validation commands\nRequired artifacts\nTerminal handoff\n```",
+        "purpose": "Understand the minimum shape of an executable issue.",
+        "question": "What must a fresh team receive before it starts?",
+        "explanation": "The issue packet names the outcome, exact base, dependencies, owned paths, required behavior, exclusions, validation, artifacts, and handoff.",
+        "whyItMatters": "A complete packet prevents each team from rediscovering hidden architecture."
+      },
+      {
+        "stepId": "issue-headings",
+        "sourceQuote": "`Factory execution notes` name the preferred mode, feature/milestone, safe\nautonomy envelope, allowed parallelism, and specialist Droid handoffs. The\npacket must remain executable by another host; Factory-specific settings are\nadvice, not product contracts.",
+        "purpose": "Recognize the packet as a repeatable interface.",
+        "question": "Why make issue sections consistent across hosts?",
+        "explanation": "Consistent headings let another team or host find scope, inputs, commands, and proof in the same places.",
+        "whyItMatters": "A repeatable packet makes work portable and easier to review."
+      }
+    ]
+  },
+  {
+    "checkpointId": "portability-and-legacy",
+    "title": "Portable execution and selective legacy extraction",
+    "learningSteps": [
+      {
+        "stepId": "executor-portability",
+        "sourceQuote": "Repository task packets are the source of truth. They contain objective,\nowned paths, exact base, inputs, exclusions, expected outputs, validation\ntargets, and terminal handoff. They do not depend on chat history.",
+        "purpose": "Separate task meaning from the host that runs it.",
+        "question": "What should remain invariant across Codex, Copilot, Factory, and local models?",
+        "explanation": "The task packet remains the source of truth: objective, owned paths, exact base, exclusions, inputs, validation, and handoff. Only the executor changes.",
+        "whyItMatters": "Portable contracts prevent the tool brand from becoming part of the product meaning."
+      },
+      {
+        "stepId": "packet-history",
+        "sourceQuote": "They do not depend on chat history.",
+        "purpose": "Understand why packets must stand alone.",
+        "question": "What makes a task recoverable by another worker?",
+        "explanation": "A worker can continue from the packet because it contains the objective, exact repository context, and required proof instead of relying on private conversation.",
+        "whyItMatters": "Work survives handoffs, interruptions, and host changes."
+      },
+      {
+        "stepId": "legacy-protocol",
+        "sourceQuote": "Every candidate behavior receives one disposition before migration:\n\n| Disposition | Meaning |\n| --- | --- |\n| keep | Proven invariant required by the new happy path. |\n| simplify | Correct protection or behavior with excessive machinery. |\n| replace | Required capability whose implementation boundary is defective. |\n| drop | Legacy or threat-model behavior no longer aligned with the product. |\n| defer | Valuable behavior not required for the first complete flight. |",
+        "purpose": "Use old code selectively rather than copying it blindly.",
+        "question": "What should happen before legacy behavior moves into the new rail?",
+        "explanation": "Each old behavior gets a keep, simplify, replace, drop, or defer decision. Only the smallest proven invariant is extracted into the new boundary.",
+        "whyItMatters": "Selective reuse avoids carrying the old system's coupling into the replacement."
+      }
+    ]
+  },
+  {
+    "checkpointId": "delivery-sequence",
+    "title": "The order of construction",
+    "learningSteps": [
+      {
+        "stepId": "delivery-sequence",
+        "sourceQuote": "- Implement the minimal mission state, events, `next` union, and table-driven\n  happy-path tests.\n- Implement the closed Guided Review plan/code/QA contract and static adapters.\n- Prove no host imports, deterministic transitions, exact review binding, and\n  property/mutation coverage of the critical state kernel.",
+        "purpose": "Understand why construction order matters.",
+        "question": "What must the pure rail prove before host composition begins?",
+        "explanation": "The pure rail must prove its state model, next-action rules, Guided Review contract, deterministic transitions, exact review binding, and critical test coverage before effects are connected.",
+        "whyItMatters": "Early boundaries reduce later rework and expose risky assumptions sooner."
+      },
+      {
+        "stepId": "first-proving-issue",
+        "sourceQuote": "Carry one curated real issue through the complete path.",
+        "purpose": "Recognize the first end-to-end proof.",
+        "question": "What must the first proving issue demonstrate?",
+        "explanation": "One real issue should travel from intake through review, implementation, validation, conformance, draft PR, and lane reconciliation.",
+        "whyItMatters": "A complete flight proves the pieces work together, not just in isolation."
+      }
+    ]
+  },
+  {
+    "checkpointId": "first-flight-and-go",
+    "title": "The proof and your GO decision",
+    "learningSteps": [
+      {
+        "stepId": "flight-criteria",
+        "sourceQuote": "- A cold Hill can begin a named issue without composing JSON.\n- The system always identifies the current phase and one legal next action.\n- Plan and implementation reviews bind to exact revisions.\n- One meaningful implementation approval authorizes the bounded work.\n- One Epic Wheels Up authorizes cycling through the accepted Track-Layer issue\n  graph and bounded corrections through draft PRs without per-issue PINs.\n- May and Mack use focused or affected Nx targets with cache enabled.\n- Draft PR publication requires no redundant PIN after bounded implementation\n  publication was approved.\n- No successful mission ends with unique commits only in a local lane.\n- Alpha/Bravo/Charlie can accept another mission without changing paths or\n  deleting installed dependencies.\n- The same task packet can be executed by a Codex seat or Factory Droid while\n  preserving actual runtime identity.\n- Guided QA visibly demonstrates the exact candidate working in a real proving\n  scenario. A checklist, mocked unit test, or prose claim alone cannot PASS.\n- QA evidence records setup, action, expected result, observed result, retained\n  artifact references, operator disposition, and exact candidate revision.\n- Legacy SHIELD remains runnable until an explicitly reviewed migration removes\n  it.",
+        "purpose": "Turn the architecture into observable acceptance evidence.",
+        "question": "What would count as proof that the first flight is real?",
+        "explanation": "The criteria require a cold start, one legal next action, exact review binding, visible QA, draft publication, and a stable lane that can accept another mission.",
+        "whyItMatters": "Concrete evidence prevents a polished prototype from being mistaken for a working rail."
+      },
+      {
+        "stepId": "go-exclusions",
+        "sourceQuote": "existing SHIELD runtime.",
+        "purpose": "Keep the GO boundary explicit.",
+        "question": "Which consequential effects remain outside this GO?",
+        "explanation": "GO permits bounded construction under the accepted plan. It does not silently permit merging, deploying, releasing, destructive migration, or deleting the current runtime.",
+        "whyItMatters": "Explicit exclusions protect human control while the team moves autonomously."
+      }
+    ]
+  }
+]

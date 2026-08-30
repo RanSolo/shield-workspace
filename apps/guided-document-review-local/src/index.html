@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Document Trail</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="brand-kicker">SHIELD LEARNING TRAIL</p>
+          <div class="brand-line">
+            <h1>Document Trail</h1>
+            <div id="trail-progress" class="trail-progress scene-a" role="progressbar" aria-label="Document Trail progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <span class="trail-progress__stages" aria-hidden="true"><b>Read it</b><b>Explain it</b><b>Own it</b></span>
+              <span class="trail-progress__stars" aria-hidden="true"></span>
+              <span class="trail-progress__clouds" aria-hidden="true"></span>
+              <span class="trail-progress__sky sky--sun" aria-hidden="true"></span>
+              <span class="trail-progress__sky sky--moon" aria-hidden="true"></span>
+              <span class="trail-progress__scenery scenery--a" aria-hidden="true"><i class="tree"></i><i class="barn"></i><i class="fence"></i><i class="campfire"></i></span>
+              <span class="trail-progress__scenery scenery--b" aria-hidden="true"><i class="tree"></i><i class="barn"></i><i class="fence"></i><i class="campfire"></i></span>
+              <span class="trail-progress__track" aria-hidden="true"></span>
+              <span class="trail-progress__caravan" aria-hidden="true">
+                <span class="trail-progress__wagon"><span></span></span>
+                <span class="trail-progress__team"><i><b></b></i><i><b></b></i></span>
+                <span class="trail-progress__debris" aria-hidden="true">
+                  <i class="debris--wheel"></i>
+                  <i class="debris--canvas"></i>
+                  <i class="debris--crate"></i>
+                  <i class="debris--boot"></i>
+                </span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main id="setup-panel" class="setup">
+        <section class="hero">
+          <p class="eyebrow">Choose your trail</p>
+          <h2>Keep up with the fast, smart fuckers.</h2>
+          <p>Turn a long document into a guided learning journey. The finish line is not a checkbox—it is your explanation in your own words.</p>
+          <button id="start-sample" class="button button--primary" type="button">Review Mission Rail V2</button>
+        </section>
+
+        <section class="custom-review">
+          <h2>Load another document</h2>
+          <div class="field-grid">
+            <label>Reviewer name <input id="reviewer-name" placeholder="Optional" autocomplete="name" /></label>
+            <label>Document title <input id="document-title" placeholder="Architecture proposal" /></label>
+          </div>
+          <label>Document file <input id="document-file" type="file" accept=".md,.txt,text/plain,text/markdown" /></label>
+          <label>Or paste the document <textarea id="document-text" rows="10" placeholder="# Purpose&#10;Paste Markdown or text here..."></textarea></label>
+          <details>
+            <summary>Optional AI-authored checkpoints</summary>
+            <p class="hint">Works with Gemini, ChatGPT, Claude, Copilot, or a local model. Copy the tailored V2 prompt, give it to your AI, then paste the returned JSON below.</p>
+            <button id="copy-ai-prompt" class="button button--secondary" type="button">Copy prompt for any AI</button>
+            <input id="checkpoint-file" type="file" accept=".json,application/json" />
+            <textarea id="checkpoint-json" rows="7" placeholder='[{"checkpointId":"purpose", ...}]'></textarea>
+          </details>
+          <p id="setup-message" class="message message--warning" aria-live="polite"></p>
+          <button id="start-custom" class="button button--secondary" type="button">Build my trail</button>
+        </section>
+      </main>
+
+      <main id="review-panel" class="review-layout" hidden>
+        <p id="speech-status" class="visually-hidden" aria-live="polite"></p>
+        <aside class="trail-sidebar">
+          <div id="stats" class="stats"></div>
+          <ol id="journey" class="journey"></ol>
+        </aside>
+        <section id="checkpoint-panel" class="checkpoint-panel"></section>
+        <aside id="source-panel" class="source-panel"></aside>
+        <section id="completion-panel" class="completion-panel" hidden></section>
+      </main>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
