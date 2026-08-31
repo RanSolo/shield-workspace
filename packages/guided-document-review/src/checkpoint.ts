@@ -18,6 +18,7 @@ export interface ReviewCheckpoint {
   readonly checkpointId: string;
   readonly title: string;
   readonly reviewMode?: "teach" | "disposition";
+  readonly dispositionOptions?: readonly ("pass" | "revise" | "question" | "needs_qa")[];
   readonly journeyGroup?: Readonly<{
     groupId: string;
     title: string;
@@ -116,10 +117,12 @@ function isExactCheckpoint(value: unknown): value is ReviewCheckpoint {
   const fields = [
     ...requiredFields,
     ...(value.reviewMode === undefined ? [] : ["reviewMode"]),
+    ...(value.dispositionOptions === undefined ? [] : ["dispositionOptions"]),
     ...(value.journeyGroup === undefined ? [] : ["journeyGroup"]),
   ];
   return exactKeys(value, fields) &&
     (value.reviewMode === undefined || value.reviewMode === "teach" || value.reviewMode === "disposition") &&
+    (value.dispositionOptions === undefined || isDispositionOptions(value.dispositionOptions)) &&
     (value.journeyGroup === undefined || isJourneyGroup(value.journeyGroup)) &&
     Array.isArray(value.learningSteps) &&
     value.learningSteps.length >= 1 && value.learningSteps.length <= 3 &&
@@ -162,6 +165,7 @@ function copyAndFreezeCheckpoints(checkpoints: readonly ReviewCheckpoint[]): rea
     checkpointId: checkpoint.checkpointId,
     title: checkpoint.title,
     reviewMode: checkpoint.reviewMode ?? "teach",
+    ...(checkpoint.dispositionOptions ? { dispositionOptions: Object.freeze([...checkpoint.dispositionOptions]) } : {}),
     ...(checkpoint.journeyGroup ? { journeyGroup: Object.freeze({ ...checkpoint.journeyGroup }) } : {}),
     learningSteps: Object.freeze(checkpoint.learningSteps.map((step) => Object.freeze({
       stepId: step.stepId,
@@ -174,6 +178,12 @@ function copyAndFreezeCheckpoints(checkpoints: readonly ReviewCheckpoint[]): rea
     }))),
   }));
   return Object.freeze(copy);
+}
+
+function isDispositionOptions(value: unknown): value is NonNullable<ReviewCheckpoint["dispositionOptions"]> {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 4) return false;
+  const allowed = new Set(["pass", "revise", "question", "needs_qa"]);
+  return value.every((entry) => typeof entry === "string" && allowed.has(entry)) && new Set(value).size === value.length;
 }
 
 function uniqueQuote(text: string, candidate: string, start: number): string {

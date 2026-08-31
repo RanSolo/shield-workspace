@@ -1,0 +1,368 @@
+{
+  "schemaVersion": 1,
+  "pullRequest": {
+    "repository": "RanSolo/shield-workspace",
+    "number": 435,
+    "title": "feat: establish Document Trail product baseline",
+    "url": "https://github.com/RanSolo/shield-workspace/pull/435",
+    "baseRevision": "af4c3a76c8c65def029dce2e68c25f556b2790d7",
+    "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5",
+    "observedAt": "2026-08-30T23:47:49.855Z"
+  },
+  "criteria": [
+    {
+      "criterion": {
+        "criterionId": "issue-434-ac-1",
+        "text": "Baseline branch is pushed and represented by a draft PR.",
+        "sourceIssueNumber": 434
+      },
+      "guidance": {
+        "explanation": "The observed pull request is the review home for the Document Trail baseline.",
+        "reviewQuestion": "Does this pull request give the baseline a clear, reviewable delivery home?"
+      },
+      "evidence": {
+        "commitment": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "pull_request",
+              "field": "number",
+              "value": 435,
+              "provenance": {
+                "source": "pull_request",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            },
+            {
+              "kind": "pull_request",
+              "field": "head_revision",
+              "value": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5",
+              "provenance": {
+                "source": "pull_request",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            },
+            {
+              "kind": "issue",
+              "field": "title",
+              "value": "Document Trail V0: establish the product baseline and reviewable delivery flow",
+              "provenance": {
+                "source": "issue",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5",
+                "issueNumber": 434
+              }
+            }
+          ]
+        },
+        "changedFileOrDiff": {
+          "state": "unavailable",
+          "reason": "No changed file is claimed as direct evidence for this criterion."
+        },
+        "reportedValidation": {
+          "state": "unavailable",
+          "reason": "The PR-body validation report is unverified and does not carry an exact validated revision."
+        },
+        "openGap": {
+          "state": "available",
+          "items": []
+        }
+      }
+    },
+    {
+      "criterion": {
+        "criterionId": "issue-434-ac-2",
+        "text": "Both Document Trail Nx projects build, typecheck, and test successfully.",
+        "sourceIssueNumber": 434
+      },
+      "guidance": {
+        "explanation": "The observed diff contains the focused Nx project contracts and the PR reports their validation.",
+        "reviewQuestion": "Do the focused project contracts and reported validation adequately prove both Document Trail projects?"
+      },
+      "evidence": {
+        "commitment": {
+          "state": "unavailable",
+          "reason": "No observed commitment anchor is available for this criterion."
+        },
+        "changedFileOrDiff": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "file",
+              "file": {
+                "path": "packages/guided-document-review/package.json",
+                "additions": 28,
+                "deletions": 0,
+                "changeType": "ADDED"
+              },
+              "provenance": {
+                "source": "file",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            },
+            {
+              "kind": "file",
+              "file": {
+                "path": "apps/guided-document-review-local/package.json",
+                "additions": 36,
+                "deletions": 0,
+                "changeType": "ADDED"
+              },
+              "provenance": {
+                "source": "file",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            }
+          ]
+        },
+        "reportedValidation": {
+          "state": "unavailable",
+          "reason": "The PR-body validation report is unverified and does not carry an exact validated revision."
+        },
+        "openGap": {
+          "state": "available",
+          "items": [
+            "The human reviewer must decide whether the observed proof is sufficient for baseline acceptance."
+          ]
+        }
+      }
+    },
+    {
+      "criterion": {
+        "criterionId": "issue-434-ac-3",
+        "text": "Current architecture and Factory review kits load as prepared trails.",
+        "sourceIssueNumber": 434
+      },
+      "guidance": {
+        "explanation": "The observed diff contains the prepared-trail manifests and checkpoint sets used by the local application.",
+        "reviewQuestion": "Can a reviewer open both prepared learning trails without manually locating source and checkpoint files?"
+      },
+      "evidence": {
+        "commitment": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "pr_body",
+              "excerpt": "- Local Document Trail application and prepared-trail route.",
+              "provenance": {
+                "source": "pr_body",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            }
+          ]
+        },
+        "changedFileOrDiff": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "file",
+              "file": {
+                "path": "apps/guided-document-review-local/review-kits/mission-rail-v1.trail.json",
+                "additions": 8,
+                "deletions": 0,
+                "changeType": "ADDED"
+              },
+              "provenance": {
+                "source": "file",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            },
+            {
+              "kind": "file",
+              "file": {
+                "path": "apps/guided-document-review-local/review-kits/mission-rail-v2-checkpoints.json",
+                "additions": 610,
+                "deletions": 0,
+                "changeType": "ADDED"
+              },
+              "provenance": {
+                "source": "file",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            },
+            {
+              "kind": "file",
+              "file": {
+                "path": "apps/guided-document-review-local/review-kits/shield-inside-factory.trail.json",
+                "additions": 8,
+                "deletions": 0,
+                "changeType": "ADDED"
+              },
+              "provenance": {
+                "source": "file",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            },
+            {
+              "kind": "file",
+              "file": {
+                "path": "apps/guided-document-review-local/review-kits/shield-inside-factory-checkpoints.json",
+                "additions": 134,
+                "deletions": 0,
+                "changeType": "ADDED"
+              },
+              "provenance": {
+                "source": "file",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            }
+          ]
+        },
+        "reportedValidation": {
+          "state": "unavailable",
+          "reason": "The PR-body validation report is unverified and does not carry an exact validated revision."
+        },
+        "openGap": {
+          "state": "available",
+          "items": [
+            "Visual behavior remains a human QA observation rather than an adapter observation."
+          ]
+        }
+      }
+    },
+    {
+      "criterion": {
+        "criterionId": "issue-434-ac-4",
+        "text": "The PR explains known prototype limitations and identifies the next small product slices.",
+        "sourceIssueNumber": 434
+      },
+      "guidance": {
+        "explanation": "The observed PR body describes the baseline, validation, exclusions, and issue-bound follow-on delivery policy.",
+        "reviewQuestion": "Does the PR make the prototype boundary and next delivery shape understandable enough to accept as a baseline?"
+      },
+      "evidence": {
+        "commitment": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "pr_body",
+              "excerpt": "This is intentionally the one large prototype-baseline PR.",
+              "provenance": {
+                "source": "pr_body",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            },
+            {
+              "kind": "pr_body",
+              "excerpt": "No deployment, release, hosted persistence, provider credentials, or Mission Rail V1 construction contracts.",
+              "provenance": {
+                "source": "pr_body",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            }
+          ]
+        },
+        "changedFileOrDiff": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "file",
+              "file": {
+                "path": "apps/guided-document-review-local/README.md",
+                "additions": 47,
+                "deletions": 0,
+                "changeType": "ADDED"
+              },
+              "provenance": {
+                "source": "file",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            },
+            {
+              "kind": "file",
+              "file": {
+                "path": "apps/guided-document-review-local/QA-CHECKLIST.md",
+                "additions": 55,
+                "deletions": 0,
+                "changeType": "ADDED"
+              },
+              "provenance": {
+                "source": "file",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            }
+          ]
+        },
+        "reportedValidation": {
+          "state": "unavailable",
+          "reason": "The PR-body validation report is unverified and does not carry an exact validated revision."
+        },
+        "openGap": {
+          "state": "available",
+          "items": [
+            "The reviewer may request clearer limitations or next-slice wording."
+          ]
+        }
+      }
+    },
+    {
+      "criterion": {
+        "criterionId": "issue-434-ac-5",
+        "text": "Future product work does not accumulate directly on the baseline branch after review begins.",
+        "sourceIssueNumber": 434
+      },
+      "guidance": {
+        "explanation": "The observed PR body states that later product changes should be issue-bound and delivered separately after review begins.",
+        "reviewQuestion": "Does the observed delivery policy make the baseline branch boundary clear without relying on unobserved follow-on PR claims?"
+      },
+      "evidence": {
+        "commitment": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "pr_body",
+              "excerpt": "further product changes should be issue-bound, lane-assigned, and delivered in small PRs rather than appended here.",
+              "provenance": {
+                "source": "pr_body",
+                "repository": "RanSolo/shield-workspace",
+                "pullRequestNumber": 435,
+                "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+              }
+            }
+          ]
+        },
+        "changedFileOrDiff": {
+          "state": "unavailable",
+          "reason": "No changed file is claimed as direct evidence for this criterion."
+        },
+        "reportedValidation": {
+          "state": "unavailable",
+          "reason": "The PR-body validation report is unverified and does not carry an exact validated revision."
+        },
+        "openGap": {
+          "state": "available",
+          "items": []
+        }
+      }
+    }
+  ],
+  "packetId": "pr-review:RanSolo/shield-workspace#435:84f41810093883bd",
+  "packetDigest": "sha256:84f41810093883bd72d90b9efe15827b23345752f3d59b2160e8b1899b0ab68c"
+}

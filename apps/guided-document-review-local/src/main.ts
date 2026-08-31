@@ -31,12 +31,21 @@ import {
 import { renderCheckpoint, renderCompletion, renderJourney, renderSource, renderStats } from "./render.js";
 import { sampleCheckpoints, sampleDocument } from "./sample-review.js";
 import { createSpeechControls } from "./speech.js";
+import {
+  carryForwardAnswersForReviewer,
+  decodePreparedTrailResponse,
+  exactDraftForReviewer,
+  reviewerIdentityFromOperatorEntry,
+  type PreparedReviewBinding,
+} from "./prepared-trail.mjs";
 
 interface AppState {
   source: SourceDocument;
   checkpointSet: CheckpointSet;
   session: ReviewSession;
   message: string | null;
+  preparedReview: PreparedReviewBinding | null;
+  preparedTrailSlug: string | null;
 }
 
 interface TextDrafts {
@@ -83,24 +92,21 @@ setTrailTimeOfDay();
 animateTrail();
 void loadPreparedTrailFromLocation();
 
-interface PreparedTrailPacket {
-  readonly schemaVersion: 1;
-  readonly slug: string;
-  readonly title: string;
-  readonly reviewerName: string;
-  readonly documentText: string;
-  readonly checkpoints: unknown;
-}
-
 async function loadPreparedTrailFromLocation(): Promise<void> {
   const match = window.location.pathname.match(/^\/trails\/([a-z0-9-]+)$/u);
   if (!match) return;
   try {
     const response = await fetch(`/api/trails/${match[1]}`, { headers: { accept: "application/json" } });
-    if (!response.ok) throw new Error("Prepared trail not found.");
-    const packet = await response.json() as PreparedTrailPacket;
-    if (packet.schemaVersion !== 1 || packet.slug !== match[1]) throw new Error("Prepared trail response is malformed.");
-    await beginReview(packet.title, packet.documentText, packet.checkpoints, packet.reviewerName);
+    if (!response.ok) throw new Error(await response.text() || "Prepared trail not found.");
+    const packet = decodePreparedTrailResponse(await response.json(), match[1]);
+    await beginReview(
+      packet.title,
+      packet.documentText,
+      packet.checkpoints,
+      "",
+      packet.schemaVersion === 2 ? packet.reviewBinding : null,
+      packet.schemaVersion === 2 ? packet.slug : null,
+    );
   } catch (error) {
     showSetupMessage(error instanceof Error ? error.message : "Unable to load this prepared trail.");
   }
@@ -132,13 +138,14 @@ async function copyAiPrompt(): Promise<void> {
   }
 }
 
-async function beginReview(title: string, text: string, checkpoints: unknown, name: string): Promise<void> {
+async function beginReview(title: string, text: string, checkpoints: unknown, name: string, preparedReview: PreparedReviewBinding | null = null, preparedTrailSlug: string | null = null): Promise<void> {
+  if (preparedReview && preparedTrailSlug) await assertPreparedReviewCurrent(preparedTrailSlug, preparedReview);
   const source = await createSourceDocument(title, text);
   const checkpointSet = await createCheckpointSet(`${title} learning trail`, checkpoints, text);
-  const reviewer = name ? { kind: "self_asserted" as const, name } : { kind: "unattributed" as const, name: null };
+  const reviewer = reviewerIdentityFromOperatorEntry(name);
   const saved = await readDraft(source, checkpointSet, reviewer);
   const session = saved ?? await startReviewSession(source, checkpointSet, reviewer, clock);
-  state = { source, checkpointSet, session, message: saved ? "Your saved V2 trail was restored." : null };
+  state = { source, checkpointSet, session, message: saved ? "Your saved V2 trail was restored." : null, preparedReview, preparedTrailSlug };
   lastTrailPercent = null;
   trailWasComplete = false;
   revisionPacketConfirmed = false;
@@ -406,8 +413,31 @@ function completionActions(hasChanges: boolean): HTMLElement {
 
 async function downloadArtifact(): Promise<void> {
   if (!state) return;
-  const artifact = await createReviewArtifact(state.source, state.checkpointSet, state.session);
-  download(`${slug(state.source.title)}-review-v2.json`, JSON.stringify(artifact, null, 2) + "\n", "application/json");
+  try {
+    if (state.preparedReview && state.preparedTrailSlug) await assertPreparedReviewCurrent(state.preparedTrailSlug, state.preparedReview);
+    const artifact = await createReviewArtifact(state.source, state.checkpointSet, state.session, state.preparedReview);
+    download(`${slug(state.source.title)}-review-v3.json`, JSON.stringify(artifact, null, 2) + "\n", "application/json");
+  } catch (error) {
+    state = { ...state, message: error instanceof Error ? error.message : "Review is no longer current; reload the prepared trail." };
+    render();
+  }
+}
+
+async function assertPreparedReviewCurrent(slugValue: string, expected: PreparedReviewBinding): Promise<void> {
+  const response = await fetch(`/api/trails/${slugValue}?head-check=${encodeURIComponent(String(Date.now()))}`, {
+    cache: "no-store",
+    headers: { accept: "application/json" },
+  });
+  if (!response.ok) throw new Error(response.status === 409 ? await response.text() : "Unable to verify the prepared review head.");
+  const packet = decodePreparedTrailResponse(await response.json(), slugValue);
+  if (packet.schemaVersion !== 2 ||
+      packet.reviewBinding.packetId !== expected.packetId ||
+      packet.reviewBinding.packetDigest !== expected.packetDigest ||
+      packet.reviewBinding.repository !== expected.repository ||
+      packet.reviewBinding.pullRequestNumber !== expected.pullRequestNumber ||
+      packet.reviewBinding.headRevision !== expected.headRevision) {
+    throw new Error("Prepared review binding changed; reload the prepared trail before continuing.");
+  }
 }
 
 async function copyRevisionPrompt(): Promise<void> {
@@ -458,8 +488,8 @@ async function readDraft(
     try {
       const decoded = await decodeReviewSession(JSON.parse(raw), source, set);
       if (decoded.ok) {
-        exact = withoutConfidenceStop(decoded.session);
-        if ("migrated" in decoded && decoded.migrated) {
+        exact = exactDraftForReviewer(withoutConfidenceStop(decoded.session), reviewer);
+        if (exact && "migrated" in decoded && decoded.migrated) {
           localStorage.setItem(storageKey(source, set), JSON.stringify(exact));
         }
       }
@@ -487,12 +517,10 @@ async function carryForwardCompletedCheckpoints(
     const key = localStorage.key(index);
     if (!key?.startsWith(prefix) || key === storageKey(source, set)) continue;
     try {
-      const candidate = JSON.parse(localStorage.getItem(key) ?? "null") as {
-        sourceDigest?: unknown;
-        answers?: Record<string, unknown>;
-      };
-      if (candidate?.sourceDigest !== source.sourceDigest || !candidate.answers) continue;
-      const migrated = await replayCompletedPrefix(source, set, reviewer, candidate.answers);
+      const candidate = JSON.parse(localStorage.getItem(key) ?? "null");
+      const answers = carryForwardAnswersForReviewer(candidate, source.sourceDigest, reviewer);
+      if (!answers) continue;
+      const migrated = await replayCompletedPrefix(source, set, reviewer, answers);
       if (isBetterRecovery(migrated, best)) best = migrated;
     } catch {
       // Ignore unrelated or malformed local drafts.
@@ -505,7 +533,7 @@ async function replayCompletedPrefix(
   source: SourceDocument,
   set: CheckpointSet,
   reviewer: ReviewSession["reviewer"],
-  priorAnswers: Record<string, unknown>,
+  priorAnswers: Readonly<Record<string, unknown>>,
 ): Promise<ReviewSession> {
   let session = await startReviewSession(source, set, reviewer, clock);
   for (const checkpoint of set.checkpoints) {
@@ -575,7 +603,7 @@ function stepDispositionInputs(
       const candidate = entry as { stepId?: unknown; disposition?: unknown; replacement?: unknown };
       if (candidate.stepId !== checkpoint.learningSteps[index].stepId) break;
       if (candidate.disposition === null || candidate.disposition === undefined) break;
-      if (!["pass", "revise"].includes(candidate.disposition as string)) return null;
+      if (!["pass", "revise", "question", "needs_qa"].includes(candidate.disposition as string)) return null;
       const input = { stepId: candidate.stepId, disposition: candidate.disposition as StepDisposition };
       if (candidate.disposition === "revise") {
         if (!isReplacementInput(candidate.replacement)) return null;
@@ -590,7 +618,7 @@ function stepDispositionInputs(
     }
     const hasRecordedProgress = values.length > 0 ||
       (Array.isArray(answer.revealedStepIds) && answer.revealedStepIds.length > 0) ||
-      ["understand", "question", "revise", "approve"].includes(answer.decision as string);
+      ["understand", "question", "needs_qa", "revise", "approve"].includes(answer.decision as string);
     return hasRecordedProgress ? values : null;
   }
   return completedCheckpointInputs(checkpoint, answer);
@@ -600,14 +628,15 @@ function completedCheckpointInputs(
   checkpoint: ReviewCheckpoint,
   answer: { decision?: unknown; replacement?: unknown },
 ): { stepId: string; disposition: StepDisposition; replacement?: { stepId: string; replacement: string; rationale?: string } }[] | null {
-  if (!["understand", "question", "revise", "approve"].includes(answer.decision as string)) return null;
+  if (!["understand", "question", "needs_qa", "revise", "approve"].includes(answer.decision as string)) return null;
   const legacyReplacement = isReplacementInput(answer.replacement) ? answer.replacement : null;
   if (answer.decision === "revise" && !legacyReplacement) return null;
   if (answer.decision === "revise" && legacyReplacement &&
       !checkpoint.learningSteps.some(({ stepId }) => stepId === legacyReplacement.stepId)) return null;
   return checkpoint.learningSteps.map((step) => {
     const replacement = answer.decision === "revise" && legacyReplacement?.stepId === step.stepId ? legacyReplacement : undefined;
-    return { stepId: step.stepId, disposition: replacement ? "revise" : "pass", ...(replacement ? { replacement } : {}) };
+    const disposition = replacement ? "revise" : answer.decision === "question" ? "question" : answer.decision === "needs_qa" ? "needs_qa" : "pass";
+    return { stepId: step.stepId, disposition, ...(replacement ? { replacement } : {}) };
   });
 }
 

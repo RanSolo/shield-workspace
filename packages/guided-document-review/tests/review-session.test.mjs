@@ -67,6 +67,34 @@ test("a disposition checkpoint finalizes after its last passage", async () => {
   assert.equal(session.answers["principle-one"].explanation, null);
 });
 
+test("a configured code-review checkpoint records Question and Needs QA as human dispositions", async () => {
+  const source = await createSourceDocument("Review", sourceText);
+  const set = await createCheckpointSet("Code review", [{
+    checkpointId: "ac-one",
+    title: "Acceptance criterion 1",
+    reviewMode: "disposition",
+    dispositionOptions: ["pass", "question", "needs_qa", "revise"],
+    learningSteps: [step("ac-one-step", "one clear next action")],
+  }], source.text);
+  let questionSession = await startReviewSession(source, set, { kind: "self_asserted", name: "Randy" }, fixedClock);
+  questionSession = begin(questionSession, set, "ac-one");
+  questionSession = success(recordStepDisposition(questionSession, set, expected(questionSession, "ac-one", "ac-one-step"), { disposition: "question" }, fixedClock));
+  assert.equal(questionSession.answers["ac-one"].decision, "question");
+  assert.equal((await decodeReviewSession(structuredClone(questionSession), source, set)).ok, true);
+
+  let qaSession = await startReviewSession(source, set, { kind: "self_asserted", name: "Randy" }, fixedClock);
+  qaSession = begin(qaSession, set, "ac-one");
+  qaSession = success(recordStepDisposition(qaSession, set, expected(qaSession, "ac-one", "ac-one-step"), { disposition: "needs_qa" }, fixedClock));
+  assert.equal(qaSession.answers["ac-one"].decision, "needs_qa");
+  assert.equal((await decodeReviewSession(structuredClone(qaSession), source, set)).ok, true);
+  const questionArtifact = await createReviewArtifact(source, set, questionSession);
+  const qaArtifact = await createReviewArtifact(source, set, qaSession);
+  assert.equal(questionArtifact.dispositions[0].disposition, "QUESTION");
+  assert.equal(qaArtifact.dispositions[0].disposition, "NEEDS_QA");
+  assert.equal(questionArtifact.dispositions[0].reviewer.name, "Randy");
+  assert.equal(typeof questionArtifact.dispositions[0].decidedAt, "string");
+});
+
 test("step revisions require changed text and PASS forbids replacement material", async () => {
   const { set, session: initial } = await fixture();
   const session = begin(initial, set);
@@ -147,8 +175,18 @@ test("artifacts preserve multiple replacements in checkpoint and step order", as
   session = reviseStep(session, set, "purpose-why", "one deterministic next action");
   session = reviseStep(session, set, "purpose-finish", "The stable lane stays ready for reuse.");
   session = success(recordExplanation(session, set, expected(session, "purpose"), "Both passages now state deterministic progress and reusable lane completion clearly.", fixedClock));
-  const artifact = await createReviewArtifact(source, set, session);
+  const artifact = await createReviewArtifact(source, set, session, {
+    packetId: "pr-review:example/repo#13:0123456789abcdef",
+    packetDigest: `sha256:${"a".repeat(64)}`,
+    repository: "example/repo",
+    pullRequestNumber: 13,
+    headRevision: "b".repeat(40),
+  });
+  assert.equal(artifact.schemaVersion, 3);
   assert.deepEqual(artifact.replacements.map(({ stepId }) => stepId), ["purpose-why", "purpose-finish"]);
+  assert.deepEqual(artifact.dispositions.map(({ disposition }) => disposition), ["REVISE", "REVISE"]);
+  assert.equal(artifact.reviewBinding?.headRevision, "b".repeat(40));
+  assert.equal(artifact.guidance[0].provenance.kind, "checkpoint_projection");
   assert.notEqual(artifact.revisedSourceDigest, source.sourceDigest);
   assert.equal(artifact.authority, "none");
 });

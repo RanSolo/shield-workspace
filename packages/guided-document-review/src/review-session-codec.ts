@@ -30,8 +30,8 @@ const stepDispositionFields = ["stepId", "disposition", "replacement", "decidedA
 const replacementFields = ["stepId", "original", "replacement", "rationale"] as const;
 const eventFields = ["eventId", "checkpointId", "stepId", "phase", "revision", "recordedAt"] as const;
 const phases = new Set<ReviewPhase>(["orient", "learn", "explain_back", "confidence", "decide", "complete"]);
-const decisions = new Set(["understand", "question", "revise", "approve"]);
-const dispositions = new Set<StepDisposition>(["pass", "revise"]);
+const decisions = new Set(["understand", "question", "needs_qa", "revise", "approve"]);
+const dispositions = new Set<StepDisposition>(["pass", "revise", "question", "needs_qa"]);
 
 export async function decodeReviewSession(input: unknown, source: SourceDocument, checkpointSet: CheckpointSet): Promise<ReviewSessionDecodeResult> {
   const errors: string[] = [];
@@ -149,8 +149,13 @@ function decodeAnswer(input: unknown, checkpoint: ReviewCheckpoint, errors: stri
     const derived = revisedReplacements(stepDispositions);
     if (!sameReplacements(replacements, derived)) errors.push(`${label} replacements must match its revised step dispositions.`);
     if (!sameReplacement(replacement, replacements[0] ?? null)) errors.push(`${label} legacy replacement must match the first replacement.`);
-    if (decision === "approve" && derived.length) errors.push(`${label} PASS aggregate cannot contain revisions.`);
-    if (decision === "revise" && !derived.length) errors.push(`${label} REVISE aggregate requires a revised step.`);
+    if (checkpoint.reviewMode === "disposition") {
+      const aggregate = aggregateDecision(stepDispositions);
+      if (decision !== null && decision !== aggregate) errors.push(`${label} aggregate decision does not match its step dispositions.`);
+    } else {
+      if (decision === "approve" && derived.length) errors.push(`${label} PASS aggregate cannot contain revisions.`);
+      if (decision === "revise" && !derived.length) errors.push(`${label} REVISE aggregate requires a revised step.`);
+    }
   }
   const completeSteps = stepDispositions.every((entry) => entry.disposition !== null);
   if (decision && (revealed?.length !== stepIds.length || !completeSteps || (checkpoint.reviewMode !== "disposition" && explanation === null))) errors.push(`${label} is decided before its learning and reflection are complete.`);
@@ -173,8 +178,10 @@ function decodeStepDispositions(input: unknown, checkpoint: ReviewCheckpoint, la
     const decidedAt = entry.decidedAt === null ? null : validTimestamp(entry.decidedAt) ? entry.decidedAt : undefined;
     if (decidedAt === undefined) errors.push(`${stepLabel} decision time is invalid.`);
     if (disposition === null && (replacement || decidedAt !== null)) errors.push(`${stepLabel} cannot carry a partial disposition.`);
-    if (disposition === "pass" && replacement) errors.push(`${stepLabel} PASS cannot include a replacement.`);
+    if (disposition !== "revise" && replacement) errors.push(`${stepLabel} only REVISE can include a replacement.`);
     if (disposition === "revise" && !replacement) errors.push(`${stepLabel} REVISE requires a replacement.`);
+    const allowed = checkpoint.dispositionOptions ?? ["pass", "revise"];
+    if (disposition && !allowed.includes(disposition)) errors.push(`${stepLabel} disposition is not allowed by its checkpoint.`);
     if (errors.length !== startErrors || disposition === undefined || decidedAt === undefined) return emptyStepDisposition(step.stepId);
     return { stepId: step.stepId, disposition, replacement, decidedAt };
   });
@@ -280,6 +287,12 @@ function checkEventConsistency(checkpointSet: CheckpointSet, answers: Readonly<R
 
 function revisedReplacements(dispositionsForCheckpoint: readonly StepDispositionRecord[]): ReplacementRequest[] {
   return dispositionsForCheckpoint.filter((entry) => entry.disposition === "revise").map((entry) => entry.replacement).filter((entry): entry is ReplacementRequest => entry !== null);
+}
+function aggregateDecision(dispositionsForCheckpoint: readonly StepDispositionRecord[]): CheckpointAnswer["decision"] {
+  if (dispositionsForCheckpoint.some(({ disposition }) => disposition === "revise")) return "revise";
+  if (dispositionsForCheckpoint.some(({ disposition }) => disposition === "needs_qa")) return "needs_qa";
+  if (dispositionsForCheckpoint.some(({ disposition }) => disposition === "question")) return "question";
+  return "approve";
 }
 function isLegacyAnswer(answer: CheckpointAnswer): boolean { return answer.stepDispositions.every((entry) => entry.disposition === null || entry.decidedAt === null); }
 function isPristine(answer: CheckpointAnswer): boolean { return answer.revealedStepIds.length === 0 && answer.explanation === null && answer.confidence === null && answer.decision === null && answer.replacement === null && answer.replacements.length === 0 && answer.stepDispositions.every((entry) => entry.disposition === null) && answer.decidedAt === null; }

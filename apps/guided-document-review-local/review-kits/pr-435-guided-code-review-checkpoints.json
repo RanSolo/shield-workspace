@@ -1,0 +1,127 @@
+[
+  {
+    "checkpointId": "issue-434-ac-1",
+    "title": "Acceptance criterion 1",
+    "reviewMode": "disposition",
+    "dispositionOptions": [
+      "pass",
+      "question",
+      "needs_qa",
+      "revise"
+    ],
+    "journeyGroup": {
+      "groupId": "acceptance-criteria",
+      "title": "Acceptance criteria"
+    },
+    "learningSteps": [
+      {
+        "stepId": "issue-434-ac-1-review",
+        "sourceQuote": "Acceptance criterion 1: Baseline branch is pushed and represented by a draft PR.",
+        "purpose": "Decide whether PR #435 satisfies this acceptance criterion at the exact review revision.",
+        "question": "Does this pull request give the baseline a clear, reviewable delivery home?",
+        "explanation": "The observed pull request is the review home for the Document Trail baseline.",
+        "whyItMatters": "Acceptance criteria are the promised outcomes; observed anchors are evidence, while the decision remains human-owned."
+      }
+    ]
+  },
+  {
+    "checkpointId": "issue-434-ac-2",
+    "title": "Acceptance criterion 2",
+    "reviewMode": "disposition",
+    "dispositionOptions": [
+      "pass",
+      "question",
+      "needs_qa",
+      "revise"
+    ],
+    "journeyGroup": {
+      "groupId": "acceptance-criteria",
+      "title": "Acceptance criteria"
+    },
+    "learningSteps": [
+      {
+        "stepId": "issue-434-ac-2-review",
+        "sourceQuote": "Acceptance criterion 2: Both Document Trail Nx projects build, typecheck, and test successfully.",
+        "purpose": "Decide whether PR #435 satisfies this acceptance criterion at the exact review revision.",
+        "question": "Do the focused project contracts and reported validation adequately prove both Document Trail projects?",
+        "explanation": "The observed diff contains the focused Nx project contracts and the PR reports their validation.",
+        "whyItMatters": "Acceptance criteria are the promised outcomes; observed anchors are evidence, while the decision remains human-owned."
+      }
+    ]
+  },
+  {
+    "checkpointId": "issue-434-ac-3",
+    "title": "Acceptance criterion 3",
+    "reviewMode": "disposition",
+    "dispositionOptions": [
+      "pass",
+      "question",
+      "needs_qa",
+      "revise"
+    ],
+    "journeyGroup": {
+      "groupId": "acceptance-criteria",
+      "title": "Acceptance criteria"
+    },
+    "learningSteps": [
+      {
+        "stepId": "issue-434-ac-3-review",
+        "sourceQuote": "Acceptance criterion 3: Current architecture and Factory review kits load as prepared trails.",
+        "purpose": "Decide whether PR #435 satisfies this acceptance criterion at the exact review revision.",
+        "question": "Can a reviewer open both prepared learning trails without manually locating source and checkpoint files?",
+        "explanation": "The observed diff contains the prepared-trail manifests and checkpoint sets used by the local application.",
+        "whyItMatters": "Acceptance criteria are the promised outcomes; observed anchors are evidence, while the decision remains human-owned."
+      }
+    ]
+  },
+  {
+    "checkpointId": "issue-434-ac-4",
+    "title": "Acceptance criterion 4",
+    "reviewMode": "disposition",
+    "dispositionOptions": [
+      "pass",
+      "question",
+      "needs_qa",
+      "revise"
+    ],
+    "journeyGroup": {
+      "groupId": "acceptance-criteria",
+      "title": "Acceptance criteria"
+    },
+    "learningSteps": [
+      {
+        "stepId": "issue-434-ac-4-review",
+        "sourceQuote": "Acceptance criterion 4: The PR explains known prototype limitations and identifies the next small product slices.",
+        "purpose": "Decide whether PR #435 satisfies this acceptance criterion at the exact review revision.",
+        "question": "Does the PR make the prototype boundary and next delivery shape understandable enough to accept as a baseline?",
+        "explanation": "The observed PR body describes the baseline, validation, exclusions, and issue-bound follow-on delivery policy.",
+        "whyItMatters": "Acceptance criteria are the promised outcomes; observed anchors are evidence, while the decision remains human-owned."
+      }
+    ]
+  },
+  {
+    "checkpointId": "issue-434-ac-5",
+    "title": "Acceptance criterion 5",
+    "reviewMode": "disposition",
+    "dispositionOptions": [
+      "pass",
+      "question",
+      "needs_qa",
+      "revise"
+    ],
+    "journeyGroup": {
+      "groupId": "acceptance-criteria",
+      "title": "Acceptance criteria"
+    },
+    "learningSteps": [
+      {
+        "stepId": "issue-434-ac-5-review",
+        "sourceQuote": "Acceptance criterion 5: Future product work does not accumulate directly on the baseline branch after review begins.",
+        "purpose": "Decide whether PR #435 satisfies this acceptance criterion at the exact review revision.",
+        "question": "Does the observed delivery policy make the baseline branch boundary clear without relying on unobserved follow-on PR claims?",
+        "explanation": "The observed PR body states that later product changes should be issue-bound and delivered separately after review begins.",
+        "whyItMatters": "Acceptance criteria are the promised outcomes; observed anchors are evidence, while the decision remains human-owned."
+      }
+    ]
+  }
+]

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 2,
+  "slug": "pr-435-guided-code-review",
+  "title": "Guided Code Review · Document Trail baseline",
+  "reviewerName": "Randy Russell",
+  "documentPath": "pr-435-guided-code-review.md",
+  "checkpointPath": "pr-435-guided-code-review-checkpoints.json",
+  "packetPath": "pr-435-guided-code-review.packet.json",
+  "reviewBinding": {
+    "packetId": "pr-review:RanSolo/shield-workspace#435:84f41810093883bd",
+    "packetDigest": "sha256:84f41810093883bd72d90b9efe15827b23345752f3d59b2160e8b1899b0ab68c",
+    "repository": "RanSolo/shield-workspace",
+    "pullRequestNumber": 435,
+    "headRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5"
+  },
+  "documentDigest": "sha256:065ced0b1f43d72166ee9b29407556e1d7c24459d13130a093fb5c2cb01bca18",
+  "checkpointDigest": "sha256:880568ba8af8fb01174de9544aa19aecc7069264ba1c708032b2651fd9595f4e"
+}

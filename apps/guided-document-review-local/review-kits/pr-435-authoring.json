@@ -1,0 +1,198 @@
+{
+  "schemaVersion": 2,
+  "slug": "pr-435-guided-code-review",
+  "title": "Guided Code Review · Document Trail baseline",
+  "reviewerName": "Randy Russell",
+  "expectedHeadRevision": "5c70027cbd4ebff3bcea57e73b1f356ae972dae5",
+  "coverage": [
+    {
+      "criterionId": "issue-434-ac-1",
+      "explanation": "The observed pull request is the review home for the Document Trail baseline.",
+      "reviewQuestion": "Does this pull request give the baseline a clear, reviewable delivery home?",
+      "evidence": {
+        "commitment": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "pull_request",
+              "field": "number"
+            },
+            {
+              "kind": "pull_request",
+              "field": "head_revision"
+            },
+            {
+              "kind": "issue",
+              "issueNumber": 434,
+              "field": "title"
+            }
+          ]
+        },
+        "changedFileOrDiff": {
+          "state": "unavailable",
+          "reason": "No changed file is claimed as direct evidence for this criterion."
+        },
+        "reportedValidation": {
+          "state": "unavailable",
+          "reason": "The PR-body validation report is unverified and does not carry an exact validated revision."
+        },
+        "openGap": {
+          "state": "available",
+          "items": []
+        }
+      }
+    },
+    {
+      "criterionId": "issue-434-ac-2",
+      "explanation": "The observed diff contains the focused Nx project contracts and the PR reports their validation.",
+      "reviewQuestion": "Do the focused project contracts and reported validation adequately prove both Document Trail projects?",
+      "evidence": {
+        "commitment": {
+          "state": "unavailable",
+          "reason": "No observed commitment anchor is available for this criterion."
+        },
+        "changedFileOrDiff": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "file",
+              "path": "packages/guided-document-review/package.json"
+            },
+            {
+              "kind": "file",
+              "path": "apps/guided-document-review-local/package.json"
+            }
+          ]
+        },
+        "reportedValidation": {
+          "state": "unavailable",
+          "reason": "The PR-body validation report is unverified and does not carry an exact validated revision."
+        },
+        "openGap": {
+          "state": "available",
+          "items": [
+            "The human reviewer must decide whether the observed proof is sufficient for baseline acceptance."
+          ]
+        }
+      }
+    },
+    {
+      "criterionId": "issue-434-ac-3",
+      "explanation": "The observed diff contains the prepared-trail manifests and checkpoint sets used by the local application.",
+      "reviewQuestion": "Can a reviewer open both prepared learning trails without manually locating source and checkpoint files?",
+      "evidence": {
+        "commitment": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "pr_body",
+              "excerpt": "- Local Document Trail application and prepared-trail route."
+            }
+          ]
+        },
+        "changedFileOrDiff": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "file",
+              "path": "apps/guided-document-review-local/review-kits/mission-rail-v1.trail.json"
+            },
+            {
+              "kind": "file",
+              "path": "apps/guided-document-review-local/review-kits/mission-rail-v2-checkpoints.json"
+            },
+            {
+              "kind": "file",
+              "path": "apps/guided-document-review-local/review-kits/shield-inside-factory.trail.json"
+            },
+            {
+              "kind": "file",
+              "path": "apps/guided-document-review-local/review-kits/shield-inside-factory-checkpoints.json"
+            }
+          ]
+        },
+        "reportedValidation": {
+          "state": "unavailable",
+          "reason": "The PR-body validation report is unverified and does not carry an exact validated revision."
+        },
+        "openGap": {
+          "state": "available",
+          "items": [
+            "Visual behavior remains a human QA observation rather than an adapter observation."
+          ]
+        }
+      }
+    },
+    {
+      "criterionId": "issue-434-ac-4",
+      "explanation": "The observed PR body describes the baseline, validation, exclusions, and issue-bound follow-on delivery policy.",
+      "reviewQuestion": "Does the PR make the prototype boundary and next delivery shape understandable enough to accept as a baseline?",
+      "evidence": {
+        "commitment": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "pr_body",
+              "excerpt": "This is intentionally the one large prototype-baseline PR."
+            },
+            {
+              "kind": "pr_body",
+              "excerpt": "No deployment, release, hosted persistence, provider credentials, or Mission Rail V1 construction contracts."
+            }
+          ]
+        },
+        "changedFileOrDiff": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "file",
+              "path": "apps/guided-document-review-local/README.md"
+            },
+            {
+              "kind": "file",
+              "path": "apps/guided-document-review-local/QA-CHECKLIST.md"
+            }
+          ]
+        },
+        "reportedValidation": {
+          "state": "unavailable",
+          "reason": "The PR-body validation report is unverified and does not carry an exact validated revision."
+        },
+        "openGap": {
+          "state": "available",
+          "items": [
+            "The reviewer may request clearer limitations or next-slice wording."
+          ]
+        }
+      }
+    },
+    {
+      "criterionId": "issue-434-ac-5",
+      "explanation": "The observed PR body states that later product changes should be issue-bound and delivered separately after review begins.",
+      "reviewQuestion": "Does the observed delivery policy make the baseline branch boundary clear without relying on unobserved follow-on PR claims?",
+      "evidence": {
+        "commitment": {
+          "state": "available",
+          "anchors": [
+            {
+              "kind": "pr_body",
+              "excerpt": "further product changes should be issue-bound, lane-assigned, and delivered in small PRs rather than appended here."
+            }
+          ]
+        },
+        "changedFileOrDiff": {
+          "state": "unavailable",
+          "reason": "No changed file is claimed as direct evidence for this criterion."
+        },
+        "reportedValidation": {
+          "state": "unavailable",
+          "reason": "The PR-body validation report is unverified and does not carry an exact validated revision."
+        },
+        "openGap": {
+          "state": "available",
+          "items": []
+        }
+      }
+    }
+  ]
+}

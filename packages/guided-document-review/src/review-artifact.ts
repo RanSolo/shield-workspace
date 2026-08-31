@@ -6,8 +6,37 @@ import { decodeReviewSession } from "./review-session-codec.js";
 import { applyConfirmedReplacements } from "./replacements.js";
 import type { SourceDocument } from "./source-document.js";
 
-export interface ReviewArtifactV2 {
-  readonly schemaVersion: 2;
+export interface ReviewArtifactBinding {
+  readonly packetId: string;
+  readonly packetDigest: string;
+  readonly repository: string;
+  readonly pullRequestNumber: number;
+  readonly headRevision: string;
+}
+
+export interface HumanDispositionRecord {
+  readonly checkpointId: string;
+  readonly stepId: string;
+  readonly disposition: "PASS" | "REVISE" | "QUESTION" | "NEEDS_QA";
+  readonly decidedAt: string;
+  readonly reviewer: ReviewSession["reviewer"];
+}
+
+export interface GuidanceRecord {
+  readonly checkpointId: string;
+  readonly stepId: string;
+  readonly sourceQuote: string;
+  readonly question: string;
+  readonly explanation: string;
+  readonly provenance: Readonly<{
+    kind: "checkpoint_projection";
+    sourceId: string;
+    checkpointSetDigest: string;
+  }>;
+}
+
+export interface ReviewArtifactV3 {
+  readonly schemaVersion: 3;
   readonly authority: "none";
   readonly effect: "educational_review_only";
   readonly artifactId: string;
@@ -17,6 +46,9 @@ export interface ReviewArtifactV2 {
   readonly reviewer: ReviewSession["reviewer"];
   readonly startedAt: string;
   readonly completedAt: string;
+  readonly reviewBinding: ReviewArtifactBinding | null;
+  readonly dispositions: readonly HumanDispositionRecord[];
+  readonly guidance: readonly GuidanceRecord[];
   readonly sourceDigest: string;
   readonly revisedSourceDigest: string;
   readonly replacements: readonly ReplacementRequest[];
@@ -27,7 +59,8 @@ export async function createReviewArtifact(
   source: SourceDocument,
   checkpointSet: CheckpointSet,
   session: ReviewSession,
-): Promise<ReviewArtifactV2> {
+  reviewBinding: ReviewArtifactBinding | null = null,
+): Promise<ReviewArtifactV3> {
   const decoded = await decodeReviewSession(session, source, checkpointSet);
   if (!decoded.ok) throw new TypeError(`Invalid review session: ${decoded.errors.join(" ")}`);
   if (decoded.session.phase !== "complete") throw new TypeError("Finish every checkpoint before exporting the artifact.");
@@ -35,8 +68,31 @@ export async function createReviewArtifact(
   const replacements = collectReplacementRequests(checkpointSet, verifiedSession).map(({ replacement }) => replacement);
   const revisedText = applyConfirmedReplacements(source.text, replacements);
   const revisedSourceDigest = await sha256Text(revisedText);
+  validateBinding(reviewBinding);
+  const dispositions = checkpointSet.checkpoints.flatMap((checkpoint) => verifiedSession.answers[checkpoint.checkpointId].stepDispositions.map((entry) => {
+    if (!entry.disposition || !entry.decidedAt) throw new TypeError("Complete review steps must carry a disposition timestamp.");
+    return {
+      checkpointId: checkpoint.checkpointId,
+      stepId: entry.stepId,
+      disposition: entry.disposition === "pass" ? "PASS" : entry.disposition === "revise" ? "REVISE" : entry.disposition === "question" ? "QUESTION" : "NEEDS_QA",
+      decidedAt: entry.decidedAt,
+      reviewer: verifiedSession.reviewer,
+    } as HumanDispositionRecord;
+  }));
+  const guidance = checkpointSet.checkpoints.flatMap((checkpoint) => checkpoint.learningSteps.map((step) => ({
+    checkpointId: checkpoint.checkpointId,
+    stepId: step.stepId,
+    sourceQuote: step.sourceQuote,
+    question: step.question,
+    explanation: step.explanation,
+    provenance: {
+      kind: "checkpoint_projection" as const,
+      sourceId: source.sourceId,
+      checkpointSetDigest: checkpointSet.checkpointSetDigest,
+    },
+  })));
   const material = {
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
     authority: "none" as const,
     effect: "educational_review_only" as const,
     source: { sourceId: source.sourceId, title: source.title, sourceDigest: source.sourceDigest },
@@ -49,10 +105,22 @@ export async function createReviewArtifact(
     reviewer: verifiedSession.reviewer,
     startedAt: verifiedSession.startedAt,
     completedAt: verifiedSession.updatedAt,
+    reviewBinding,
+    dispositions,
+    guidance,
     sourceDigest: source.sourceDigest,
     revisedSourceDigest,
     replacements,
   };
   const artifactDigest = await sha256Json(material);
   return { ...material, artifactId: `artifact:${artifactDigest.slice(7, 23)}`, artifactDigest };
+}
+
+function validateBinding(binding: ReviewArtifactBinding | null): void {
+  if (binding === null) return;
+  if (!binding.packetId.trim() || !/^sha256:[0-9a-f]{64}$/u.test(binding.packetDigest) ||
+      !binding.repository.trim() || !Number.isSafeInteger(binding.pullRequestNumber) || binding.pullRequestNumber < 1 ||
+      !/^[0-9a-f]{40}$/u.test(binding.headRevision)) {
+    throw new TypeError("Review packet binding is invalid.");
+  }
 }
